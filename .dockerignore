@@ -1,0 +1,7 @@
+**/node_modules
+**/.next
+.data
+tmp
+.git
+.env
+apps/web

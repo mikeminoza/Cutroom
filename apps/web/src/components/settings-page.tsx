@@ -1,0 +1,581 @@
+'use client'
+
+import { WEEKDAYS } from '@cutroom/shared/schedule'
+import { type AppSettings, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Plus, X } from 'lucide-react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
+import { api, errorText } from '@/lib/api'
+import { cn } from '@/lib/cn'
+import { formatBytes } from '@/lib/format'
+import { keys, useSettings, useStatus } from '@/lib/hooks'
+import type { Tone } from '@/lib/stage'
+import {
+  Button,
+  Dot,
+  Field,
+  Input,
+  Panel,
+  ProgressBar,
+  Segmented,
+  Select,
+  Switch,
+  Textarea,
+  useConfirm,
+} from './ui'
+
+const GOOGLE_MESSAGES: Record<string, { ok: boolean; text: string }> = {
+  'youtube-connected': { ok: true, text: 'YouTube connected' },
+  'drive-connected': { ok: true, text: 'Google Drive connected' },
+  denied: { ok: false, text: 'Google sign-in was cancelled.' },
+  expired: { ok: false, text: 'That sign-in link expired. Try connecting again.' },
+  'no-channel': {
+    ok: false,
+    text: 'That Google account has no YouTube channel. Pick the account that owns your channel.',
+  },
+  'missing-client': { ok: false, text: 'Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to connect Google.' },
+  failed: { ok: false, text: 'Google sign-in failed.' },
+}
+
+export function SettingsPage() {
+  const params = useSearchParams()
+  const router = useRouter()
+
+  useEffect(() => {
+    const result = params.get('google')
+    if (!result) return
+    const message = GOOGLE_MESSAGES[result] ?? GOOGLE_MESSAGES.failed
+    if (message.ok) toast.success(message.text)
+    else toast.error(message.text, { description: params.get('detail') ?? undefined })
+    router.replace('/settings', { scroll: false })
+  }, [params, router])
+
+  return (
+    <div className="mx-auto max-w-[920px] px-4 py-8 sm:px-8 lg:py-12">
+      <header className="mb-8">
+        <h1 className="display text-[34px]">Settings</h1>
+        <p className="mt-2 text-[14.5px] text-ink-2">
+          Connections, your posting schedule and the defaults for new videos.
+        </p>
+      </header>
+      <div className="flex flex-col gap-6">
+        <Connections />
+        <PreferencesForm />
+      </div>
+    </div>
+  )
+}
+
+function Row({
+  name,
+  tone,
+  status,
+  detail,
+  children,
+}: {
+  name: string
+  tone: Tone
+  status: string
+  detail?: React.ReactNode
+  children?: React.ReactNode
+}) {
+  return (
+    <li className="grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-[160px_1fr_auto] sm:items-center">
+      <span className="text-[14.5px] font-semibold">{name}</span>
+      <div className="min-w-0">
+        <p className="flex items-center gap-2 text-[14px]">
+          <Dot tone={tone} />
+          {status}
+        </p>
+        {detail && <div className="mt-1 text-[12.5px] leading-snug text-ink-3">{detail}</div>}
+      </div>
+      {children && <div className="flex gap-2 sm:justify-end">{children}</div>}
+    </li>
+  )
+}
+
+function Connections() {
+  const { data: status, isLoading } = useStatus()
+  const client = useQueryClient()
+  const { confirm, element } = useConfirm()
+  const drive = useQuery({
+    queryKey: ['drive-usage'],
+    queryFn: () => api.get<{ usage: { used: number; limit: number | null } | null }>('/api/google/drive'),
+    enabled: Boolean(status?.drive.connected),
+  })
+
+  const disconnect = async (provider: 'youtube' | 'drive') => {
+    const ok = await confirm({
+      title: `Disconnect ${provider === 'youtube' ? 'YouTube' : 'Google Drive'}?`,
+      body:
+        provider === 'youtube'
+          ? 'Videos are still rendered, but nothing is posted until you connect again. Videos already scheduled on YouTube stay scheduled.'
+          : 'New videos stay in app storage instead. Files already in Drive are not touched.',
+      action: 'Disconnect',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await api.del(`/api/google/${provider}`)
+      await client.invalidateQueries({ queryKey: keys.status })
+      toast.success('Disconnected')
+    } catch (error) {
+      toast.error(errorText(error))
+    }
+  }
+
+  if (isLoading || !status)
+    return <div className="h-72 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
+  const googleReady = status.google.configured
+  const usage = drive.data?.usage
+
+  return (
+    <Panel
+      title="Connections"
+      description="Keys live in environment variables, never in the browser. Google accounts connect here."
+    >
+      <ul className="divide-y divide-line">
+        <Row
+          name="Gemini"
+          tone={status.gemini.configured ? 'ok' : 'you'}
+          status={status.gemini.configured ? `Ready, using ${status.gemini.model}` : 'No API key'}
+          detail={
+            status.gemini.configured ? (
+              'Writes scripts, splits scenes, times the voice-over and drafts post details.'
+            ) : (
+              <>
+                Get a free key at{' '}
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2"
+                >
+                  aistudio.google.com/apikey
+                </a>{' '}
+                and set GEMINI_API_KEY for the web app and the worker.
+              </>
+            )
+          }
+        />
+        <Row
+          name="YouTube"
+          tone={status.youtube.connected ? 'ok' : 'idle'}
+          status={status.youtube.connected ? `Posting to ${status.youtube.label}` : 'Not connected'}
+          detail={
+            status.youtube.connected
+              ? status.youtube.email
+              : googleReady
+                ? 'Connect the Google account that owns your channel.'
+                : 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see the README).'
+          }
+        >
+          {status.youtube.connected ? (
+            <Button variant="ghost" size="sm" onClick={() => disconnect('youtube')}>
+              Disconnect
+            </Button>
+          ) : (
+            <a
+              href="/api/google/connect?provider=youtube"
+              className={cn(!googleReady && 'pointer-events-none')}
+            >
+              <Button variant="go" size="sm" disabled={!googleReady}>
+                Connect YouTube
+              </Button>
+            </a>
+          )}
+        </Row>
+        <Row
+          name="Google Drive"
+          tone={status.drive.connected ? 'ok' : 'idle'}
+          status={status.drive.connected ? `Saving to ${status.drive.email}` : 'Not connected'}
+          detail={
+            status.drive.connected ? (
+              usage ? (
+                <div className="flex max-w-xs flex-col gap-1.5">
+                  <span>
+                    {formatBytes(usage.used)} used{usage.limit ? ` of ${formatBytes(usage.limit)}` : ''}.
+                    Shared with Gmail and Photos.
+                  </span>
+                  {usage.limit && <ProgressBar value={usage.used / usage.limit} />}
+                </div>
+              ) : (
+                'Finished videos go into a Cutroom folder.'
+              )
+            ) : (
+              'Finished videos and project files are kept in a Cutroom folder. The app only sees files it creates.'
+            )
+          }
+        >
+          {status.drive.connected ? (
+            <Button variant="ghost" size="sm" onClick={() => disconnect('drive')}>
+              Disconnect
+            </Button>
+          ) : (
+            <a
+              href="/api/google/connect?provider=drive"
+              className={cn(!googleReady && 'pointer-events-none')}
+            >
+              <Button variant="plain" size="sm" disabled={!googleReady}>
+                Connect Drive
+              </Button>
+            </a>
+          )}
+        </Row>
+        <Row
+          name="Worker"
+          tone={
+            !status.worker.configured
+              ? 'bad'
+              : status.worker.reachable
+                ? status.worker.busy
+                  ? 'run'
+                  : 'ok'
+                : 'idle'
+          }
+          status={
+            !status.worker.configured
+              ? 'Not set up'
+              : status.worker.reachable
+                ? status.worker.busy
+                  ? 'Online, working on a job'
+                  : 'Online'
+                : 'Asleep or unreachable'
+          }
+          detail={
+            !status.worker.configured
+              ? 'Set WORKER_URL and WORKER_SECRET. Locally, pnpm dev starts it on port 8787.'
+              : status.worker.reachable
+                ? status.worker.url
+                : 'Free Render workers sleep after 15 idle minutes and wake up in about a minute when a job starts.'
+          }
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => client.invalidateQueries({ queryKey: keys.status })}
+          >
+            Check again
+          </Button>
+        </Row>
+        <Row
+          name="Storage"
+          tone="ok"
+          status={status.storage === 'blob' ? 'Vercel Blob' : 'This computer'}
+          detail={
+            status.storage === 'blob'
+              ? 'Free plan: 1 GB. Large finished videos go to Drive instead.'
+              : 'Files are kept in .data/storage.'
+          }
+        />
+        <Row
+          name="Database"
+          tone="ok"
+          status={status.database === 'neon' ? 'Neon Postgres' : 'This computer'}
+          detail={
+            status.database === 'neon' ? undefined : 'Kept in .data/pglite. Set DATABASE_URL to use Neon.'
+          }
+        />
+        <Row
+          name="Sign-in"
+          tone={status.auth ? 'ok' : 'idle'}
+          status={status.auth ? 'Password required' : 'Open — anyone with the address can use it'}
+          detail={status.auth ? undefined : 'Set APP_PASSWORD before deploying.'}
+        />
+      </ul>
+      {element}
+    </Panel>
+  )
+}
+
+function PreferencesForm() {
+  const { data: saved } = useSettings()
+  const { data: status } = useStatus()
+  const client = useQueryClient()
+  const [draft, setDraft] = useState<AppSettings | null>(null)
+  const [busy, setBusy] = useState(false)
+  const settings = draft ?? saved ?? null
+  const dirty = Boolean(draft && saved && JSON.stringify(draft) !== JSON.stringify(saved))
+  const playlists = useQuery({
+    queryKey: ['playlists'],
+    queryFn: () => api.get<{ playlists: { id: string; title: string }[] }>('/api/google/youtube'),
+    enabled: Boolean(status?.youtube.connected),
+  })
+  const zones = useMemo(() => {
+    try {
+      return Intl.supportedValuesOf('timeZone')
+    } catch {
+      return ['UTC']
+    }
+  }, [])
+
+  if (!settings) return <div className="h-96 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
+
+  const update = (patch: Partial<AppSettings>) => setDraft({ ...settings, ...patch })
+  const updateDefaults = (patch: Partial<AppSettings['defaults']>) =>
+    setDraft({ ...settings, defaults: { ...settings.defaults, ...patch } })
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const next = await api.put<AppSettings>('/api/settings', settings)
+      client.setQueryData(keys.settings, next)
+      await client.invalidateQueries({ queryKey: keys.schedule })
+      setDraft(null)
+      toast.success('Settings saved')
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const slotsFor = (day: number) =>
+    settings.slots.filter((s) => s.day === day).sort((a, b) => a.time.localeCompare(b.time))
+  const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  return (
+    <>
+      <div id="schedule" className="scroll-mt-6">
+        <Panel
+          title="Posting schedule"
+          description="Finish & schedule picks the next free time from these slots. YouTube makes the video public at that time."
+        >
+          <div className="flex flex-col gap-5 px-5 py-5">
+            <Field label="Time zone">
+              <div className="flex flex-wrap gap-2">
+                <Select
+                  value={settings.timezone}
+                  onChange={(e) => update({ timezone: e.target.value })}
+                  className="min-w-64 flex-1 sm:flex-none"
+                >
+                  {zones.map((z) => (
+                    <option key={z} value={z}>
+                      {z.replace(/_/g, ' ')}
+                    </option>
+                  ))}
+                </Select>
+                {localZone && localZone !== settings.timezone && (
+                  <Button variant="ghost" onClick={() => update({ timezone: localZone })}>
+                    Use {localZone.replace(/_/g, ' ')}
+                  </Button>
+                )}
+              </div>
+            </Field>
+            <ul className="overflow-hidden rounded-[var(--radius-control)] border border-line">
+              {WEEKDAYS.map((label, day) => {
+                const slots = slotsFor(day)
+                return (
+                  <li
+                    key={label}
+                    className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5 last:border-b-0"
+                  >
+                    <span className={cn('w-12 text-[14px]', slots.length ? 'font-semibold' : 'text-ink-3')}>
+                      {label}
+                    </span>
+                    {slots.map((slot) => (
+                      <span
+                        key={slot.time}
+                        className="inline-flex items-center gap-1 rounded-full bg-ink py-1 pr-1 pl-3 text-[13px] text-paper"
+                      >
+                        <input
+                          type="time"
+                          value={slot.time}
+                          aria-label={`${label} posting time`}
+                          onChange={(e) =>
+                            update({
+                              slots: settings.slots.map((s) =>
+                                s === slot ? { ...s, time: e.target.value || s.time } : s,
+                              ),
+                            })
+                          }
+                          className="tc bg-transparent text-paper [color-scheme:dark] focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Remove ${label} ${slot.time}`}
+                          onClick={() => update({ slots: settings.slots.filter((s) => s !== slot) })}
+                          className="rounded-full p-0.5 text-paper/70 hover:bg-paper/15 hover:text-paper"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        update({
+                          slots: [...settings.slots, { day, time: slots.length ? '12:00' : '18:00' }],
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-2.5 py-1 text-[12.5px] text-ink-2 hover:border-ink hover:text-ink"
+                    >
+                      <Plus className="size-3" aria-hidden />
+                      Add time
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        </Panel>
+      </div>
+
+      <Panel
+        title="Defaults for new videos"
+        description="Every project starts with these. You can change them per video."
+      >
+        <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+          <Field label="Before uploading" className="sm:col-span-2">
+            <Segmented
+              ariaLabel="Default posting mode"
+              value={settings.defaults.mode}
+              onChange={(mode) => updateDefaults({ mode })}
+              options={[
+                { value: 'review', label: 'Let me approve' },
+                { value: 'autopilot', label: 'Auto-pilot' },
+              ]}
+            />
+          </Field>
+          <Field label="Visibility">
+            <Select
+              value={settings.defaults.privacy}
+              onChange={(e) =>
+                updateDefaults({ privacy: e.target.value as AppSettings['defaults']['privacy'] })
+              }
+            >
+              <option value="public">Public</option>
+              <option value="unlisted">Unlisted</option>
+              <option value="private">Private</option>
+            </Select>
+          </Field>
+          <Field label="Category">
+            <Select
+              value={settings.defaults.categoryId}
+              onChange={(e) => updateDefaults({ categoryId: e.target.value })}
+            >
+              {YOUTUBE_CATEGORIES.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label="Playlist"
+            hint={status?.youtube.connected ? undefined : 'Connect YouTube to choose one.'}
+          >
+            <Select
+              value={settings.defaults.playlistId}
+              disabled={!status?.youtube.connected}
+              onChange={(e) => updateDefaults({ playlistId: e.target.value })}
+            >
+              <option value="">None</option>
+              {playlists.data?.playlists.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Language code" hint="For example en, es, tl.">
+            <Input
+              value={settings.defaults.language}
+              onChange={(e) => updateDefaults({ language: e.target.value.trim() })}
+            />
+          </Field>
+          <Field label="Resolution">
+            <Segmented
+              ariaLabel="Default resolution"
+              value={settings.defaults.resolution}
+              onChange={(resolution) => updateDefaults({ resolution })}
+              options={[
+                { value: '720p', label: '720p' },
+                { value: '1080p', label: '1080p' },
+              ]}
+            />
+          </Field>
+          <Field label="Captions">
+            <Segmented
+              ariaLabel="Default captions"
+              value={settings.defaults.captionStyle}
+              onChange={(captionStyle) => updateDefaults({ captionStyle })}
+              options={[
+                { value: 'highlight', label: 'Word by word' },
+                { value: 'line', label: 'Plain' },
+                { value: 'off', label: 'Off' },
+              ]}
+            />
+          </Field>
+          <Field label="Tags added to every video" className="sm:col-span-2" hint="Separate with commas.">
+            <Input
+              value={settings.defaults.tags.join(', ')}
+              onChange={(e) =>
+                updateDefaults({
+                  tags: e.target.value
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+          </Field>
+          <Field
+            label="Description footer"
+            className="sm:col-span-2"
+            hint="Links, socials, credits. Added below every description."
+          >
+            <Textarea
+              value={settings.defaults.descriptionFooter}
+              onChange={(e) => updateDefaults({ descriptionFooter: e.target.value })}
+              className="min-h-24"
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Switch
+              checked={settings.defaults.madeForKids}
+              onCheckedChange={(madeForKids) => updateDefaults({ madeForKids })}
+              label="Made for kids"
+              description="Required by YouTube for every upload."
+            />
+          </div>
+        </div>
+      </Panel>
+
+      <Panel title="Storage">
+        <div className="px-5 py-5">
+          <Switch
+            checked={settings.freeBlobAfterPosting}
+            onCheckedChange={(freeBlobAfterPosting) => update({ freeBlobAfterPosting })}
+            label="Free up Vercel Blob space after posting"
+            description="Once a video is on YouTube and its files are copied to Google Drive, the working copies are deleted from Blob. Only applies in production."
+          />
+        </div>
+      </Panel>
+
+      <div
+        className={cn(
+          'sticky bottom-4 z-20 flex items-center justify-between gap-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper transition-[opacity,transform]',
+          dirty ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-2 opacity-0',
+        )}
+        aria-hidden={!dirty}
+      >
+        <span className="text-[14px]">You have unsaved changes.</span>
+        <div className="flex gap-2">
+          <Button
+            variant="ghost"
+            className="text-paper/80 hover:bg-paper/10 hover:text-paper"
+            onClick={() => setDraft(null)}
+          >
+            Discard
+          </Button>
+          <Button variant="go" busy={busy} onClick={save}>
+            Save changes
+          </Button>
+        </div>
+      </div>
+    </>
+  )
+}

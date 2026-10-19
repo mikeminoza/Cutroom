@@ -1,0 +1,26 @@
+# Render Blueprint for the Cutroom worker (free web service).
+# Render dashboard > New > Blueprint > pick this repository.
+services:
+  - type: web
+    name: cutroom-worker
+    runtime: docker
+    plan: free
+    dockerfilePath: ./apps/worker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: APP_URL
+        sync: false
+      - key: WORKER_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: BLOB_READ_WRITE_TOKEN
+        sync: false

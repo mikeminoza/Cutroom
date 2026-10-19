@@ -1,0 +1,43 @@
+{
+  "name": "@cutroom/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "drizzle-kit generate && node scripts/embed-migrations.mjs"
+  },
+  "dependencies": {
+    "@cutroom/shared": "workspace:*",
+    "@electric-sql/pglite": "^0.5.10",
+    "@neondatabase/serverless": "^1.2.0",
+    "@tanstack/react-query": "^5.104.4",
+    "@vercel/blob": "^2.8.2",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.45.4",
+    "jose": "^6.2.12",
+    "lucide-react": "^1.59.0",
+    "next": "^16.4.2",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.3.0",
+    "wavesurfer.js": "^8.0.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "drizzle-kit": "^0.31.11",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.5"
+  }
+}

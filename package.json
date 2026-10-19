@@ -1,0 +1,19 @@
+{
+  "name": "cutroom",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "concurrently -k -n web,worker -c yellow,cyan \"pnpm --filter @cutroom/web dev\" \"pnpm --filter @cutroom/worker dev\"",
+    "build": "pnpm --filter @cutroom/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "concurrently": "^9.0.0",
+    "typescript": "^5.9.0"
+  }
+}
