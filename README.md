@@ -44,57 +44,24 @@ Open http://localhost:3000. `pnpm dev` starts the web app (port 3000) and the wo
 Add these to `.env` to switch on the rest:
 
 - `GEMINI_API_KEY`: free key from https://aistudio.google.com/apikey. Enables script writing, scene breakdown, voice-over timing and post details.
-- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: lets you connect YouTube and Google Drive in Settings. See below.
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: lets you connect YouTube and Google Drive in Settings.
 
-## Google setup (YouTube + Drive)
-
-1. In https://console.cloud.google.com create a project.
-2. **APIs & Services → Library**: enable **YouTube Data API v3** and **Google Drive API**.
-3. **OAuth consent screen**: choose External, then add these scopes:
-   - `youtube.upload`
-   - `youtube.force-ssl`
-   - `drive.file`
-   - `openid`
-   - `userinfo.email`
-
-   Add yourself as a test user.
-4. **Credentials → Create credentials → OAuth client ID → Web application**. Add these authorized redirect URIs:
-   - `http://localhost:3000/api/google/callback`
-   - `https://<your-app>.vercel.app/api/google/callback`
-5. Put the client ID and secret in `.env` (and later in Vercel and Render).
-6. **Important:** set the consent screen's publishing status to **In production**. While it says "Testing", Google expires the saved login every 7 days and automatic posting quietly stops. You will see an "unverified app" warning once when connecting; that is expected for a personal app.
-
-Custom thumbnails only work on a phone-verified channel (https://youtube.com/verify).
+Every variable is explained in **[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)**: what it does, where to get it, which service needs it, and a complete local `.env` example.
 
 ## Deploy for free
 
-### 1. Web app on Vercel
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** is the full click-by-click guide:
 
-1. Push this repository to GitHub.
-2. Vercel → **Add New → Project** → import the repo. Set **Root Directory** to `apps/web`. The framework is detected as Next.js.
-3. **Storage**:
-   - Add a **Neon** Postgres database from the Marketplace. This sets `DATABASE_URL`.
-   - Add a **Blob** store. This sets `BLOB_READ_WRITE_TOKEN`.
-4. **Environment variables**:
-   - `GEMINI_API_KEY`
-   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-   - `WORKER_SECRET`: any long random string
-   - `APP_PASSWORD`: your login password
-   - `CRON_SECRET`: any random string
-   - `WORKER_URL`: fill in after step 2
-5. Deploy. Tables are created automatically on the first request.
+1. Prepare three secrets (`WORKER_SECRET`, `CRON_SECRET`, `APP_PASSWORD`)
+2. Get a Gemini API key
+3. Google Cloud: enable the YouTube and Drive APIs, set up the consent screen, add the scopes and test users, create the OAuth client, publish the app
+4. Vercel: import the repo with Root Directory `apps/web`, add the Neon database and a **public** Blob store, set the variables
+5. Render: create the worker from `render.yaml`
+6. Point the two at each other (`WORKER_URL` on Vercel, `APP_URL` on Render)
+7. Log in, connect YouTube and Drive, set your posting slots
+8. Do a test run
 
-### 2. Worker on Render
-
-1. Render → **New → Blueprint** → pick the repo. It reads `render.yaml`, a free Docker web service.
-2. Fill in its environment variables:
-   - `APP_URL`: your Vercel URL
-   - the same `WORKER_SECRET`, `GEMINI_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `BLOB_READ_WRITE_TOKEN` as on Vercel
-3. When it is live, copy its URL into Vercel's `WORKER_URL` and redeploy the web app.
-
-### 3. Connect Google
-
-Open your Vercel URL → **Settings** → **Connect YouTube** and **Connect Drive**. Set your time zone and posting slots.
+It ends with a troubleshooting table for the common problems: redirect mismatch, a sleeping worker, mismatched secrets, an expired Google login, missing Blob token and YouTube quota.
 
 ## Free-plan limits worth knowing
 

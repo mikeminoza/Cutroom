@@ -100,6 +100,8 @@ export interface StatusDTO {
   drive: { connected: boolean; email: string | null; label: string | null }
   worker: { configured: boolean; reachable: boolean; url: string | null; busy: boolean }
   storage: 'local' | 'blob'
+  /** Browser uploads and the worker need the read-write token, not only the OIDC link. */
+  blobToken: boolean
   database: 'neon' | 'local'
   auth: boolean
 }

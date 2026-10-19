@@ -262,11 +262,13 @@ function Connections() {
         </Row>
         <Row
           name="Storage"
-          tone="ok"
+          tone={status.storage === 'blob' && !status.blobToken ? 'bad' : 'ok'}
           status={status.storage === 'blob' ? 'Vercel Blob' : 'This computer'}
           detail={
             status.storage === 'blob'
-              ? 'Free plan: 1 GB. Large finished videos go to Drive instead.'
+              ? status.blobToken
+                ? 'Free plan: 1 GB. Large finished videos go to Drive instead.'
+                : 'Add BLOB_READ_WRITE_TOKEN in Vercel. Uploads from the browser and the worker need it.'
               : 'Files are kept in .data/storage.'
           }
         />

@@ -1,5 +1,6 @@
 // File storage for working files (avatars, voice-overs, scene images, thumbnails).
-// Local disk in development, Vercel Blob in production (when BLOB_READ_WRITE_TOKEN is set).
+// Local disk in development, Vercel Blob in production (when a Blob store is connected:
+// BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID for stores that authenticate with Vercel OIDC).
 // URLs stored in the database are either absolute Blob URLs or app-relative
 // "/api/files/<key>" paths served by the web app in development.
 import { createReadStream, createWriteStream, existsSync } from 'node:fs'
@@ -11,8 +12,12 @@ import { del, put } from '@vercel/blob'
 
 export type StorageDriver = 'local' | 'blob'
 
+export function blobConfigured(): boolean {
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID)
+}
+
 export function storageDriver(): StorageDriver {
-  return process.env.BLOB_READ_WRITE_TOKEN ? 'blob' : 'local'
+  return blobConfigured() ? 'blob' : 'local'
 }
 
 let cachedRoot: string | null = null
@@ -101,7 +106,7 @@ export async function deleteFile(url: string | null | undefined): Promise<void> 
   if (!url) return
   try {
     if (url.startsWith(LOCAL_PREFIX)) await rm(localPath(url.slice(LOCAL_PREFIX.length)), { force: true })
-    else if (/^https?:\/\//.test(url) && process.env.BLOB_READ_WRITE_TOKEN) await del(url)
+    else if (/^https?:\/\//.test(url) && blobConfigured()) await del(url)
   } catch {
     // Deleting is best-effort; a leftover file is harmless.
   }

@@ -20,6 +20,7 @@ export const GET = route(async (): Promise<StatusDTO> => {
       busy: worker.busy,
     },
     storage: storageDriver(),
+    blobToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     database: process.env.DATABASE_URL ? 'neon' : 'local',
     auth: authEnabled(),
   }
