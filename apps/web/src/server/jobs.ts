@@ -1,6 +1,10 @@
-// Job orchestration. The web app owns job state; the worker runs the work and
-// reports back through applyEvent(). While a job is active, every status check
-// from the dashboard also pings the worker, which keeps a free Render instance awake.
+// Job orchestration. The web app owns job state; a worker runs the work and reports back through
+// applyEvent(). Two kinds of worker:
+//  - 'render': the always-on worker service (Render). While a job is active, every status check
+//    from the dashboard also pings it, and it keeps itself awake while it works.
+//  - 'github': a GitHub Actions run started per job (more CPU, never asleep, nothing to keep alive).
+// A worker must claim a job before running it, and reports with its runner id, so two workers
+// can never run (or upload) the same job at once.
 import {
   initialSteps,
   type JobPayload,
@@ -11,11 +15,14 @@ import {
   type WorkerEvent,
 } from '@cutroom/shared/protocol'
 import { deleteFile, storageDriver } from '@cutroom/shared/storage'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
-import { getConnection } from './connections'
+import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
+import { topTitles } from './analytics'
+import { channelFor, getDrive } from './connections'
 import { db, schema } from './db'
 import type { JobRow } from './db/schema'
-import { badRequest, newId, notFound } from './http'
+import { badRequest, HttpError, newId, notFound } from './http'
+import { notify } from './notify'
 import {
   getCharacters,
   getProjectRow,
@@ -28,8 +35,44 @@ import {
 } from './projects'
 import { appUrl, getSettings } from './settings'
 
+export type WorkerMode = 'render' | 'github'
+
 export function workerUrl(): string | null {
   return process.env.WORKER_URL ? process.env.WORKER_URL.replace(/\/$/, '') : null
+}
+
+function github(): { token: string; repo: string; workflow: string; ref: string } | null {
+  const token = process.env.GITHUB_DISPATCH_TOKEN
+  const repo = process.env.GITHUB_REPO
+  if (!token || !repo) return null
+  return {
+    token,
+    repo,
+    workflow: process.env.GITHUB_WORKFLOW || 'worker.yml',
+    ref: process.env.GITHUB_BRANCH || 'main',
+  }
+}
+
+/** GitHub Actions when it is set up (it is the explicit opt-in), otherwise the worker service. */
+export function workerMode(): WorkerMode {
+  if (process.env.WORKER_MODE === 'render') return 'render'
+  return github() ? 'github' : 'render'
+}
+
+/** True when jobs have somewhere to run. */
+export function workerConfigured(): boolean {
+  if (!process.env.WORKER_SECRET) return false
+  return workerMode() === 'github' ? Boolean(github()) : Boolean(workerUrl())
+}
+
+export function requireWorker() {
+  if (!workerConfigured()) {
+    badRequest(
+      workerMode() === 'github'
+        ? 'The GitHub Actions worker is not set up yet. Add GITHUB_DISPATCH_TOKEN, GITHUB_REPO and WORKER_SECRET.'
+        : 'The worker is not set up yet. Add WORKER_URL and WORKER_SECRET.',
+    )
+  }
 }
 
 async function workerFetch(path: string, init?: RequestInit, timeoutMs = 8000): Promise<Response | null> {
@@ -47,7 +90,45 @@ async function workerFetch(path: string, init?: RequestInit, timeoutMs = 8000): 
   }
 }
 
+/** Starts a GitHub Actions run for the job. Returns an error message, or null when it started. */
+async function dispatchGithub(jobId: string): Promise<string | null> {
+  const gh = github()
+  if (!gh) return 'GitHub Actions is not set up.'
+  try {
+    const res = await fetch(
+      `${(process.env.GITHUB_API_URL || 'https://api.github.com').replace(/\/$/, '')}/repos/${gh.repo}/actions/workflows/${encodeURIComponent(gh.workflow)}/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${gh.token}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          'content-type': 'application/json',
+          'user-agent': 'cutroom',
+        },
+        body: JSON.stringify({ ref: gh.ref, inputs: { job_id: jobId } }),
+        signal: AbortSignal.timeout(10_000),
+      },
+    )
+    if (res.ok) return null
+    const body = (await res.json().catch(() => null)) as { message?: string } | null
+    return `GitHub answered HTTP ${res.status}${body?.message ? `: ${body.message}` : ''}`
+  } catch (error) {
+    return `Could not reach GitHub: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 export async function pingWorker(): Promise<{ reachable: boolean; busy: boolean }> {
+  if (workerMode() === 'github') {
+    // Nothing to ping: a run starts per job. Busy when a job is running.
+    const database = await db()
+    const [running] = await database
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.status, 'running'))
+      .limit(1)
+    return { reachable: Boolean(github()), busy: Boolean(running) }
+  }
   const base = workerUrl()
   if (!base) return { reachable: false, busy: false }
   try {
@@ -70,42 +151,109 @@ async function getJob(id: string): Promise<JobRow> {
 async function dispatch(jobId: string) {
   const database = await db()
   await database.update(schema.jobs).set({ kickedAt: new Date() }).where(eq(schema.jobs.id, jobId))
+  if (workerMode() === 'github') {
+    const error = await dispatchGithub(jobId)
+    // Shown on the job while it waits to start; cleared once a run was started.
+    await database
+      .update(schema.jobs)
+      .set({
+        progressDetail: error ? `Could not start the GitHub Actions worker: ${error}` : null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(schema.jobs.id, jobId), eq(schema.jobs.status, 'queued')))
+    return
+  }
   await workerFetch('/jobs', { method: 'POST', body: JSON.stringify({ jobId }) })
 }
 
-export async function startJob(projectId: string, type: JobType): Promise<JobRow> {
+const ACTIVE: JobRow['status'][] = ['queued', 'running', 'waiting']
+
+/** Jobs of these types that are still in progress for the project. */
+export async function activeJobs(projectId: string, types: JobType[]): Promise<JobRow[]> {
   const database = await db()
-  const [active] = await database
+  return database
     .select()
     .from(schema.jobs)
     .where(
       and(
         eq(schema.jobs.projectId, projectId),
-        eq(schema.jobs.type, type),
-        inArray(schema.jobs.status, ['queued', 'running', 'waiting']),
+        inArray(schema.jobs.type, types),
+        inArray(schema.jobs.status, ACTIVE),
       ),
     )
-    .limit(1)
-  if (active) return active
+}
 
+const JOB_NAME: Record<JobType, string> = {
+  retime: 'Matching the scenes to the voice-over',
+  publish: 'Finish & schedule',
+  voice: 'Recording the AI voice-over',
+}
+
+/** Refuses to start a job while another one would fight over the same project data. */
+export async function assertNoConflict(projectId: string, type: JobType) {
+  const conflicts: Record<JobType, JobType[]> = {
+    retime: ['voice', 'publish'],
+    voice: ['retime', 'publish'],
+    publish: ['retime', 'voice'],
+  }
+  const [busy] = await activeJobs(projectId, conflicts[type])
+  if (busy) badRequest(`${JOB_NAME[busy.type]} is still running for this video. Wait for it to finish.`)
+}
+
+/** Postgres refused a second active job on a project (the jobs_one_active_per_project index). */
+function isDuplicateActive(error: unknown): boolean {
+  let e = error
+  for (let depth = 0; depth < 5 && e && typeof e === 'object'; depth++) {
+    if ((e as { code?: unknown }).code === '23505') return true
+    e = (e as { cause?: unknown }).cause
+  }
+  return false
+}
+
+export async function startJob(projectId: string, type: JobType): Promise<JobRow> {
+  const [active] = await activeJobs(projectId, [type])
+  if (active) return active
+  await assertNoConflict(projectId, type)
+
+  const database = await db()
   const id = newId()
-  const [job] = await database
-    .insert(schema.jobs)
-    .values({ id, projectId, type, status: 'queued', steps: initialSteps(type), result: {} })
-    .returning()
+  let job: JobRow
+  try {
+    ;[job] = await database
+      .insert(schema.jobs)
+      .values({ id, projectId, type, status: 'queued', steps: initialSteps(type), result: {} })
+      .returning()
+  } catch (error) {
+    if (!isDuplicateActive(error)) throw error
+    // Another request started a job on this project a moment ago.
+    const [same] = await activeJobs(projectId, [type])
+    if (same) return same
+    await assertNoConflict(projectId, type)
+    throw error
+  }
   if (type === 'publish') await updateProject(projectId, { status: 'rendering' })
   await dispatch(id)
   return job
 }
 
-/** Called whenever the dashboard checks on a job. Keeps the worker awake and restarts stalled jobs. */
+/**
+ * Called whenever someone checks on a job (dashboard polling, the daily cron). Keeps a sleeping
+ * worker awake and restarts jobs whose worker went quiet.
+ */
 export async function watchJob(job: JobRow): Promise<void> {
   if (!['queued', 'running'].includes(job.status)) return
   const now = Date.now()
+  const githubMode = workerMode() === 'github'
+  // A GitHub run takes a minute or more to start, so be patient before starting another one.
+  const patience = githubMode ? 10 * 60 : 45
   const kickedAgo = job.kickedAt ? (now - job.kickedAt.getTime()) / 1000 : Number.POSITIVE_INFINITY
-  if (kickedAgo < 45) return
+  if (kickedAgo < patience) return
   const heartbeatAgo = job.heartbeatAt ? (now - job.heartbeatAt.getTime()) / 1000 : Number.POSITIVE_INFINITY
-  const stalled = job.status === 'queued' || heartbeatAgo > STALL_SECONDS
+  const stalled = job.status === 'queued' || heartbeatAgo > (githubMode ? STALL_SECONDS * 4 : STALL_SECONDS)
+  if (githubMode) {
+    if (stalled) await dispatch(job.id)
+    return
+  }
   const database = await db()
   await database.update(schema.jobs).set({ kickedAt: new Date() }).where(eq(schema.jobs.id, job.id))
   if (stalled) {
@@ -113,6 +261,41 @@ export async function watchJob(job: JobRow): Promise<void> {
   } else {
     await workerFetch(`/jobs/${job.id}`, undefined, 5000)
   }
+}
+
+/**
+ * A worker asks to run a job. Granted when nobody holds it, the same worker asks again, or the
+ * holder has gone quiet for longer than STALL_SECONDS. One atomic update, so two workers asking
+ * at the same moment can't both win.
+ */
+export async function claimJob(
+  jobId: string,
+  runnerId: string,
+): Promise<'granted' | 'held' | 'not-runnable'> {
+  const database = await db()
+  const stale = new Date(Date.now() - STALL_SECONDS * 1000)
+  const rows = await database
+    .update(schema.jobs)
+    .set({ runnerId, heartbeatAt: new Date() })
+    .where(
+      and(
+        eq(schema.jobs.id, jobId),
+        inArray(schema.jobs.status, ['queued', 'running']),
+        or(
+          isNull(schema.jobs.runnerId),
+          eq(schema.jobs.runnerId, runnerId),
+          isNull(schema.jobs.heartbeatAt),
+          lt(schema.jobs.heartbeatAt, stale),
+        ),
+      ),
+    )
+    .returning({ id: schema.jobs.id })
+  if (rows.length > 0) return 'granted'
+  const [job] = await database
+    .select({ status: schema.jobs.status })
+    .from(schema.jobs)
+    .where(eq(schema.jobs.id, jobId))
+  return job && ['queued', 'running'].includes(job.status) ? 'held' : 'not-runnable'
 }
 
 const PUBLISH_PHASE: Record<PublishStepKey, 'rendering' | 'uploading'> = {
@@ -125,23 +308,40 @@ const PUBLISH_PHASE: Record<PublishStepKey, 'rendering' | 'uploading'> = {
   archive: 'uploading',
 }
 
-export async function applyEvent(jobId: string, event: WorkerEvent): Promise<void> {
+function projectLink(projectId: string, step: string) {
+  return `${appUrl()}/projects/${projectId}?step=${step}`
+}
+
+/**
+ * Applies one report from a worker. `runnerId` comes from workers that claim jobs; a report from
+ * a worker that no longer holds the job (another one took over, or you stopped it) is refused,
+ * and that worker stops.
+ */
+export async function applyEvent(jobId: string, event: WorkerEvent, runnerId?: string | null): Promise<void> {
   const database = await db()
   const job = await getJob(jobId)
+  const lost = () => new HttpError(409, 'Another worker is running this job, or it was stopped.')
+  if (runnerId && job.runnerId !== runnerId) throw lost()
   const now = new Date()
+  // Every write re-checks that this worker still holds the job, so a Stop or a takeover that lands
+  // between the read above and the write is never overwritten.
+  const owned = runnerId
+    ? and(eq(schema.jobs.id, jobId), eq(schema.jobs.runnerId, runnerId))
+    : eq(schema.jobs.id, jobId)
+  const write = async (values: PgUpdateSetSource<typeof schema.jobs>) => {
+    const rows = await database.update(schema.jobs).set(values).where(owned).returning({ id: schema.jobs.id })
+    if (rows.length === 0) throw lost()
+  }
 
   if (event.type === 'step' && event.status === 'running' && event.progress !== undefined) {
-    await database
-      .update(schema.jobs)
-      .set({
-        status: 'running',
-        progress: event.progress,
-        progressStep: event.key,
-        progressDetail: event.detail ?? null,
-        heartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(eq(schema.jobs.id, jobId))
+    await write({
+      status: 'running',
+      progress: event.progress,
+      progressStep: event.key,
+      progressDetail: event.detail ?? null,
+      heartbeatAt: now,
+      updatedAt: now,
+    })
     return
   }
 
@@ -159,18 +359,15 @@ export async function applyEvent(jobId: string, event: WorkerEvent): Promise<voi
       }
     })
     const running = event.status === 'running'
-    await database
-      .update(schema.jobs)
-      .set({
-        steps,
-        status: 'running',
-        heartbeatAt: now,
-        updatedAt: now,
-        progress: running ? null : job.progress,
-        progressStep: running ? event.key : job.progressStep,
-        progressDetail: running ? (event.detail ?? null) : job.progressDetail,
-      })
-      .where(eq(schema.jobs.id, jobId))
+    await write({
+      steps,
+      status: 'running',
+      heartbeatAt: now,
+      updatedAt: now,
+      progress: running ? null : job.progress,
+      progressStep: running ? event.key : job.progressStep,
+      progressDetail: running ? (event.detail ?? null) : job.progressDetail,
+    })
     if (job.type === 'publish' && running) {
       await updateProject(job.projectId, {
         status: PUBLISH_PHASE[event.key as PublishStepKey] ?? 'rendering',
@@ -180,14 +377,11 @@ export async function applyEvent(jobId: string, event: WorkerEvent): Promise<voi
   }
 
   if (event.type === 'result') {
-    await database
-      .update(schema.jobs)
-      .set({
-        result: sql`${schema.jobs.result} || ${JSON.stringify(event.patch)}::jsonb`,
-        heartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(eq(schema.jobs.id, jobId))
+    await write({
+      result: sql`${schema.jobs.result} || ${JSON.stringify(event.patch)}::jsonb`,
+      heartbeatAt: now,
+      updatedAt: now,
+    })
     await applyResultToProject(job.projectId, event.patch)
     return
   }
@@ -196,18 +390,26 @@ export async function applyEvent(jobId: string, event: WorkerEvent): Promise<voi
     const steps = job.steps.map((s) =>
       s.key === event.key ? { ...s, status: 'waiting' as const, detail: event.detail } : s,
     )
-    await database
-      .update(schema.jobs)
-      .set({
-        steps,
-        status: 'waiting',
-        progress: null,
-        progressDetail: event.detail ?? null,
-        heartbeatAt: now,
-        updatedAt: now,
-      })
-      .where(eq(schema.jobs.id, jobId))
+    await write({
+      steps,
+      status: 'waiting',
+      progress: null,
+      progressDetail: event.detail ?? null,
+      heartbeatAt: now,
+      updatedAt: now,
+      runnerId: null,
+    })
     await updateProject(job.projectId, { status: 'awaiting_approval' })
+    if (job.status !== 'waiting') {
+      const project = await getProjectRow(job.projectId)
+      const post = project.post ?? null
+      notify({
+        kind: 'approval',
+        title: `Ready for your approval: ${project.title || 'Untitled video'}`,
+        body: post?.title ? `Title: ${post.title}` : 'Check the title, description and tags, then approve.',
+        url: projectLink(job.projectId, 'publish'),
+      })
+    }
     return
   }
 
@@ -217,40 +419,56 @@ export async function applyEvent(jobId: string, event: WorkerEvent): Promise<voi
         ? { ...s, status: 'failed' as const, detail: event.error, endedAt: now.toISOString() }
         : s,
     )
-    await database
-      .update(schema.jobs)
-      .set({
-        steps,
-        status: 'failed',
-        error: event.error,
-        progress: null,
-        heartbeatAt: now,
-        updatedAt: now,
-        finishedAt: now,
-      })
-      .where(eq(schema.jobs.id, jobId))
+    await write({
+      steps,
+      status: 'failed',
+      error: event.error,
+      progress: null,
+      heartbeatAt: now,
+      updatedAt: now,
+      finishedAt: now,
+      runnerId: null,
+    })
     if (job.type === 'publish') await updateProject(job.projectId, { status: 'failed' })
+    if (job.status !== 'failed') {
+      const project = await getProjectRow(job.projectId)
+      notify({
+        kind: 'failed',
+        title: `Stopped: ${project.title || 'Untitled video'}`,
+        body: `${JOB_NAME[job.type]} stopped. ${event.error}`,
+        url: projectLink(job.projectId, job.type === 'publish' ? 'publish' : 'voiceover'),
+      })
+    }
     return
   }
 
   // done
-  await database
-    .update(schema.jobs)
-    .set({
-      status: 'done',
-      progress: null,
-      progressDetail: null,
-      heartbeatAt: now,
-      updatedAt: now,
-      finishedAt: now,
-    })
-    .where(eq(schema.jobs.id, jobId))
-  if (job.type === 'publish') await finishPublish(job.projectId, jobId)
+  await write({
+    status: 'done',
+    progress: null,
+    progressDetail: null,
+    heartbeatAt: now,
+    updatedAt: now,
+    finishedAt: now,
+    runnerId: null,
+  })
+  if (job.type === 'publish' && job.status !== 'done') await finishPublish(job.projectId, jobId)
 }
 
 async function applyResultToProject(projectId: string, patch: JobResult) {
   const database = await db()
   const update: Parameters<typeof updateProject>[1] = {}
+  if (patch.voiceover) {
+    // A new AI voice-over replaces the old file; timing follows in a later result.
+    const project = await getProjectRow(projectId)
+    if (project.voiceoverUrl && project.voiceoverUrl !== patch.voiceover.url) {
+      await deleteFile(project.voiceoverUrl)
+    }
+    update.voiceoverUrl = patch.voiceover.url
+    update.voiceoverName = patch.voiceover.name
+    update.voiceoverDuration = patch.voiceover.duration
+    update.transcript = null
+  }
   if (patch.transcript) {
     update.transcript = patch.transcript
     update.voiceoverDuration = patch.transcript.duration
@@ -299,6 +517,24 @@ async function finishPublish(projectId: string, jobId: string) {
     await Promise.all(archived.map((url) => deleteFile(url)))
     await updateProject(projectId, { archived: true })
   }
+
+  const title = project.post?.title || project.title || 'Untitled video'
+  notify({
+    kind: 'posted',
+    title:
+      status === 'scheduled'
+        ? `Scheduled: ${title}`
+        : status === 'published'
+          ? `Posted: ${title}`
+          : `Rendered: ${title}`,
+    body:
+      status === 'scheduled' && project.scheduledAt
+        ? `Goes live ${project.scheduledAt.toUTCString()}.`
+        : project.youtubeVideoId
+          ? `https://youtu.be/${project.youtubeVideoId}`
+          : 'The video is rendered. YouTube is not connected, so it was not posted.',
+    url: projectLink(projectId, 'publish'),
+  })
 }
 
 export async function approveJob(jobId: string) {
@@ -306,6 +542,9 @@ export async function approveJob(jobId: string) {
   if (job.status !== 'waiting') badRequest('This job is not waiting for approval.')
   const project = await getProjectRow(job.projectId)
   if (!project.post.title.trim()) badRequest('Add a title before approving.')
+  if (project.channelYoutubeId && !(await channelFor(project.channelId, project.channelYoutubeId))) {
+    badRequest("This video's YouTube channel was disconnected. Reconnect it in Settings first.")
+  }
   const database = await db()
   const steps = job.steps.map((s) => (s.key === 'approve' ? { ...s, status: 'pending' as const } : s))
   await database
@@ -314,6 +553,9 @@ export async function approveJob(jobId: string) {
       approved: true,
       status: 'queued',
       steps,
+      runnerId: null,
+      progress: null,
+      progressDetail: null,
       // Upload exactly what the user sees on the Publish tab.
       result: sql`${schema.jobs.result} || ${JSON.stringify({ post: project.post })}::jsonb`,
       updatedAt: new Date(),
@@ -326,21 +568,31 @@ export async function approveJob(jobId: string) {
 export async function retryJob(jobId: string) {
   const job = await getJob(jobId)
   if (job.status !== 'failed') badRequest('Only failed jobs can be retried.')
+  await assertNoConflict(job.projectId, job.type)
   const database = await db()
   const steps = job.steps.map((s) =>
     s.status === 'failed' || s.status === 'running' ? { ...s, status: 'pending' as const } : s,
   )
-  await database
-    .update(schema.jobs)
-    .set({
-      status: 'queued',
-      error: null,
-      steps,
-      attempts: job.attempts + 1,
-      finishedAt: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.jobs.id, jobId))
+  try {
+    await database
+      .update(schema.jobs)
+      .set({
+        status: 'queued',
+        error: null,
+        steps,
+        runnerId: null,
+        progress: null,
+        progressDetail: null,
+        attempts: job.attempts + 1,
+        finishedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.jobs.id, jobId))
+  } catch (error) {
+    if (isDuplicateActive(error))
+      badRequest('Another job is already running for this video. Wait for it to finish.')
+    throw error
+  }
   if (job.type === 'publish') await updateProject(job.projectId, { status: 'rendering' })
   await dispatch(jobId)
 }
@@ -351,9 +603,16 @@ export async function cancelJob(jobId: string) {
   const database = await db()
   await database
     .update(schema.jobs)
-    .set({ status: 'failed', error: 'Stopped by you.', finishedAt: new Date(), updatedAt: new Date() })
+    .set({
+      status: 'failed',
+      error: 'Stopped by you.',
+      runnerId: null,
+      finishedAt: new Date(),
+      updatedAt: new Date(),
+    })
     .where(eq(schema.jobs.id, jobId))
-  await workerFetch(`/jobs/${jobId}`, { method: 'DELETE' })
+  // The worker service stops at once; a GitHub run stops at its next report (it is refused).
+  if (workerMode() === 'render') await workerFetch(`/jobs/${jobId}`, { method: 'DELETE' })
   if (job.type === 'publish') await updateProject(job.projectId, { status: 'draft' })
 }
 
@@ -366,8 +625,8 @@ export async function resetPublish(projectId: string) {
     .where(and(eq(schema.jobs.projectId, projectId), eq(schema.jobs.type, 'publish')))
     .orderBy(desc(schema.jobs.createdAt))
     .limit(1)
-  if (job && ['queued', 'running', 'waiting'].includes(job.status)) await cancelJob(job.id)
-  await updateProject(projectId, { status: 'draft', youtubeVideoId: null })
+  if (job && ACTIVE.includes(job.status)) await cancelJob(job.id)
+  await updateProject(projectId, { status: 'draft', youtubeVideoId: null, stats: null })
 }
 
 export async function pendingJobIds(): Promise<string[]> {
@@ -382,13 +641,16 @@ export async function pendingJobIds(): Promise<string[]> {
 
 export async function buildPayload(jobId: string, request: Request): Promise<JobPayload> {
   const job = await getJob(jobId)
-  const [projectRow, scenes, characters, settings, youtube, drive] = await Promise.all([
-    getProjectRow(job.projectId),
+  const projectRow = await getProjectRow(job.projectId)
+  const [scenes, characters, settings, channel, drive, insights] = await Promise.all([
     getScenes(job.projectId),
     getCharacters(job.projectId),
     getSettings(),
-    getConnection('youtube'),
-    getConnection('drive'),
+    channelFor(projectRow.channelId, projectRow.channelYoutubeId),
+    getDrive(),
+    job.type === 'publish'
+      ? topTitles(projectRow.channelId, projectRow.channelYoutubeId)
+      : Promise.resolve([]),
   ])
   const project = toProjectDTO(projectRow)
   return {
@@ -424,14 +686,18 @@ export async function buildPayload(jobId: string, request: Request): Promise<Job
       post: project.post,
       scheduledAt: project.scheduledAt,
       driveFolderId: project.driveFolderId,
+      textOverlays: project.textOverlays,
+      voice: project.voice,
     },
     scenes: scenes.map(toSceneDTO),
     characters: characters.map(toCharacterDTO),
     settings,
     google: {
-      youtubeRefreshToken: youtube?.refreshToken ?? null,
+      youtubeRefreshToken: channel?.refreshToken ?? null,
+      youtubeChannelMissing: !channel && Boolean(projectRow.channelYoutubeId),
       driveRefreshToken: drive?.refreshToken ?? null,
     },
+    insights: { topTitles: insights },
     appUrl: appUrl(request),
   }
 }

@@ -59,9 +59,17 @@ interface SpawnOptions {
   onLine?: (line: string) => void
   /** Keep the whole stdout (ffprobe JSON). */
   collectStdout?: boolean
+  /** Keep the whole log instead of its tail (filters like silencedetect report there). */
+  collectStderr?: boolean
 }
 
-function runTool(bin: string, args: string[], options: SpawnOptions): Promise<string> {
+const STDERR_MAX_BYTES = 8 * 1024 * 1024
+
+function runTool(
+  bin: string,
+  args: string[],
+  options: SpawnOptions,
+): Promise<{ stdout: string; stderr: string }> {
   const { signal } = options
   if (signal?.aborted) return Promise.reject(abortError(signal))
 
@@ -75,6 +83,7 @@ function runTool(bin: string, args: string[], options: SpawnOptions): Promise<st
     let stdout = ''
     let pending = ''
     let stderrTail = ''
+    let stderrAll = ''
     let aborted = false
     let settled = false
 
@@ -90,7 +99,7 @@ function runTool(bin: string, args: string[], options: SpawnOptions): Promise<st
       settled = true
       signal?.removeEventListener('abort', onAbort)
       if (error) reject(error)
-      else resolve(stdout)
+      else resolve({ stdout, stderr: options.collectStderr ? stderrAll : stderrTail })
     }
 
     child.stdout.setEncoding('utf8')
@@ -107,6 +116,7 @@ function runTool(bin: string, args: string[], options: SpawnOptions): Promise<st
     child.stderr.on('data', (chunk: string) => {
       stderrTail += chunk
       if (stderrTail.length > STDERR_TAIL_BYTES) stderrTail = stderrTail.slice(-STDERR_TAIL_BYTES)
+      if (options.collectStderr && stderrAll.length < STDERR_MAX_BYTES) stderrAll += chunk
     })
 
     // A failed spawn on Windows also errors the stdio pipes (ENOTCONN); unhandled, that would
@@ -182,7 +192,11 @@ export async function runFfmpeg(args: string[], options: FfmpegRunOptions = {}):
 }
 
 export async function runFfprobe(args: string[], options: { cwd?: string; signal?: AbortSignal } = {}) {
-  return runTool(ffprobePath(), ['-hide_banner', '-v', 'error', ...args], { ...options, collectStdout: true })
+  const { stdout } = await runTool(ffprobePath(), ['-hide_banner', '-v', 'error', ...args], {
+    ...options,
+    collectStdout: true,
+  })
+  return stdout
 }
 
 /** Container duration in seconds. */
@@ -268,4 +282,17 @@ export function defaultThreads(): number {
   if (limit !== null) cores = Math.min(cores, Math.max(1, Math.ceil(limit)))
   cachedThreads = Math.max(1, Math.min(cores, 4))
   return cachedThreads
+}
+
+/**
+ * Runs ffmpeg at info log level and returns its whole log, for analysis filters that report there
+ * (silencedetect, volumedetect). `args` are the inputs, filters and output (usually `-f null -`).
+ */
+export async function ffmpegLog(args: string[], signal?: AbortSignal): Promise<string> {
+  const { stderr } = await runTool(
+    ffmpegPath(),
+    ['-hide_banner', '-nostdin', '-nostats', '-loglevel', 'info', ...args],
+    { signal, collectStderr: true },
+  )
+  return stderr
 }

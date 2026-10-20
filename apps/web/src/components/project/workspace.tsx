@@ -2,7 +2,7 @@
 
 import { totalDuration } from '@cutroom/shared/timing'
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronLeft, MoreHorizontal, Trash2 } from 'lucide-react'
+import { Check, ChevronLeft, Layers, MoreHorizontal, Smartphone, Trash2 } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -12,12 +12,13 @@ import { Button, Menu, StatusPill, useConfirm } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ProjectFull } from '@/lib/dto'
-import { keys, useProject, useSaver } from '@/lib/hooks'
+import { keys, useProject, useSaver, useSeriesList } from '@/lib/hooks'
 import { nextStep, STATUS_LABEL, type StepId, statusTone } from '@/lib/stage'
 import { BriefStep } from './brief'
 import { CharactersStep } from './characters'
 import { ImagesStep } from './images'
 import { PreviewStep } from './preview'
+import { SeriesDialog, ShortDialog } from './project-dialogs'
 import { PublishStep } from './publish'
 import { ScriptStep } from './script'
 import { VoiceoverStep } from './voiceover'
@@ -95,6 +96,9 @@ function Loaded({ data }: { data: ProjectFull }) {
   const next = nextStep(stage)
   const step = (params.get('step') as StepId) || next.step
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(params.get('scene'))
+  const [dialog, setDialog] = useState<'short' | 'series' | null>(null)
+  const seriesList = useSeriesList()
+  const series = seriesList.data?.find((s) => s.id === project.seriesId) ?? null
 
   const goTo = useCallback(
     (target: StepId, sceneId?: string) => {
@@ -162,6 +166,12 @@ function Loaded({ data }: { data: ProjectFull }) {
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-2">
             <TitleEditor value={project.title} onChange={(title) => saver.project({ title })} />
             <StatusPill tone={statusTone(project.status)}>{STATUS_LABEL[project.status]}</StatusPill>
+            {series && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-[3px] text-[12.5px] text-ink-2">
+                <Layers className="size-3" aria-hidden />
+                {series.name}
+              </span>
+            )}
             <span className="text-[12.5px] text-ink-3" aria-live="polite">
               {saveState === 'saving'
                 ? 'Saving…'
@@ -183,6 +193,21 @@ function Loaded({ data }: { data: ProjectFull }) {
             />
           }
           items={[
+            ...(project.format === 'landscape' && scenes.length > 0
+              ? [
+                  {
+                    label: 'Make a Short from this…',
+                    onSelect: () => setDialog('short'),
+                    icon: <Smartphone className="size-3.5" />,
+                  },
+                ]
+              : []),
+            {
+              label: series ? `Update “${series.name}” from this…` : 'Save as a series…',
+              onSelect: () => setDialog('series'),
+              icon: <Layers className="size-3.5" />,
+            },
+            'divider' as const,
             {
               label: 'Delete project',
               danger: true,
@@ -280,6 +305,17 @@ function Loaded({ data }: { data: ProjectFull }) {
         />
       </div>
       {confirmDialog}
+      <ShortDialog
+        data={data}
+        open={dialog === 'short'}
+        onOpenChange={(open) => setDialog(open ? 'short' : null)}
+      />
+      <SeriesDialog
+        data={data}
+        series={series}
+        open={dialog === 'series'}
+        onOpenChange={(open) => setDialog(open ? 'series' : null)}
+      />
     </div>
   )
 }
@@ -335,7 +371,10 @@ function TitleEditor({ value, onChange }: { value: string; onChange: (value: str
 /** Toasts (and a browser notification when the tab is hidden) when a job finishes or needs you. */
 function useJobNotifications(data: ProjectFull) {
   const previous = useRef<Record<string, string>>({})
-  const jobs = useMemo(() => [data.jobs.retime, data.jobs.publish].filter(Boolean), [data.jobs])
+  const jobs = useMemo(
+    () => [data.jobs.retime, data.jobs.publish, data.jobs.voice].filter(Boolean),
+    [data.jobs],
+  )
   useEffect(() => {
     for (const job of jobs) {
       if (!job) continue
@@ -346,6 +385,9 @@ function useJobNotifications(data: ProjectFull) {
       let message: string | null = null
       if (job.type === 'retime' && job.status === 'done') message = 'Scenes now match the voice-over'
       if (job.type === 'retime' && job.status === 'failed') message = `Timing failed: ${job.error}`
+      if (job.type === 'voice' && job.status === 'done') message = 'AI voice-over recorded and matched'
+      if (job.type === 'voice' && job.status === 'failed' && job.error !== 'Stopped by you.')
+        message = `Voice-over failed: ${job.error}`
       if (job.type === 'publish' && job.status === 'waiting') message = 'Ready for your approval'
       if (job.type === 'publish' && job.status === 'failed') message = `Stopped: ${job.error}`
       if (job.type === 'publish' && job.status === 'done') {

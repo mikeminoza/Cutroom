@@ -3,12 +3,20 @@
 import { createPartFromUri, GoogleGenAI } from '@google/genai'
 import { z } from 'zod'
 import { type Chapter, chaptersToText, countWords, normalizeChapters } from './timing'
-import { MOTIONS, type Motion, type TranscriptSegment, type VideoFormat } from './types'
+import {
+  MOTIONS,
+  type Motion,
+  normalizeTransition,
+  TRANSITIONS,
+  type TranscriptSegment,
+  type Transition,
+  type VideoFormat,
+} from './types'
 
 export class AiError extends Error {
   constructor(
     message: string,
-    readonly code: 'missing_key' | 'rate_limited' | 'bad_output' | 'failed',
+    readonly code: 'missing_key' | 'rate_limited' | 'bad_output' | 'failed' | 'billing',
   ) {
     super(message)
   }
@@ -16,6 +24,16 @@ export class AiError extends Error {
 
 export function geminiModel(): string {
   return process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+}
+
+/** Image model. Image generation is not on Gemini's free tier: the key's project needs billing. */
+export function geminiImageModel(): string {
+  return process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image'
+}
+
+/** Text-to-speech model (on the free tier). */
+export function geminiTtsModel(): string {
+  return process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts'
 }
 
 export function hasGeminiKey(): boolean {
@@ -28,25 +46,61 @@ function client(): GoogleGenAI {
   return new GoogleGenAI({ apiKey })
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** Waits, or rejects as soon as `signal` aborts. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 
-async function withRetry<T>(run: () => Promise<T>): Promise<T> {
+/** Rate limited, or a temporary server problem: worth asking again. */
+const RETRY_STATUSES = [429, 500, 502, 503, 504]
+
+/** The HTTP status of an API error from the SDK, or null for other errors (network, parsing). */
+function httpStatus(error: unknown): number | null {
+  const status = (error as { status?: unknown } | null)?.status
+  return typeof status === 'number' ? status : null
+}
+
+async function withRetry<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt++) {
+    signal?.throwIfAborted()
     try {
       return await run()
     } catch (error) {
+      // Stopped by the caller: not a failure to retry or explain.
+      if (signal?.aborted) throw error
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
-      const retryable = /429|RESOURCE_EXHAUSTED|503|UNAVAILABLE|500|INTERNAL|overloaded|fetch failed/i.test(
-        message,
-      )
+      // A quota of 0 is not a rate limit: the model is not on the free tier. Waiting won't help.
+      if (/limit:\s*0\b/.test(message)) {
+        throw new AiError(
+          'This Gemini model is not on the free tier. Turn on billing for the Google Cloud project of your Gemini API key, or choose another model in the environment settings.',
+          'billing',
+        )
+      }
+      // Decide by the HTTP status the SDK reports: the message is the whole error body, which can
+      // mention "500" or "internal" in a request that will never succeed.
+      const status = httpStatus(error)
+      const retryable =
+        status !== null
+          ? RETRY_STATUSES.includes(status)
+          : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
       if (!retryable || attempt === 3) break
-      await sleep(1500 * 2 ** attempt + Math.random() * 500)
+      await sleep(1500 * 2 ** attempt + Math.random() * 500, signal)
     }
   }
   const message = lastError instanceof Error ? lastError.message : String(lastError)
-  if (/429|RESOURCE_EXHAUSTED/i.test(message)) {
+  if (httpStatus(lastError) === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
     throw new AiError('Gemini free-tier limit reached. Wait a minute and try again.', 'rate_limited')
   }
   if (lastError instanceof AiError) throw lastError
@@ -134,7 +188,7 @@ export interface SceneDraft {
   shot: string
   motion: Motion
   onScreenText: string
-  transition: string
+  transition: Transition
   notes: string
 }
 
@@ -170,8 +224,8 @@ Rules:
 - characters: names of recurring characters visible in the image (from the list below), or [].
 - shot: camera framing, e.g. "wide establishing shot", "medium shot", "close-up", "over-the-shoulder", "top-down".
 - motion: one of ${MOTIONS.join(', ')} — pick what suits the shot; vary it between scenes.
-- onScreenText: a short optional overlay (max 5 words) or "".
-- transition: "cut" unless a different one clearly helps.
+- onScreenText: a short optional title shown at the top of the frame (max 5 words), or "". Use it sparingly: key numbers, names, chapter-like moments.
+- transition: how this scene's picture replaces the previous one: "cut" (the default, most scenes), "crossfade" for a soft change of place or time, "fade-black" for a big jump or the closing scene.
 - notes: optional sound-effect or music cue, or "".
 
 Format: ${input.format === 'portrait' ? 'vertical 9:16' : 'horizontal 16:9'}
@@ -200,7 +254,7 @@ ${input.script.trim()}
               shot: str,
               motion: { type: 'string', enum: MOTIONS },
               onScreenText: str,
-              transition: str,
+              transition: { type: 'string', enum: TRANSITIONS },
               notes: str,
             },
             required: ['narration', 'visual', 'imagePrompt', 'characters', 'shot', 'motion'],
@@ -215,6 +269,8 @@ ${input.script.trim()}
   const scenes = result.scenes.map((s) => ({
     ...s,
     motion: (MOTIONS as string[]).includes(s.motion) ? (s.motion as Motion) : 'zoom-in',
+    transition: normalizeTransition(s.transition),
+    onScreenText: s.onScreenText.trim().slice(0, 200),
   }))
   const original = countWords(input.script)
   const kept = scenes.reduce((n, s) => n + countWords(s.narration), 0)
@@ -308,6 +364,14 @@ export interface PostDraftInput {
   scenes: { start: number; narration: string }[]
   defaultTags: string[]
   descriptionFooter: string
+  /** The channel's most-watched titles so far, so new titles learn from what works. */
+  topTitles?: { title: string; views: number }[]
+}
+
+function topTitlesNote(top: { title: string; views: number }[] | undefined): string {
+  if (!top?.length) return ''
+  const list = top.map((t) => `- "${t.title}" (${t.views.toLocaleString('en-US')} views)`).join('\n')
+  return `\nTitles that got the most views on this channel so far. Learn from their style, length and wording, but do not copy them:\n${list}\n`
 }
 
 export interface PostDraft {
@@ -334,7 +398,7 @@ Length: ${Math.round(input.duration)} seconds
 
 Scenes (index, start time, narration):
 ${sceneList}
-
+${topTitlesNote(input.topTitles)}
 Return:
 - titleOptions: 5 distinct titles, max 70 characters, curiosity-driven but honest, no clickbait lies, no ALL CAPS words, no emoji.
 - description: 2 short paragraphs (hook + what the viewer learns). Do NOT include chapters, hashtags or links.
@@ -439,4 +503,226 @@ export function fitTags(tags: string[]): string[] {
     total += cost
   }
   return result
+}
+
+// ---------------------------------------------------------------------------
+// Voice-over (text-to-speech)
+
+/**
+ * Reads `text` aloud with a prebuilt Gemini voice. Returns the audio as Gemini sends it: a WAV
+ * file, or raw 16-bit PCM described by the MIME type (e.g. "audio/L16;codec=pcm;rate=24000").
+ * `style` sets the delivery for the whole read (newer TTS models only; older ones ignore it).
+ */
+export async function synthesizeSpeech(
+  text: string,
+  options: { voice: string; style?: string; signal?: AbortSignal },
+): Promise<{ data: Buffer; mimeType: string }> {
+  const ai = client()
+  const model = geminiTtsModel()
+  const style = options.style?.trim()
+  const part: { text: string; speechMetadata?: { style: string } } = { text }
+  if (style && !/^gemini-2\./.test(model)) part.speechMetadata = { style }
+  // An empty answer happens now and then; asking again usually works.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model,
+          contents: [{ role: 'user', parts: [part] }],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: options.voice } } },
+            abortSignal: options.signal,
+          },
+        }),
+      options.signal,
+    )
+    const audio = response.candidates?.[0]?.content?.parts?.find(
+      (p) => p.inlineData?.data && (p.inlineData.mimeType ?? '').startsWith('audio/'),
+    )
+    if (audio?.inlineData?.data) {
+      return {
+        data: Buffer.from(audio.inlineData.data, 'base64'),
+        mimeType: audio.inlineData.mimeType ?? 'audio/L16;rate=24000',
+      }
+    }
+  }
+  throw new AiError('Gemini returned no audio for part of the script. Try again.', 'bad_output')
+}
+
+// ---------------------------------------------------------------------------
+// Images
+
+export interface ReferenceImage {
+  data: Buffer
+  mimeType: string
+}
+
+/** Gemini image models take at most this many reference images in one request (Pro: 6). */
+export const MAX_REFERENCE_IMAGES = 6
+
+/** Generates one picture from a prompt, matching the attached reference images (characters). */
+export async function generateImage(input: {
+  prompt: string
+  references: ReferenceImage[]
+  aspectRatio: '16:9' | '9:16'
+}): Promise<{ data: Buffer; mimeType: string }> {
+  const ai = client()
+  const imageSize = process.env.GEMINI_IMAGE_SIZE?.trim() || undefined
+  const parts = [
+    { text: input.prompt },
+    ...input.references.slice(0, MAX_REFERENCE_IMAGES).map((r) => ({
+      inlineData: { mimeType: r.mimeType, data: r.data.toString('base64') },
+    })),
+  ]
+  const response = await withRetry(() =>
+    ai.models.generateContent({
+      model: geminiImageModel(),
+      contents: [{ role: 'user', parts }],
+      config: {
+        responseModalities: ['TEXT', 'IMAGE'],
+        imageConfig: { aspectRatio: input.aspectRatio, ...(imageSize ? { imageSize } : {}) },
+      },
+    }),
+  )
+  const candidate = response.candidates?.[0]
+  const image = candidate?.content?.parts?.find(
+    (p) => p.inlineData?.data && (p.inlineData.mimeType ?? '').startsWith('image/'),
+  )
+  if (image?.inlineData?.data) {
+    return {
+      data: Buffer.from(image.inlineData.data, 'base64'),
+      mimeType: image.inlineData.mimeType ?? 'image/png',
+    }
+  }
+  const blocked = response.promptFeedback?.blockReason
+  const finish = candidate?.finishReason
+  if (blocked || (finish && finish !== 'STOP')) {
+    throw new AiError(
+      `Gemini would not make this image (${blocked ?? finish}). Reword the prompt and try again.`,
+      'bad_output',
+    )
+  }
+  const said = candidate?.content?.parts
+    ?.map((p) => p.text)
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 200)
+  throw new AiError(`Gemini did not return an image${said ? `: ${said}` : ''}. Try again.`, 'bad_output')
+}
+
+// ---------------------------------------------------------------------------
+// Video ideas
+
+export interface IdeaRequest {
+  niche: string
+  audience: string
+  tone: string
+  language: string
+  format: VideoFormat
+  count: number
+  direction: string
+  /** Titles and topics already made or planned, so ideas don't repeat them. */
+  avoid: string[]
+  topTitles: { title: string; views: number }[]
+}
+
+export async function generateIdeas(input: IdeaRequest): Promise<{ title: string; angle: string }[]> {
+  const avoid = input.avoid
+    .filter(Boolean)
+    .slice(0, 80)
+    .map((t) => `- ${t.slice(0, 120)}`)
+    .join('\n')
+  const prompt = [
+    `Suggest ${input.count} ideas for ${input.format === 'portrait' ? 'YouTube Shorts (under a minute)' : 'YouTube videos'} for this channel.`,
+    `Channel niche: ${input.niche || 'general interest'}`,
+    input.audience && `Audience: ${input.audience}`,
+    input.tone && `Tone: ${input.tone}`,
+    `Language: ${input.language || 'English'}`,
+    input.direction && `Direction from the creator: ${input.direction}`,
+    topTitlesNote(input.topTitles).trim(),
+    avoid && `Already made or planned (do not repeat these or make near-duplicates):\n${avoid}`,
+    'Each idea: a working title (max 70 characters, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from. Make the ideas varied.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        ideas: {
+          type: 'array',
+          items: { type: 'object', properties: { title: str, angle: str }, required: ['title', 'angle'] },
+        },
+      },
+      required: ['ideas'],
+    },
+    z.object({ ideas: z.array(z.object({ title: z.string(), angle: z.string() })).min(1) }),
+    'You are a YouTube strategist who finds video ideas that people search for and click on.',
+  )
+  return result.ideas
+    .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
+    .filter((i) => i.title)
+    .slice(0, input.count)
+}
+
+// ---------------------------------------------------------------------------
+// Shorts from long videos
+
+/**
+ * Picks the run of consecutive scenes that works best on its own as a Short: a strong hook, one
+ * complete idea, at most `maxSeconds` long. Indexes are positions in `scenes`.
+ */
+export async function pickShortMoment(input: {
+  title: string
+  topic: string
+  scenes: { start: number; end: number; narration: string }[]
+  maxSeconds: number
+}): Promise<{ startIndex: number; endIndex: number; title: string; reason: string }> {
+  const list = input.scenes
+    .map((s, i) => `[${i}] ${s.start.toFixed(1)}–${s.end.toFixed(1)}s: ${s.narration.slice(0, 220)}`)
+    .join('\n')
+  const prompt = `This long YouTube video is being cut into a YouTube Short.
+Title: ${input.title || '(none)'}
+Topic: ${input.topic || '(none)'}
+
+Scenes (index, time, narration):
+${list}
+
+Pick ONE run of consecutive scenes that works on its own as a Short: it opens with a hook, covers one complete idea, and makes sense without the rest of the video. Its total length must be at most ${input.maxSeconds} seconds (end of the last scene minus start of the first). Also write a Short title (max 70 characters, no emoji) and one sentence on why this part works.`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        startIndex: { type: 'integer' },
+        endIndex: { type: 'integer' },
+        title: str,
+        reason: str,
+      },
+      required: ['startIndex', 'endIndex', 'title', 'reason'],
+    },
+    z.object({ startIndex: z.number(), endIndex: z.number(), title: z.string(), reason: z.string() }),
+    'You are a video editor who turns long videos into Shorts that hold attention.',
+  )
+  return {
+    ...clampShortPick(input.scenes, result.startIndex, result.endIndex, input.maxSeconds),
+    title: result.title.trim().slice(0, 100),
+    reason: result.reason.trim(),
+  }
+}
+
+/** Keeps a pick valid whatever came back: in range, in order, and within the length limit. */
+export function clampShortPick(
+  scenes: { start: number; end: number }[],
+  startIndex: number,
+  endIndex: number,
+  maxSeconds: number,
+): { startIndex: number; endIndex: number } {
+  const last = scenes.length - 1
+  const start = Math.min(Math.max(0, Math.round(startIndex)), last)
+  let end = Math.min(Math.max(start, Math.round(endIndex)), last)
+  while (end > start && scenes[end].end - scenes[start].start > maxSeconds) end--
+  return { startIndex: start, endIndex: end }
 }

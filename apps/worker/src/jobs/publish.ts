@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { composeDescription, hasGeminiKey, writePostDetails } from '@cutroom/shared/ai'
-import { captionWords } from '@cutroom/shared/captions'
+import { captionWords, overlayEvents } from '@cutroom/shared/captions'
 import {
   addToPlaylist,
   clientFromRefresh,
@@ -19,8 +19,17 @@ import {
   uploadVideo,
 } from '@cutroom/shared/google'
 import type { JobPayload } from '@cutroom/shared/protocol'
-import { downloadTo, guessContentType, putLocalFile, safeName, storageDriver } from '@cutroom/shared/storage'
+import {
+  downloadTo,
+  fileSize,
+  guessContentType,
+  putLocalFile,
+  safeName,
+  storageDriver,
+} from '@cutroom/shared/storage'
 import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
+import { normalizeTransition } from '@cutroom/shared/types'
+import { runFfmpeg } from '../render/ffmpeg'
 import { renderVideo } from '../render/render'
 import { errorMessage, extensionOf, imageMime, probeSeconds } from '../util'
 import type { JobContext } from './context'
@@ -85,6 +94,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       fit: scene.fit,
       focusX: scene.focusX,
       focusY: scene.focusY,
+      transition: normalizeTransition(scene.transition),
     }))
     const started = Date.now()
     const output = await renderVideo({
@@ -96,6 +106,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       voiceoverPath,
       duration,
       words: captionWords(project.transcript, scenes),
+      overlays: project.textOverlays ? overlayEvents(scenes, duration) : [],
       musicPath,
       musicVolume: project.musicVolume,
       signal: ctx.signal,
@@ -222,6 +233,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         scenes: scenes.map((s) => ({ start: s.start, narration: s.narration })),
         defaultTags: settings.defaults.tags,
         descriptionFooter: settings.defaults.descriptionFooter,
+        topTitles: payload.insights?.topTitles ?? [],
       })
       post = {
         ...project.post,
@@ -262,7 +274,9 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
 
   // ---------------------------------------------------------------- youtube
   if (!ctx.finished('youtube')) {
-    if (!youtube) {
+    if (!youtube && payload.google.youtubeChannelMissing) {
+      throw new Error("This video's YouTube channel was disconnected. Reconnect it in Settings, then retry.")
+    } else if (!youtube) {
       await ctx.step('youtube', 'skipped', 'YouTube is not connected')
     } else if (ctx.data.youtubeVideoId) {
       await ctx.step('youtube', 'done', 'Already uploaded')
@@ -302,9 +316,27 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       if (project.thumbnailUrl) {
         try {
           const ext = extensionOf(project.thumbnailUrl, '.png')
-          const thumb = work(`thumbnail${ext}`)
+          let thumb = work(`thumbnail${ext}`)
+          let mime = imageMime(ext)
           await downloadTo(project.thumbnailUrl, thumb, payload.appUrl)
-          await setThumbnail(youtube, videoId, thumb, imageMime(ext))
+          // YouTube refuses thumbnails over 2 MB (large PNGs, generated images): send a JPEG.
+          if ((await fileSize(thumb)) > 2 * 1024 * 1024) {
+            const jpeg = work('thumbnail-small.jpg')
+            await runFfmpeg([
+              '-i',
+              thumb,
+              '-vf',
+              "scale='min(1280,iw)':-2",
+              '-q:v',
+              '3',
+              '-frames:v',
+              '1',
+              jpeg,
+            ])
+            thumb = jpeg
+            mime = 'image/jpeg'
+          }
+          await setThumbnail(youtube, videoId, thumb, mime)
           done.push('thumbnail')
         } catch (error) {
           await ctx.warn(

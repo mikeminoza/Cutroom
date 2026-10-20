@@ -10,13 +10,22 @@ export type GoogleProvider = 'youtube' | 'drive'
 
 const IDENTITY = ['openid', 'https://www.googleapis.com/auth/userinfo.email']
 
+/** Read-only YouTube Analytics: watch time and retention for the Performance page. */
+export const ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly'
+
 export const SCOPES: Record<GoogleProvider, string[]> = {
   youtube: [
     'https://www.googleapis.com/auth/youtube.upload',
     'https://www.googleapis.com/auth/youtube.force-ssl',
+    ANALYTICS_SCOPE,
     ...IDENTITY,
   ],
   drive: ['https://www.googleapis.com/auth/drive.file', ...IDENTITY],
+}
+
+/** Channels connected before analytics existed (or with the box unticked) lack the permission. */
+export function hasAnalyticsScope(scope: string | null | undefined): boolean {
+  return Boolean(scope?.split(/\s+/).includes(ANALYTICS_SCOPE))
 }
 
 export function hasGoogleClient(): boolean {
@@ -193,6 +202,96 @@ export async function reschedule(
       status: { privacyStatus: 'private', publishAt, selfDeclaredMadeForKids: madeForKids },
     },
   })
+}
+
+export interface VideoStatistics {
+  views: number
+  likes: number
+  comments: number
+  publishedAt: string | null
+  privacy: string
+}
+
+/** Public counters for up to any number of videos (50 per request, 1 quota unit each). */
+export async function videoStatistics(
+  client: OAuthClient,
+  ids: string[],
+): Promise<Map<string, VideoStatistics>> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const result = new Map<string, VideoStatistics>()
+  for (let i = 0; i < ids.length; i += 50) {
+    const res = await yt.videos.list({
+      part: ['statistics', 'snippet', 'status'],
+      id: ids.slice(i, i + 50),
+      maxResults: 50,
+    })
+    for (const video of res.data.items ?? []) {
+      if (!video.id) continue
+      result.set(video.id, {
+        views: Number(video.statistics?.viewCount ?? 0),
+        likes: Number(video.statistics?.likeCount ?? 0),
+        comments: Number(video.statistics?.commentCount ?? 0),
+        publishedAt: video.snippet?.publishedAt ?? null,
+        privacy: video.status?.privacyStatus ?? 'private',
+      })
+    }
+  }
+  return result
+}
+
+export interface VideoAnalytics {
+  watchMinutes: number
+  averageViewSeconds: number
+  averageViewPercent: number
+  subscribersGained: number
+}
+
+/** Thrown when YouTube Analytics can't be used at all, so the caller stops asking for the rest. */
+export class AnalyticsUnavailable extends Error {}
+
+/**
+ * Watch time and retention for one video from the YouTube Analytics API (needs ANALYTICS_SCOPE and
+ * the API enabled in Google Cloud). Returns null while YouTube has no data for it yet.
+ */
+export async function videoAnalytics(
+  client: OAuthClient,
+  videoId: string,
+  startDate: string,
+  endDate: string,
+): Promise<VideoAnalytics | null> {
+  const { token } = await client.getAccessToken()
+  if (!token) throw new AnalyticsUnavailable('Google did not return an access token.')
+  const params = new URLSearchParams({
+    ids: 'channel==MINE',
+    startDate,
+    endDate,
+    metrics: 'estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained',
+    filters: `video==${videoId}`,
+  })
+  const res = await fetch(`https://youtubeanalytics.googleapis.com/v2/reports?${params}`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null
+    const message = body?.error?.message ?? `HTTP ${res.status}`
+    // 401/403: missing permission or the API is not enabled for the Google Cloud project.
+    if (res.status === 401 || res.status === 403) throw new AnalyticsUnavailable(message)
+    throw new Error(`YouTube Analytics: ${message}`)
+  }
+  const data = (await res.json()) as { columnHeaders?: { name: string }[]; rows?: number[][] }
+  const row = data.rows?.[0]
+  if (!row || !data.columnHeaders) return null
+  const value = (name: string) => {
+    const index = data.columnHeaders!.findIndex((h) => h.name === name)
+    return index >= 0 ? Number(row[index] ?? 0) : 0
+  }
+  return {
+    watchMinutes: value('estimatedMinutesWatched'),
+    averageViewSeconds: value('averageViewDuration'),
+    averageViewPercent: value('averageViewPercentage'),
+    subscribersGained: value('subscribersGained'),
+  }
 }
 
 export function youtubeUrl(videoId: string): string {

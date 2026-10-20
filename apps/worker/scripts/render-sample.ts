@@ -9,8 +9,8 @@ import { spawn } from 'node:child_process'
 import { copyFile, mkdir, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chunkCaptions, wordsFromScenes } from '@cutroom/shared/captions'
-import type { CaptionStyle, Resolution, VideoFormat, Word } from '@cutroom/shared/types'
+import { chunkCaptions, type Overlay, overlayEvents, wordsFromScenes } from '@cutroom/shared/captions'
+import type { CaptionStyle, Resolution, Transition, VideoFormat, Word } from '@cutroom/shared/types'
 import { probeDuration, probeStreams, runFfmpeg } from '../src/render/ffmpeg'
 import { type RenderScene, renderVideo } from '../src/render/render'
 
@@ -136,8 +136,17 @@ function scene(
   fit: RenderScene['fit'] = 'cover',
   focusX = 0.5,
   focusY = 0.5,
+  transition: Transition = 'cut',
 ): RenderScene {
-  return { start, end, imagePath, motion, fit, focusX, focusY }
+  return { start, end, imagePath, motion, fit, focusX, focusY, transition }
+}
+
+/** On-screen text for some scenes, timed the way the publish job times it. */
+function sampleOverlays(scenes: RenderScene[], duration: number, texts: string[]): Overlay[] {
+  return overlayEvents(
+    scenes.map((s, i) => ({ start: s.start, onScreenText: texts[i] ?? '' })),
+    duration,
+  )
 }
 
 /** Splits [0, duration] at the given fractions. */
@@ -149,24 +158,34 @@ function cuts(duration: number, fractions: number[]): [number, number][] {
 function landscapeScenes(images: Images, duration: number): RenderScene[] {
   const t = cuts(duration, [0.16, 0.32, 0.44, 0.58, 0.72, 0.86])
   return [
-    scene(...t[0], images.wide, 'zoom-in'),
-    scene(...t[1], images.tall, 'zoom-out', 'contain'),
-    scene(...t[2], null, 'none'), // holds the mandelbrot
-    scene(...t[3], images.small, 'pan-right'),
-    scene(...t[4], images.bars, 'pan-left', 'cover', 0.5, 0.3),
+    scene(...t[0], images.wide, 'zoom-in', 'cover', 0.5, 0.5, 'fade-black'), // fades in from black
+    scene(...t[1], images.tall, 'zoom-out', 'contain', 0.5, 0.5, 'crossfade'), // contain over cover
+    scene(...t[2], null, 'none', 'cover', 0.5, 0.5, 'crossfade'), // no image: transition ignored
+    scene(...t[3], images.small, 'pan-right', 'cover', 0.5, 0.5, 'fade-black'),
+    scene(...t[4], images.bars, 'pan-left', 'cover', 0.5, 0.3, 'crossfade'), // pan into pan
     scene(...t[5], images.grid, 'zoom-in', 'cover', 0.7, 0.4),
-    scene(...t[6], images.tall, 'none', 'cover', 0.5, 0.35),
+    scene(...t[6], images.tall, 'none', 'cover', 0.5, 0.35, 'crossfade'),
   ]
 }
+
+const LANDSCAPE_TEXT = [
+  'Welcome to Cutroom',
+  '',
+  '',
+  'Gentle zoom & pan',
+  '',
+  '{Braces} \\ and long text that wraps',
+]
+const PORTRAIT_TEXT = ['', 'Shorts too', '', 'Fit on blur', '', 'The end']
 
 function portraitScenes(images: Images, duration: number): RenderScene[] {
   const t = cuts(duration, [0.1, 0.28, 0.46, 0.64, 0.82])
   return [
     scene(...t[0], null, 'zoom-in'), // no image yet: dark frame
-    scene(...t[1], images.tall, 'zoom-in', 'cover', 0.5, 0.4),
-    scene(...t[2], images.wide, 'pan-left', 'contain'),
-    scene(...t[3], images.grid, 'zoom-out', 'cover', 0.3, 0.5),
-    scene(...t[4], images.small, 'none', 'cover', 0.8, 0.5),
+    scene(...t[1], images.tall, 'zoom-in', 'cover', 0.5, 0.4, 'crossfade'), // fades in from the dark frame
+    scene(...t[2], images.wide, 'pan-left', 'contain', 0.5, 0.5, 'crossfade'), // contain + contain labels
+    scene(...t[3], images.grid, 'zoom-out', 'cover', 0.3, 0.5, 'fade-black'),
+    scene(...t[4], images.small, 'none', 'cover', 0.8, 0.5, 'crossfade'),
     scene(...t[5], images.bars, 'zoom-in'),
   ]
 }
@@ -177,6 +196,7 @@ interface Job {
   resolution: Resolution
   captionStyle: CaptionStyle
   scenes: RenderScene[]
+  overlays: Overlay[]
 }
 
 function fmt(seconds: number): string {
@@ -204,6 +224,11 @@ async function extractFrames(name: string, video: string, job: Job, words: Word[
       label: `scene${i + 1}-${s.imagePath ? s.fit : 'noimage'}-${s.motion}`,
       time: (s.start + s.end) / 2,
     })
+    // Mid-transition: a crossfade is half way 0.25 s after the cut; a dip is darkest at the cut.
+    if (i > 0 && s.imagePath && s.transition !== 'cut') {
+      const at = s.transition === 'crossfade' ? s.start + 0.25 : s.start + 0.02
+      shots.push({ label: `scene${i + 1}-${s.transition}`, time: at })
+    }
   })
   const files: string[] = []
   for (const shot of shots) {
@@ -229,20 +254,24 @@ async function main() {
   console.log(`Voice-over: ${voiceKind}, ${fmt(duration)}`)
   const words = wordsFromScenes([{ start: 0, end: duration, narration: SCRIPT }])
 
+  const landscape = landscapeScenes(images, duration)
+  const portrait = portraitScenes(images, duration)
   const jobs: Job[] = [
     {
       name: 'landscape',
       format: 'landscape',
       resolution: '720p',
       captionStyle: 'highlight',
-      scenes: landscapeScenes(images, duration),
+      scenes: landscape,
+      overlays: sampleOverlays(landscape, duration, LANDSCAPE_TEXT),
     },
     {
       name: 'portrait',
       format: 'portrait',
       resolution: '720p',
       captionStyle: 'line',
-      scenes: portraitScenes(images, duration),
+      scenes: portrait,
+      overlays: sampleOverlays(portrait, duration, PORTRAIT_TEXT),
     },
   ]
 
@@ -264,6 +293,7 @@ async function main() {
       voiceoverPath: voicePath,
       duration,
       words,
+      overlays: job.overlays,
       musicPath,
       musicVolume: 0.35,
       onProgress: (fraction, detail) => {

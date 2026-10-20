@@ -1,8 +1,14 @@
-import { MOTIONS } from '@cutroom/shared/types'
+import { MOTIONS, TRANSITIONS } from '@cutroom/shared/types'
 import { z } from 'zod'
 
 const url = z.string().max(2000)
 const nullableUrl = url.nullable()
+
+export const voiceSchema = z.object({
+  provider: z.enum(['gemini', 'elevenlabs']),
+  voice: z.string().trim().min(1).max(100),
+  style: z.string().max(300),
+})
 
 export const postSchema = z.object({
   titleOptions: z.array(z.string().max(200)).max(10),
@@ -48,6 +54,10 @@ export const projectPatchSchema = z
     musicVolume: z.number().min(0).max(1),
     thumbnailUrl: nullableUrl,
     post: postSchema,
+    textOverlays: z.boolean(),
+    voice: voiceSchema.nullable(),
+    channelId: z.string().max(100).nullable(),
+    seriesId: z.string().max(100).nullable(),
   })
   .partial()
 
@@ -62,7 +72,7 @@ export const scenePatchSchema = z
     shot: z.string().max(200),
     motion: z.enum(MOTIONS as [string, ...string[]]),
     onScreenText: z.string().max(200),
-    transition: z.string().max(50),
+    transition: z.enum(TRANSITIONS as [string, ...string[]]),
     notes: z.string().max(1000),
     imageUrl: nullableUrl,
     imageWidth: z.number().int().positive().nullable(),
@@ -100,4 +110,6 @@ export const settingsSchema = z.object({
     captionStyle: z.enum(['highlight', 'line', 'off']),
   }),
   freeBlobAfterPosting: z.boolean(),
+  voice: voiceSchema,
+  notifications: z.object({ approval: z.boolean(), failed: z.boolean(), posted: z.boolean() }),
 })

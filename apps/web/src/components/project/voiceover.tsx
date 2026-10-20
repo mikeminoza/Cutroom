@@ -1,19 +1,41 @@
 'use client'
 
 import { formatTimecode } from '@cutroom/shared/timing'
+import { DEFAULT_VOICE, GEMINI_VOICES, type VoiceSettings } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, AudioLines, Pause, Play, RefreshCw, Ruler, Wand2 } from 'lucide-react'
+import {
+  ArrowRight,
+  AudioLines,
+  Mic,
+  Pause,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Ruler,
+  Square,
+  Wand2,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type WaveSurfer from 'wavesurfer.js'
 import type RegionsPlugin from 'wavesurfer.js/plugins/regions'
 import type { Region } from 'wavesurfer.js/plugins/regions'
-import { Button, DropZone, Panel, ProgressBar, useConfirm } from '@/components/ui'
+import {
+  Button,
+  DropZone,
+  Field,
+  Input,
+  Panel,
+  ProgressBar,
+  Segmented,
+  Select,
+  useConfirm,
+} from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { JobDTO, ProjectFull } from '@/lib/dto'
 import { formatLength } from '@/lib/format'
-import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
+import { keys, useProjectAction, useSaver, useSettings, useStatus, useVoices } from '@/lib/hooks'
 import { audioDuration } from '@/lib/upload'
 import { useUploader } from './fields'
 import { JobSteps } from './job-panel'
@@ -34,8 +56,14 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
     job.status !== 'queued' &&
     job.finishedAt &&
     Date.now() - new Date(job.finishedAt).getTime() < 10 * 60_000
+  const voiceJob = data.jobs.voice
+  const recording = Boolean(voiceJob && ['queued', 'running'].includes(voiceJob.status))
 
   const onFiles = async ([file]: File[]) => {
+    if (recording) {
+      toast.error('The AI voice-over is being recorded. Wait for it to finish, or stop it first.')
+      return
+    }
     if (
       project.voiceoverUrl &&
       !(await confirm({
@@ -67,33 +95,42 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
 
   if (!project.voiceoverUrl) {
     return (
-      <DropZone accept="audio/*" onFiles={onFiles} className="rounded-[var(--radius-panel)]">
-        {({ open, dragging }) => (
-          <button
-            type="button"
-            onClick={open}
-            disabled={progress !== null}
-            className={cn(
-              'flex w-full flex-col items-center gap-3 rounded-[var(--radius-panel)] border-2 border-dashed px-6 py-16 text-center transition-colors',
-              dragging ? 'border-ink bg-kodak-wash' : 'border-line-strong bg-panel hover:border-ink',
-            )}
-          >
-            <AudioLines className="size-8 text-ink-2" aria-hidden />
-            <span className="display text-[22px]">Drop your voice-over here</span>
-            <span className="max-w-[52ch] text-[14px] text-ink-2">
-              MP3, WAV or M4A. Gemini will listen to it and move each scene to the moment its words are
-              spoken.
-            </span>
-            {progress !== null ? (
-              <ProgressBar value={progress} tone="you" className="mt-2 w-64" />
-            ) : (
-              <span className="mt-2 inline-flex h-[38px] items-center rounded-[var(--radius-control)] bg-kodak px-4 text-[14px] font-semibold">
-                Choose a file
+      <div className="grid items-start gap-5 lg:grid-cols-2">
+        <DropZone
+          accept="audio/*"
+          onFiles={onFiles}
+          disabled={recording}
+          className="rounded-[var(--radius-panel)]"
+        >
+          {({ open, dragging }) => (
+            <button
+              type="button"
+              onClick={open}
+              disabled={progress !== null || recording}
+              className={cn(
+                'flex w-full flex-col items-center gap-3 rounded-[var(--radius-panel)] border-2 border-dashed px-6 py-14 text-center transition-colors disabled:opacity-60',
+                dragging ? 'border-ink bg-kodak-wash' : 'border-line-strong bg-panel hover:border-ink',
+              )}
+            >
+              <AudioLines className="size-8 text-ink-2" aria-hidden />
+              <span className="display text-[22px]">Drop your voice-over here</span>
+              <span className="max-w-[46ch] text-[14px] text-ink-2">
+                MP3, WAV or M4A. Gemini will listen to it and move each scene to the moment its words are
+                spoken.
               </span>
-            )}
-          </button>
-        )}
-      </DropZone>
+              {progress !== null ? (
+                <ProgressBar value={progress} tone="you" className="mt-2 w-64" />
+              ) : (
+                <span className="mt-2 inline-flex h-[38px] items-center rounded-[var(--radius-control)] bg-kodak px-4 text-[14px] font-semibold">
+                  Choose a file
+                </span>
+              )}
+            </button>
+          )}
+        </DropZone>
+        <AiVoicePanel data={data} />
+        {element}
+      </div>
     )
   }
 
@@ -107,13 +144,14 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
         title={project.voiceoverName ?? 'Voice-over'}
         description={`${formatLength(project.voiceoverDuration ?? 0)} long${timed ? '. Scenes are matched to the speech.' : '.'}`}
         actions={
-          <DropZone accept="audio/*" onFiles={onFiles}>
+          <DropZone accept="audio/*" onFiles={onFiles} disabled={recording}>
             {({ open }) => (
               <Button
                 variant="plain"
                 size="sm"
                 onClick={open}
                 busy={progress !== null}
+                disabled={recording}
                 icon={<RefreshCw className="size-3.5" />}
               >
                 Replace
@@ -141,7 +179,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
         description={
           noScenes
             ? 'No script? Gemini can transcribe the voice-over and cut it into scenes for you.'
-            : 'Gemini transcribes the recording, then lines up each scene with the moment its narration starts.'
+            : 'Gemini transcribes the recording, then lines up each scene with the moment its narration starts. The pauses in the recording place every word.'
         }
       >
         <div className="flex flex-col gap-4 px-5 py-4">
@@ -157,7 +195,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
             <Button
               variant={timed ? 'plain' : 'go'}
               busy={Boolean(running)}
-              disabled={!canAi}
+              disabled={!canAi || recording}
               onClick={retime}
               icon={<Wand2 className="size-4" />}
             >
@@ -167,7 +205,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
               <Button
                 variant="ghost"
                 onClick={fit}
-                disabled={Boolean(running)}
+                disabled={Boolean(running) || recording}
                 icon={<Ruler className="size-4" />}
               >
                 Spread evenly (no AI)
@@ -193,8 +231,214 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
           {project.transcript && <Transcript data={data} />}
         </div>
       </Panel>
+      <AiVoicePanel data={data} />
       {element}
     </div>
+  )
+}
+
+/** Records the voice-over with an AI voice (Gemini or ElevenLabs), then times the scenes to it. */
+function AiVoicePanel({ data }: { data: ProjectFull }) {
+  const { project, scenes } = data
+  const client = useQueryClient()
+  const action = useProjectAction(project.id)
+  const { data: status } = useStatus()
+  const { data: settings } = useSettings()
+  const { confirm, element } = useConfirm()
+  const [voice, setVoice] = useState<VoiceSettings>(project.voice ?? DEFAULT_VOICE)
+  const touched = useRef(Boolean(project.voice))
+  const [busy, setBusy] = useState<string | null>(null)
+  const elevenReady = Boolean(status?.elevenlabs.configured)
+  const geminiReady = status?.gemini.configured !== false
+  const voices = useVoices(voice.provider === 'elevenlabs' && elevenReady)
+  const job = data.jobs.voice
+  const running = Boolean(job && ['queued', 'running'].includes(job.status))
+  const showJob =
+    job &&
+    (running ||
+      job.status === 'failed' ||
+      (job.finishedAt && Date.now() - new Date(job.finishedAt).getTime() < 10 * 60_000)) &&
+    !(job.status === 'failed' && job.error === 'Stopped by you.')
+  const narrated = scenes.filter((s) => s.narration.trim()).length
+  const hasText = narrated > 0 || Boolean(project.script.trim())
+  const providerReady = voice.provider === 'gemini' ? geminiReady : elevenReady
+  const workerReady = status?.worker.configured !== false
+
+  // Start from the default voice in Settings until you pick one yourself.
+  useEffect(() => {
+    if (!touched.current && settings?.voice) setVoice(settings.voice)
+  }, [settings?.voice])
+
+  const elevenVoices = voices.data?.elevenlabs ?? []
+  const change = (patch: Partial<VoiceSettings>) => {
+    touched.current = true
+    setVoice((current) => {
+      const next = { ...current, ...patch }
+      if (patch.provider === 'gemini' && !GEMINI_VOICES.some((v) => v.name === next.voice)) {
+        next.voice = DEFAULT_VOICE.voice
+      }
+      if (patch.provider === 'elevenlabs' && GEMINI_VOICES.some((v) => v.name === next.voice)) {
+        next.voice = elevenVoices[0]?.id ?? ''
+      }
+      return next
+    })
+  }
+  // The ElevenLabs list arrives after switching: take its first voice.
+  useEffect(() => {
+    if (voice.provider !== 'elevenlabs' || !elevenVoices.length) return
+    if (!elevenVoices.some((v) => v.id === voice.voice)) {
+      setVoice((current) => ({ ...current, voice: elevenVoices[0].id }))
+    }
+  }, [voice.provider, voice.voice, elevenVoices])
+
+  const record = async () => {
+    if (
+      project.voiceoverUrl &&
+      !(await confirm({
+        title: 'Replace the voice-over?',
+        body: 'The AI voice-over replaces your current recording. The scenes are then matched to it again.',
+        action: 'Record with AI',
+      }))
+    ) {
+      return
+    }
+    setBusy('record')
+    await action(`/api/projects/${project.id}/voice`, voice, 'Recording started')
+    setBusy(null)
+  }
+
+  const jobAction = async (name: 'retry' | 'cancel') => {
+    if (!job) return
+    setBusy(name)
+    try {
+      await api.post(`/api/jobs/${job.id}/${name}`)
+      await client.invalidateQueries({ queryKey: keys.project(project.id) })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Panel
+      title="AI voice-over"
+      description={
+        narrated
+          ? `An AI voice reads the narration of your ${narrated} ${narrated === 1 ? 'scene' : 'scenes'}. Every word's timing is known, so the scenes and captions line up exactly.`
+          : 'An AI voice reads your script. Every word’s timing is known, so the captions line up exactly.'
+      }
+    >
+      <div className="flex flex-col gap-4 px-5 py-4">
+        <Field label="Voice service">
+          <Segmented
+            ariaLabel="Voice service"
+            value={voice.provider}
+            onChange={(provider) => change({ provider })}
+            options={[
+              { value: 'gemini', label: 'Gemini', hint: 'On the free tier' },
+              {
+                value: 'elevenlabs',
+                label: 'ElevenLabs',
+                hint: elevenReady ? 'Your ElevenLabs voices' : 'Add ELEVENLABS_API_KEY to use it',
+              },
+            ]}
+            className="w-full"
+          />
+        </Field>
+        {voice.provider === 'gemini' ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Voice">
+              <Select value={voice.voice} onChange={(e) => change({ voice: e.target.value })}>
+                {GEMINI_VOICES.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} — {v.character.toLowerCase()}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Delivery" aside="Optional">
+              <Input
+                value={voice.style}
+                maxLength={300}
+                onChange={(e) => change({ style: e.target.value })}
+                placeholder="Warm, unhurried documentary narrator"
+              />
+            </Field>
+          </div>
+        ) : (
+          <Field
+            label="Voice"
+            error={
+              !elevenReady
+                ? 'Add ELEVENLABS_API_KEY on the web app and the worker to use ElevenLabs.'
+                : voices.data?.elevenlabsError
+            }
+          >
+            <Select
+              value={voice.voice}
+              disabled={!elevenReady || voices.isLoading}
+              onChange={(e) => change({ voice: e.target.value })}
+            >
+              {voices.isLoading && <option value="">Loading your voices…</option>}
+              {elevenVoices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                  {v.description ? ` — ${v.description}` : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {showJob && job && <JobSteps job={job} />}
+        {job?.status === 'failed' && job.error && job.error !== 'Stopped by you.' && (
+          <p className="rounded-[var(--radius-control)] bg-bad-wash px-3 py-2.5 text-[13.5px] text-bad">
+            {job.error}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={project.voiceoverUrl ? 'plain' : 'go'}
+            busy={busy === 'record' || running}
+            disabled={!hasText || !providerReady || !workerReady || !voice.voice}
+            onClick={record}
+            icon={<Mic className="size-4" />}
+          >
+            {project.voiceoverUrl ? 'Record again with AI' : 'Record with AI'}
+          </Button>
+          {running && (
+            <Button
+              variant="ghost"
+              size="sm"
+              busy={busy === 'cancel'}
+              onClick={() => jobAction('cancel')}
+              icon={<Square className="size-3.5" />}
+            >
+              Stop
+            </Button>
+          )}
+          {job?.status === 'failed' && job.error !== 'Stopped by you.' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              busy={busy === 'retry'}
+              onClick={() => jobAction('retry')}
+              icon={<RotateCcw className="size-3.5" />}
+            >
+              Retry from where it stopped
+            </Button>
+          )}
+        </div>
+        {!hasText && <p className="text-[13px] text-ink-2">Write the script first: the AI voice reads it.</p>}
+        {hasText && !workerReady && (
+          <p className="text-[13px] text-ink-2">Recording runs on the worker. Set it up in Settings.</p>
+        )}
+        {hasText && voice.provider === 'gemini' && !geminiReady && (
+          <p className="text-[13px] text-ink-2">Add GEMINI_API_KEY to use Gemini voices.</p>
+        )}
+      </div>
+      {element}
+    </Panel>
   )
 }
 

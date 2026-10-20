@@ -11,15 +11,18 @@ import type {
   SceneInput,
   Transcript,
   VideoFormat,
+  VoiceSettings,
+  Word,
 } from './types'
 
-export type JobType = 'retime' | 'publish'
+export type JobType = 'retime' | 'publish' | 'voice'
 export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed'
 export type StepStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'waiting'
 
 export type PublishStepKey = 'render' | 'drive' | 'details' | 'approve' | 'youtube' | 'finish' | 'archive'
 export type RetimeStepKey = 'transcribe' | 'align'
-export type StepKey = PublishStepKey | RetimeStepKey
+export type VoiceStepKey = 'synthesize' | 'align'
+export type StepKey = PublishStepKey | RetimeStepKey | VoiceStepKey
 
 export interface JobStep {
   key: StepKey
@@ -46,6 +49,18 @@ export const RETIME_STEPS: { key: RetimeStepKey; label: string }[] = [
   { key: 'align', label: 'Match scenes to the speech' },
 ]
 
+export const VOICE_STEPS: { key: VoiceStepKey; label: string }[] = [
+  { key: 'synthesize', label: 'Record the voice-over' },
+  { key: 'align', label: 'Match scenes to the speech' },
+]
+
+/** A stretch of the generated voice-over and the exact text spoken in it. */
+export interface SpokenSpan {
+  text: string
+  start: number
+  end: number
+}
+
 export interface JobResult {
   outputUrl?: string
   outputKey?: string
@@ -64,6 +79,11 @@ export interface JobResult {
   matchedRatio?: number
   archivedKeys?: string[]
   warnings?: string[]
+  /** AI voice-over: the stored file, applied to the project as its voice-over. */
+  voiceover?: { url: string; key: string; name: string; duration: number }
+  /** AI voice-over timing kept so a resumed job can align without recording again. */
+  voiceWords?: Word[]
+  voiceSpans?: SpokenSpan[]
 }
 
 export interface JobPayloadProject {
@@ -89,6 +109,8 @@ export interface JobPayloadProject {
   post: PostDetails
   scheduledAt: string | null
   driveFolderId: string | null
+  textOverlays: boolean
+  voice: VoiceSettings | null
 }
 
 export interface JobPayload {
@@ -106,9 +128,14 @@ export interface JobPayload {
   characters: CharacterInput[]
   settings: AppSettings
   google: {
+    /** The token of the channel this project posts to. */
     youtubeRefreshToken: string | null
+    /** The project's channel was disconnected: the upload waits for it instead of being skipped. */
+    youtubeChannelMissing?: boolean
     driveRefreshToken: string | null
   }
+  /** What has worked on the channel so far, for the post-details prompt. */
+  insights: { topTitles: { title: string; views: number }[] }
   /** Base URL the worker can download local-storage files from (dev only). */
   appUrl: string
 }
@@ -121,7 +148,7 @@ export type WorkerEvent =
   | { type: 'failed'; error: string; key?: StepKey }
 
 export function initialSteps(type: JobType): JobStep[] {
-  const list = type === 'publish' ? PUBLISH_STEPS : RETIME_STEPS
+  const list = type === 'publish' ? PUBLISH_STEPS : type === 'voice' ? VOICE_STEPS : RETIME_STEPS
   return list.map((s) => ({ key: s.key, label: s.label, status: 'pending' as StepStatus }))
 }
 

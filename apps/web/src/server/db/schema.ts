@@ -8,10 +8,14 @@ import type {
   PostingMode,
   ProjectStatus,
   Resolution,
+  SeriesTemplate,
   Transcript,
   VideoFormat,
+  VideoStats,
+  VoiceSettings,
 } from '@cutroom/shared/types'
-import { boolean, integer, jsonb, pgTable, real, text, timestamp } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import { boolean, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 const updated = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
@@ -50,6 +54,22 @@ export const projects = pgTable('projects', {
   outputUrl: text('output_url'),
   srtUrl: text('srt_url'),
   archived: boolean('archived').notNull().default(false),
+  /** Burn each scene's on-screen text into the video. */
+  textOverlays: boolean('text_overlays').notNull().default(true),
+  /** AI voice for this project; null = the default from Settings. */
+  voice: jsonb('voice').$type<VoiceSettings>(),
+  seriesId: text('series_id').references(() => series.id, { onDelete: 'set null' }),
+  /** YouTube channel to post to; null = the default channel. */
+  channelId: text('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+  /**
+   * YouTube's id of that channel. Kept when the channel is disconnected (channelId becomes null),
+   * so the video waits for it instead of going to the default channel, and finds it again when
+   * it is reconnected.
+   */
+  channelYoutubeId: text('channel_youtube_id'),
+  stats: jsonb('stats').$type<VideoStats>(),
+  /** The long video a Short was cut from. */
+  sourceProjectId: text('source_project_id'),
   createdAt: created(),
   updatedAt: updated(),
 })
@@ -91,35 +111,48 @@ export const scenes = pgTable('scenes', {
   focusY: real('focus_y').notNull().default(0.5),
 })
 
-export const jobs = pgTable('jobs', {
-  id: text('id').primaryKey(),
-  projectId: text('project_id')
-    .notNull()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  type: text('type').$type<JobType>().notNull(),
-  status: text('status').$type<JobStatus>().notNull().default('queued'),
-  steps: jsonb('steps').$type<JobStep[]>().notNull(),
-  result: jsonb('result').$type<JobResult>().notNull().default({}),
-  error: text('error'),
-  attempts: integer('attempts').notNull().default(0),
-  approved: boolean('approved').notNull().default(false),
-  progress: real('progress'),
-  progressStep: text('progress_step'),
-  progressDetail: text('progress_detail'),
-  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
-  kickedAt: timestamp('kicked_at', { withTimezone: true }),
-  finishedAt: timestamp('finished_at', { withTimezone: true }),
-  createdAt: created(),
-  updatedAt: updated(),
-})
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    type: text('type').$type<JobType>().notNull(),
+    status: text('status').$type<JobStatus>().notNull().default('queued'),
+    steps: jsonb('steps').$type<JobStep[]>().notNull(),
+    result: jsonb('result').$type<JobResult>().notNull().default({}),
+    error: text('error'),
+    attempts: integer('attempts').notNull().default(0),
+    approved: boolean('approved').notNull().default(false),
+    progress: real('progress'),
+    progressStep: text('progress_step'),
+    progressDetail: text('progress_detail'),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    kickedAt: timestamp('kicked_at', { withTimezone: true }),
+    /** The worker process that holds the job, so two workers never run it at once. */
+    runnerId: text('runner_id'),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: created(),
+    updatedAt: updated(),
+  },
+  // Jobs on one project overwrite each other's data, so at most one may be active at a time.
+  // assertNoConflict gives the friendly error; this index stops two requests racing past it.
+  (t) => [
+    uniqueIndex('jobs_one_active_per_project')
+      .on(t.projectId)
+      .where(sql`${t.status} in ('queued', 'running', 'waiting')`),
+  ],
+)
 
 export const settings = pgTable('settings', {
   id: text('id').primaryKey(),
   data: jsonb('data').$type<AppSettings>().notNull(),
 })
 
+/** Google Drive. YouTube channels live in `channels` (there can be several). */
 export const connections = pgTable('connections', {
-  provider: text('provider').$type<'youtube' | 'drive'>().primaryKey(),
+  provider: text('provider').$type<'drive'>().primaryKey(),
   refreshToken: text('refresh_token').notNull(),
   email: text('email'),
   label: text('label'),
@@ -127,7 +160,50 @@ export const connections = pgTable('connections', {
   createdAt: created(),
 })
 
+export const channels = pgTable('channels', {
+  id: text('id').primaryKey(),
+  /** YouTube's channel id; null only for a channel carried over from before multi-channel support. */
+  youtubeId: text('youtube_id').unique(),
+  title: text('title').notNull().default(''),
+  email: text('email'),
+  refreshToken: text('refresh_token').notNull(),
+  scope: text('scope'),
+  isDefault: boolean('is_default').notNull().default(false),
+  createdAt: created(),
+})
+
+export const series = pgTable('series', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().default(''),
+  description: text('description').notNull().default(''),
+  template: jsonb('template').$type<SeriesTemplate>().notNull(),
+  createdAt: created(),
+  updatedAt: updated(),
+})
+
+export const libraryCharacters = pgTable('library_characters', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().default(''),
+  description: text('description').notNull().default(''),
+  images: jsonb('images').$type<{ url: string; key: string }[]>().notNull().default([]),
+  createdAt: created(),
+})
+
+export const ideas = pgTable('ideas', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull().default(''),
+  angle: text('angle').notNull().default(''),
+  seriesId: text('series_id').references(() => series.id, { onDelete: 'set null' }),
+  status: text('status').$type<'new' | 'used' | 'dismissed'>().notNull().default('new'),
+  projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+  createdAt: created(),
+})
+
 export type ProjectRow = typeof projects.$inferSelect
 export type SceneRow = typeof scenes.$inferSelect
 export type CharacterRow = typeof characters.$inferSelect
 export type JobRow = typeof jobs.$inferSelect
+export type ChannelRow = typeof channels.$inferSelect
+export type SeriesRow = typeof series.$inferSelect
+export type LibraryCharacterRow = typeof libraryCharacters.$inferSelect
+export type IdeaRow = typeof ideas.$inferSelect

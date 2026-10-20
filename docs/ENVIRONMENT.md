@@ -13,6 +13,9 @@ Locally both read a single `.env` file at the repository root. In production you
 |---|---|---|---|---|
 | `GEMINI_API_KEY` | ✓ | ✓ | For AI features | `AIzaSy…` |
 | `GEMINI_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash` |
+| `GEMINI_TTS_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash-tts` |
+| `GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE` | ✓ | – | No | `gemini-3.1-flash-lite-image`, `2K` |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_MODEL` | ✓ | ✓ | No | `sk_…`, `eleven_multilingual_v2` |
 | `WORKER_SECRET` | ✓ | ✓ | **Yes**, same value in both | `3f9c…` (64 random hex characters) |
 | `GOOGLE_CLIENT_ID` | ✓ | ✓ | For YouTube and Drive | `1234-abc.apps.googleusercontent.com` |
 | `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | For YouTube and Drive | `GOCSPX-…` |
@@ -22,9 +25,15 @@ Locally both read a single `.env` file at the repository root. In production you
 | `APP_URL` | ✓ | ✓ | **Yes** on the worker, recommended on web | `https://cutroom.vercel.app` |
 | `APP_PASSWORD` | ✓ | – | **Yes** in production | a long password |
 | `SESSION_SECRET` | ✓ | – | No | 64 random hex characters |
-| `CRON_SECRET` | ✓ | – | Recommended | 32 random hex characters |
+| `CRON_SECRET` | ✓ | – | **Yes** when `APP_PASSWORD` is set | 32 random hex characters |
+| `NOTIFY_DISCORD_WEBHOOK_URL` | ✓ | – | No | `https://discord.com/api/webhooks/…` |
+| `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID` | ✓ | – | No | `123456:ABC…`, `987654321` |
+| `RESEND_API_KEY`, `NOTIFY_EMAIL_TO`, `NOTIFY_EMAIL_FROM` | ✓ | – | No | `re_…`, `you@example.com` |
+| `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO` | ✓ | – | Only for the GitHub Actions worker | `github_pat_…`, `you/Cutroom` |
+| `GITHUB_WORKFLOW`, `GITHUB_BRANCH`, `WORKER_MODE` | ✓ | – | No | `worker.yml`, `main`, `render` |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | – | ✓ | No | `C:\ffmpeg\bin\ffmpeg.exe` |
 | `FFMPEG_THREADS` | – | ✓ | No | `1` |
+| `WORKER_PUBLIC_URL` | – | ✓ | No | `https://my-worker.example.com` |
 | `STORAGE_DIR`, `PGLITE_DIR` | local only | local only | No | `D:\cutroom-data\storage` |
 | `PORT` | – | set by Render | No | `10000` |
 
@@ -33,7 +42,8 @@ Locally both read a single `.env` file at the repository root. In production you
 | On the web app (Vercel) | On the worker (Render) |
 |---|---|
 | `WORKER_SECRET` | `WORKER_SECRET`, the identical value |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | the same values |
+| `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TTS_MODEL` | the same values |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_MODEL` (if used) | the same values |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | the same values |
 | `BLOB_READ_WRITE_TOKEN` | the same value |
 | `WORKER_URL` = the worker's Render URL | – |
@@ -46,8 +56,11 @@ Locally both read a single `.env` file at the repository root. In production you
 Lets Cutroom use Gemini to:
 - write scripts
 - split them into scenes
-- listen to the voice-over to time the scenes
+- read the script aloud as an AI voice-over
+- listen to an uploaded voice-over to time the scenes
 - write titles, descriptions, chapters and tags
+- suggest video ideas, and pick the best part of a video for a Short
+- paint scene pictures and thumbnails (needs billing, see `GEMINI_IMAGE_MODEL`)
 
 Without it, everything else still works: split the script by sentence, spread scenes evenly over the voice-over, and write the post details yourself. If the worker reaches "Write post details" with no key, it falls back to the project title and topic.
 
@@ -62,6 +75,29 @@ The free tier has rate limits. If you hit one, the app says "Gemini free-tier li
 ### `GEMINI_MODEL`
 
 The Gemini text model. It defaults to `gemini-3.8-flash`. Google renames models from time to time. If a Gemini call fails with "model not found", pick a current Flash model from https://ai.google.dev/gemini-api/docs/models and set it here on **both** services.
+
+### `GEMINI_TTS_MODEL`
+
+The voice model for AI voice-overs. It defaults to `gemini-3.8-flash-tts`, which is on the free tier. The 30 prebuilt voices are listed on the Voice-over step and in Settings → AI voice. Set it on **both** services: the worker records the voice-over.
+
+### `GEMINI_IMAGE_MODEL` and `GEMINI_IMAGE_SIZE`
+
+The model that paints scene pictures and thumbnails. It defaults to `gemini-3.1-flash-lite-image`, the cheapest one (about $0.04 a picture).
+
+**Image models are not on Gemini's free tier.** To use them, turn on billing for the Google Cloud project your `GEMINI_API_KEY` belongs to (https://aistudio.google.com → your key's project → Billing). Without billing, generating a picture says "This Gemini model is not on the free tier". Everything else keeps working; you can still copy the prompts into another image tool.
+
+- Other models: `gemini-nano-banana-2.1` (best quality) or `gemini-3.1-flash-image`.
+- `GEMINI_IMAGE_SIZE`: optional, `1K` (default), `2K` or `4K`. Larger pictures look sharper at 1080p but cost more. The lite model only makes `1K`.
+
+Only the web app makes pictures, so these are only needed on Vercel.
+
+### `ELEVENLABS_API_KEY` and `ELEVENLABS_MODEL`
+
+Optional and paid. Adds your ElevenLabs voices to the AI voice-over. ElevenLabs reports the exact time of every word, so captions line up perfectly.
+
+1. Sign in at https://elevenlabs.io and create an API key at https://elevenlabs.io/app/settings/api-keys, with access to text-to-speech and voices.
+2. Set `ELEVENLABS_API_KEY` on **both** services. The web app lists your voices; the worker records the voice-over.
+3. `ELEVENLABS_MODEL` is optional. It defaults to `eleven_multilingual_v2`.
 
 ### `WORKER_SECRET`
 
@@ -132,6 +168,39 @@ Signs the login cookie. Optional: if it's empty, a key derived from `APP_PASSWOR
 
 Protects `/api/cron`, the daily job that wakes the worker and nudges any upload that stalled while no tab was open. When `CRON_SECRET` is set, Vercel sends it automatically with every scheduled call. Any random string works.
 
+If `APP_PASSWORD` is set but `CRON_SECRET` is not, `/api/cron` refuses every call, so a password-protected app never leaves it open. The daily check then doesn't run: stalled uploads wait until you open the app, and Performance stats only refresh when you press Refresh.
+
+### Notifications: `NOTIFY_DISCORD_WEBHOOK_URL`, `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID`, `RESEND_API_KEY`, `NOTIFY_EMAIL_TO`, `NOTIFY_EMAIL_FROM`
+
+Optional, web app only. Cutroom sends a message when a video waits for your approval, when something fails, and when a video is posted or scheduled (choose which in **Settings → Notifications**). It also tells you about a job that has not moved for an hour. Set up any or all of these:
+
+- **Discord:** in your server, **Server settings → Integrations → Webhooks → New webhook**, pick a channel, **Copy webhook URL**, and set it as `NOTIFY_DISCORD_WEBHOOK_URL`.
+- **Telegram:**
+  1. Message [@BotFather](https://t.me/BotFather), send `/newbot` and follow the steps. It gives you the bot token: `NOTIFY_TELEGRAM_BOT_TOKEN`.
+  2. Send your new bot any message, then open `https://api.telegram.org/bot<token>/getUpdates`. The number under `"chat":{"id":` is `NOTIFY_TELEGRAM_CHAT_ID`.
+- **Email** (through Resend, free for 100 emails a day):
+  1. Create an API key at https://resend.com/api-keys: `RESEND_API_KEY`.
+  2. `NOTIFY_EMAIL_TO`: your address (several: separate with commas).
+  3. `NOTIFY_EMAIL_FROM`: optional. Without your own domain verified in Resend, leave it empty: the default `Cutroom <onboarding@resend.dev>` can only send to the email address of your Resend account.
+
+After a redeploy, **Settings → Connections → Notifications → Send a test** checks every channel.
+
+### GitHub Actions worker: `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, `GITHUB_WORKFLOW`, `GITHUB_BRANCH`, `WORKER_MODE`
+
+Optional, web app only. When `GITHUB_DISPATCH_TOKEN` and `GITHUB_REPO` are set, jobs run on GitHub Actions (`.github/workflows/worker.yml`) instead of the worker at `WORKER_URL`. Each job starts its own run: more CPU than Render's free plan, and nothing to keep awake. Setup: [DEPLOYMENT.md → Optional: the worker on GitHub Actions](DEPLOYMENT.md#11-optional-the-worker-on-github-actions).
+
+- `GITHUB_DISPATCH_TOKEN`: a fine-grained personal access token with access to this repository only and the **Actions: Read and write** permission.
+- `GITHUB_REPO`: `owner/name`, for example `you/Cutroom`.
+- `GITHUB_WORKFLOW`: optional, the workflow file name. Defaults to `worker.yml`.
+- `GITHUB_BRANCH`: optional, the branch whose workflow runs. Defaults to `main`.
+- `WORKER_MODE`: optional. Set to `render` to keep using `WORKER_URL` while the GitHub variables are set.
+
+The run itself reads its secrets from the repository (**Settings → Secrets and variables → Actions**), not from Vercel.
+
+### `WORKER_PUBLIC_URL` (worker)
+
+Optional. While a job runs, the worker calls its own public address every few minutes so a host that sleeps idle services (like Render's free plan) keeps it awake until the job is done. Render provides `RENDER_EXTERNAL_URL` automatically, so you only need this on other hosts.
+
 ### `FFMPEG_PATH`, `FFPROBE_PATH`, `FFMPEG_THREADS` (worker)
 
 - **Paths:** only needed when ffmpeg is not on your `PATH`. The Docker image used on Render already includes ffmpeg.
@@ -176,6 +245,7 @@ Render sets this for you. Locally the worker uses `8787`.
 ```dotenv
 GEMINI_API_KEY=AIzaSy-your-key
 GEMINI_MODEL=gemini-3.8-flash
+ELEVENLABS_API_KEY=
 WORKER_SECRET=paste-64-random-hex-characters-here
 GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret

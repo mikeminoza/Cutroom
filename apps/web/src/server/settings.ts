@@ -6,10 +6,13 @@ export async function getSettings(): Promise<AppSettings> {
   const database = await db()
   const [row] = await database.select().from(schema.settings).where(eq(schema.settings.id, 'app'))
   if (!row) return DEFAULT_SETTINGS
+  // Settings saved by an older version lack the newer groups; fill them from the defaults.
   return {
     ...DEFAULT_SETTINGS,
     ...row.data,
     defaults: { ...DEFAULT_SETTINGS.defaults, ...row.data.defaults },
+    voice: { ...DEFAULT_SETTINGS.voice, ...row.data.voice },
+    notifications: { ...DEFAULT_SETTINGS.notifications, ...row.data.notifications },
   }
 }
 

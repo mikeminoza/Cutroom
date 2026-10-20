@@ -1,6 +1,6 @@
 // Matches the script's scenes to the words actually spoken in the voice-over,
 // so each scene starts exactly when its narration starts.
-import type { TranscriptSegment, Word } from './types'
+import type { Transcript, TranscriptSegment, Word } from './types'
 
 function normalize(token: string): string {
   return token.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
@@ -184,6 +184,192 @@ export function scenesFromSegments(
     scenes[scenes.length - 1].end = Math.max(duration, scenes[scenes.length - 1].end)
   }
   return scenes.map((s) => ({ ...s, start: round(s.start), end: round(s.end) }))
+}
+
+// ---------------------------------------------------------------------------
+// Word timing from pauses. A transcript only says when each sentence starts and ends, so each
+// word's time is an estimate. The pauses in the recording (found with ffmpeg's silencedetect)
+// make it much better: sentence edges are moved onto the real pauses, and words are spread only
+// over the time someone is actually speaking, with each pause placed after the word where the
+// speaker most likely paused.
+
+export interface Span {
+  start: number
+  end: number
+}
+
+/** Parts of [start, end] where someone is speaking: the range minus the silences inside it. */
+export function speechParts(silences: Span[], start: number, end: number, minimum = 0.04): Span[] {
+  const parts: Span[] = []
+  let cursor = start
+  for (const silence of silences) {
+    if (silence.end <= cursor || silence.start >= end) continue
+    if (silence.start > cursor) parts.push({ start: cursor, end: Math.min(silence.start, end) })
+    cursor = Math.max(cursor, silence.end)
+    if (cursor >= end) break
+  }
+  if (cursor < end) parts.push({ start: cursor, end })
+  return parts.filter((p) => p.end - p.start >= minimum)
+}
+
+/** Where people pause: after punctuation. */
+const PAUSE_AFTER = /[.!?…,;:—–]["')\]”’]?$/
+
+const weightOf = (token: string) => token.length + 2
+
+/**
+ * Times the words of `text` spoken somewhere in `span`, skipping the pauses inside it.
+ * `silences` must be sorted and must not overlap.
+ */
+export function timeWords(text: string, span: Span, silences: Span[]): Word[] {
+  const tokens = text.trim().split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return []
+  let parts = speechParts(silences, span.start, span.end)
+  if (parts.length === 0) parts = [{ start: span.start, end: Math.max(span.end, span.start + 0.1) }]
+  // Never more stretches of speech than words: join across the shortest pauses.
+  while (parts.length > tokens.length) {
+    let shortest = 1
+    for (let i = 2; i < parts.length; i++) {
+      if (parts[i].start - parts[i - 1].end < parts[shortest].start - parts[shortest - 1].end) shortest = i
+    }
+    parts.splice(shortest - 1, 2, { start: parts[shortest - 1].start, end: parts[shortest].end })
+  }
+
+  const weights = tokens.map(weightOf)
+  const totalWeight = weights.reduce((a, b) => a + b, 0)
+  const before: number[] = [0]
+  for (const w of weights) before.push(before[before.length - 1] + w)
+  const speech = parts.map((p) => p.end - p.start)
+  const totalSpeech = speech.reduce((a, b) => a + b, 0)
+
+  // breaks[k - 1] = index of the first word of part k. Each pause goes after the word whose
+  // estimated time is closest, preferring words that end with punctuation.
+  const breaks: number[] = []
+  let elapsed = 0
+  for (let k = 1; k < parts.length; k++) {
+    elapsed += speech[k - 1]
+    const target = (elapsed / totalSpeech) * totalWeight
+    const lo = (breaks[k - 2] ?? 0) + 1
+    const hi = tokens.length - (parts.length - k)
+    let best = lo
+    let bestScore = Number.POSITIVE_INFINITY
+    for (let b = lo; b <= hi; b++) {
+      const score = Math.abs(before[b] - target) / totalWeight + (PAUSE_AFTER.test(tokens[b - 1]) ? 0 : 0.06)
+      if (score < bestScore) {
+        bestScore = score
+        best = b
+      }
+    }
+    breaks.push(best)
+  }
+
+  const words: Word[] = []
+  const firsts = [0, ...breaks]
+  const lasts = [...breaks, tokens.length]
+  parts.forEach((part, k) => {
+    const group = tokens.slice(firsts[k], lasts[k])
+    const groupWeights = weights.slice(firsts[k], lasts[k])
+    const total = groupWeights.reduce((a, b) => a + b, 0)
+    const length = part.end - part.start
+    let cursor = part.start
+    group.forEach((token, j) => {
+      const d = (groupWeights[j] / total) * length
+      words.push({ text: token, start: round(cursor), end: round(cursor + d) })
+      cursor += d
+    })
+  })
+  return words
+}
+
+/** Distance from a moment to a span (0 inside it). */
+function distanceTo(span: Span, time: number): number {
+  return time < span.start ? span.start - time : time > span.end ? time - span.end : 0
+}
+
+function silenceAround(silences: Span[], time: number): Span | null {
+  return silences.find((s) => s.start <= time && time <= s.end) ?? null
+}
+
+/**
+ * Moves each sentence edge onto the nearest real pause (within `reach` seconds), then times every
+ * word with timeWords(). Without silences it falls back to wordsFromSegments().
+ */
+export function refineTranscript(
+  segments: TranscriptSegment[],
+  silences: Span[],
+  duration: number,
+  reach = 0.6,
+): { segments: TranscriptSegment[]; words: Word[] } {
+  const pauses = [...silences].filter((s) => s.end > s.start).sort((a, b) => a.start - b.start)
+  if (pauses.length === 0 || segments.length === 0) {
+    return { segments, words: wordsFromSegments(segments) }
+  }
+  const out = segments.map((s) => ({ ...s }))
+  for (let i = 0; i < out.length; i++) {
+    const segment = out[i]
+    const previous = out[i - 1]
+    if (previous) {
+      const boundary = (previous.end + segment.start) / 2
+      let pick: Span | null = null
+      for (const pause of pauses) {
+        if (pause.end - pause.start < 0.12 || distanceTo(pause, boundary) > reach) continue
+        if (!pick || distanceTo(pause, boundary) < distanceTo(pick, boundary)) pick = pause
+      }
+      if (pick && pick.start > previous.start + 0.1 && pick.end < segment.end - 0.1) {
+        previous.end = pick.start
+        segment.start = pick.end
+      }
+    }
+    const lead = silenceAround(pauses, segment.start)
+    if (lead && lead.end < segment.end - 0.1) segment.start = lead.end
+  }
+  for (const segment of out) {
+    const tail = silenceAround(pauses, segment.end)
+    if (tail && tail.start > segment.start + 0.1) segment.end = tail.start
+    segment.start = round(Math.max(0, segment.start))
+    segment.end = round(Math.min(duration > 0 ? duration : segment.end, segment.end))
+  }
+  const words = out.flatMap((segment) => timeWords(segment.text, segment, pauses))
+  return { segments: out, words }
+}
+
+/** The part of a transcript between `start` and `end`, moved to start at 0 (for a Short). */
+export function sliceTranscript(transcript: Transcript, start: number, end: number): Transcript {
+  const shift = (t: number) => Math.round((t - start) * 1000) / 1000
+  const words = transcript.words
+    .filter((w) => w.start >= start - 0.05 && w.start < end)
+    .map((w) => ({ text: w.text, start: Math.max(0, shift(w.start)), end: shift(Math.min(end, w.end)) }))
+    .filter((w) => w.end > w.start)
+  const segments = transcript.segments
+    .filter((s) => s.end > start && s.start < end)
+    .map((s) => ({
+      text: s.text,
+      start: Math.max(0, shift(Math.max(start, s.start))),
+      end: shift(Math.min(end, s.end)),
+    }))
+    .filter((s) => s.end > s.start)
+  return { duration: shift(end), words, segments }
+}
+
+/** Groups timed words into caption-sized transcript lines (a sentence, or 14 words at most). */
+export function segmentsFromWords(words: Word[]): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = []
+  let current: Word[] = []
+  const flush = () => {
+    if (current.length === 0) return
+    segments.push({
+      start: current[0].start,
+      end: current[current.length - 1].end,
+      text: current.map((w) => w.text).join(' '),
+    })
+    current = []
+  }
+  for (const word of words) {
+    current.push(word)
+    if (/[.!?…]["')\]”’]?$/.test(word.text) || current.length >= 14) flush()
+  }
+  flush()
+  return segments
 }
 
 /** Splits a segment's time span across its words, weighted by word length. */

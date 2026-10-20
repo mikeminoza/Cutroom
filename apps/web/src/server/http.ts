@@ -23,7 +23,14 @@ export function badRequest(message: string): never {
 export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status })
   if (error instanceof AiError) {
-    const status = error.code === 'rate_limited' ? 429 : error.code === 'missing_key' ? 400 : 502
+    const status =
+      error.code === 'rate_limited'
+        ? 429
+        : error.code === 'missing_key'
+          ? 400
+          : error.code === 'billing'
+            ? 402
+            : 502
     return NextResponse.json({ error: error.message, code: error.code }, { status })
   }
   if (error instanceof z.ZodError) {

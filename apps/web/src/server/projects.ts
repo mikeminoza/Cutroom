@@ -1,11 +1,19 @@
-import { deleteFile } from '@cutroom/shared/storage'
-import { EMPTY_POST, type Motion, type ProjectStatus } from '@cutroom/shared/types'
+import type { JobType } from '@cutroom/shared/protocol'
+import { copyStoredFile, deleteFile } from '@cutroom/shared/storage'
+import {
+  EMPTY_POST,
+  type Motion,
+  normalizeTransition,
+  type ProjectStatus,
+  type SeriesTemplate,
+} from '@cutroom/shared/types'
 import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import type { CharacterDTO, JobDTO, ProjectDTO, ProjectFull, ProjectSummary, SceneDTO } from '@/lib/dto'
 import { effectiveStatus } from '@/lib/stage'
+import { getChannel } from './connections'
 import { db, schema } from './db'
 import type { CharacterRow, JobRow, ProjectRow, SceneRow } from './db/schema'
-import { newId, notFound } from './http'
+import { badRequest, newId, notFound } from './http'
 import { getSettings } from './settings'
 
 export function toProjectDTO(row: ProjectRow): ProjectDTO {
@@ -66,31 +74,111 @@ export async function createProject(input: {
   title: string
   topic: string
   format: 'landscape' | 'portrait'
+  notes?: string
+  /** Start from a series: its brief, look, voice, music, characters and post settings. */
+  series?: { id: string; template: SeriesTemplate } | null
 }) {
   const database = await db()
   const settings = await getSettings()
   const id = newId()
+  const t = input.series?.template ?? null
+  const format = t?.format ?? input.format
+  const seriesChannel = t?.channelId ? await getChannel(t.channelId) : null
   await database.insert(schema.projects).values({
     id,
     title: input.title,
-    topic: input.topic,
-    format: input.format,
-    resolution: settings.defaults.resolution,
-    captionStyle: settings.defaults.captionStyle,
-    mode: settings.defaults.mode,
-    language: settings.defaults.language,
-    targetMinutes: input.format === 'portrait' ? 1 : 5,
-    pace: input.format === 'portrait' ? 3 : 6,
+    topic: input.topic || t?.topic || '',
+    format,
+    resolution: t?.resolution ?? settings.defaults.resolution,
+    captionStyle: t?.captionStyle ?? settings.defaults.captionStyle,
+    mode: t?.mode ?? settings.defaults.mode,
+    language: t?.language ?? settings.defaults.language,
+    audience: t?.audience ?? '',
+    tone: t?.tone ?? '',
+    artStyle: t?.artStyle ?? '',
+    notes: [t?.notes, input.notes].filter((n) => n?.trim()).join('\n\n'),
+    targetMinutes: t?.targetMinutes ?? (format === 'portrait' ? 1 : 5),
+    pace: t?.pace ?? (format === 'portrait' ? 3 : 6),
+    textOverlays: t?.textOverlays ?? true,
+    voice: t?.voice ?? null,
+    musicVolume: t?.musicVolume ?? 0.15,
+    seriesId: input.series?.id ?? null,
+    channelId: seriesChannel?.id ?? null,
+    channelYoutubeId: t?.channelYoutubeId ?? seriesChannel?.youtubeId ?? null,
     post: {
       ...EMPTY_POST,
-      privacy: settings.defaults.privacy,
-      categoryId: settings.defaults.categoryId,
-      madeForKids: settings.defaults.madeForKids,
-      playlistId: settings.defaults.playlistId,
-      language: settings.defaults.language,
+      privacy: t?.post.privacy ?? settings.defaults.privacy,
+      categoryId: t?.post.categoryId ?? settings.defaults.categoryId,
+      madeForKids: t?.post.madeForKids ?? settings.defaults.madeForKids,
+      playlistId: t?.post.playlistId ?? settings.defaults.playlistId,
+      language: t?.post.language ?? settings.defaults.language,
+      tags: t?.post.tags ?? [],
     },
   })
+  if (t) await applyTemplateFiles(id, t)
   return id
+}
+
+/** Gives a new project its own copies of the series' music and character images. */
+async function applyTemplateFiles(projectId: string, template: SeriesTemplate) {
+  const database = await db()
+  if (template.musicUrl) {
+    try {
+      const music = await copyStoredFile(template.musicUrl, `projects/${projectId}/music`)
+      await database
+        .update(schema.projects)
+        .set({ musicUrl: music.url, musicName: template.musicName })
+        .where(eq(schema.projects.id, projectId))
+    } catch (error) {
+      console.warn('Series music was not copied:', error)
+    }
+  }
+  for (const [position, character] of template.characters.entries()) {
+    // A new episode shouldn't fail over one missing series file; it just goes without it.
+    const images = await copyImages(character.images, `projects/${projectId}/characters`, {
+      skipMissing: true,
+    })
+    await database.insert(schema.characters).values({
+      id: newId(),
+      projectId,
+      name: character.name,
+      description: character.description,
+      images,
+      position,
+    })
+  }
+}
+
+/**
+ * Copies images into `folder`. When one can't be copied it fails (removing the copies it made), so
+ * nothing ends up silently missing pictures; with `skipMissing` it leaves that image out instead.
+ */
+export async function copyImages(
+  images: { url: string; key: string }[],
+  folder: string,
+  { skipMissing = false } = {},
+): Promise<{ url: string; key: string }[]> {
+  const results = await Promise.allSettled(images.map((image) => copyStoredFile(image.url, folder)))
+  const copies = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+  const failed = results.find((r) => r.status === 'rejected')
+  if (failed) {
+    console.warn('A character image was not copied:', failed.reason)
+    if (!skipMissing) {
+      await Promise.all(copies.map((copy) => deleteFile(copy.url)))
+      badRequest('A character image could not be copied. Upload it again, or remove it, and try again.')
+    }
+  }
+  return copies
+}
+
+/** Copies one stored file, or fails with a message saying which one. */
+export async function copyFileOrFail(url: string, folder: string, what: string) {
+  try {
+    return await copyStoredFile(url, folder)
+  } catch (error) {
+    console.warn(`${url} was not copied:`, error)
+    badRequest(`The ${what} could not be copied. Upload it again, or remove it, and try again.`)
+  }
 }
 
 export async function getProjectRow(id: string): Promise<ProjectRow> {
@@ -118,7 +206,7 @@ export async function getCharacters(projectId: string): Promise<CharacterRow[]> 
     .orderBy(asc(schema.characters.position), asc(schema.characters.createdAt))
 }
 
-export async function latestJob(projectId: string, type: 'retime' | 'publish'): Promise<JobRow | null> {
+export async function latestJob(projectId: string, type: JobType): Promise<JobRow | null> {
   const database = await db()
   const [row] = await database
     .select()
@@ -131,11 +219,12 @@ export async function latestJob(projectId: string, type: 'retime' | 'publish'): 
 
 export async function getProjectFull(id: string): Promise<ProjectFull> {
   const project = await getProjectRow(id)
-  const [scenes, characters, retime, publish] = await Promise.all([
+  const [scenes, characters, retime, publish, voice] = await Promise.all([
     getScenes(id),
     getCharacters(id),
     latestJob(id, 'retime'),
     latestJob(id, 'publish'),
+    latestJob(id, 'voice'),
   ])
   const dto = toProjectDTO(project)
   dto.status = effectiveStatus({
@@ -151,7 +240,11 @@ export async function getProjectFull(id: string): Promise<ProjectFull> {
     project: dto,
     scenes: scenes.map(toSceneDTO),
     characters: characters.map(toCharacterDTO),
-    jobs: { retime: retime ? toJobDTO(retime) : null, publish: publish ? toJobDTO(publish) : null },
+    jobs: {
+      retime: retime ? toJobDTO(retime) : null,
+      publish: publish ? toJobDTO(publish) : null,
+      voice: voice ? toJobDTO(voice) : null,
+    },
   }
 }
 
@@ -206,6 +299,9 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       scheduledAt,
       youtubeVideoId: row.youtubeVideoId,
       updatedAt: row.updatedAt.toISOString(),
+      seriesId: row.seriesId,
+      channelId: row.channelId,
+      stats: row.stats ?? null,
       frames: frames.map((f) => ({ start: f.start, end: f.end, imageUrl: f.imageUrl })),
       hasScript: Boolean(row.script.trim()),
       hasVoiceover: Boolean(row.voiceoverUrl),
@@ -290,7 +386,7 @@ export async function replaceScenes(projectId: string, drafts: SceneDraftInput[]
         shot: d.shot ?? '',
         motion: d.motion ?? 'zoom-in',
         onScreenText: d.onScreenText ?? '',
-        transition: d.transition ?? 'cut',
+        transition: normalizeTransition(d.transition),
         notes: d.notes ?? '',
       })),
     )

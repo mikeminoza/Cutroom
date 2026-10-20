@@ -1,6 +1,6 @@
 // Builds the ASS subtitle file that ffmpeg burns into the video. Pure: no I/O, no clock.
 // Chunks come from chunkCaptions() so the burned captions match the browser preview.
-import type { CaptionChunk } from '@cutroom/shared/captions'
+import { type CaptionChunk, OVERLAY_FADE_SECONDS, type Overlay } from '@cutroom/shared/captions'
 import type { CaptionStyle, VideoFormat } from '@cutroom/shared/types'
 
 /** Kodak yellow, the colour of the word being spoken in 'highlight' mode. */
@@ -57,6 +57,26 @@ export function captionLayout(width: number, height: number, format: VideoFormat
   }
 }
 
+export interface OverlayLayout {
+  fontSize: number
+  /** With BorderStyle 3 the outline width is the padding of the box around the text. */
+  padding: number
+  marginV: number
+  marginH: number
+}
+
+/** On-screen text sits at the top, clear of the captions (bottom on video, 68% on Shorts). */
+export function overlayLayout(width: number, height: number, format: VideoFormat): OverlayLayout {
+  const fontSize = format === 'portrait' ? Math.round(height * 0.032) : Math.round(height * 0.056)
+  return {
+    fontSize,
+    padding: Math.max(2, Math.round(fontSize * 0.32)),
+    // Shorts: below YouTube's top bar. Video: a little in from the edge.
+    marginV: Math.round(height * (format === 'portrait' ? 0.13 : 0.07)),
+    marginH: Math.round(width * 0.08),
+  }
+}
+
 /** '#RRGGBB' -> ASS '&HAABBGGRR' (style lines). */
 export function assColor(hex: string, alpha = 0): string {
   const clean = hex.replace('#', '')
@@ -104,6 +124,33 @@ function header(options: AssOptions, layout: CaptionLayout): string {
   const white = assColor('#FFFFFF')
   const black = assColor('#000000')
   const shadow = assColor('#000000', 0x70)
+  const box = overlayLayout(options.width, options.height, options.format)
+  // BorderStyle 3 draws an opaque box in the outline colour; the ink colour at ~80% opacity.
+  const overlayStyle = [
+    'Overlay',
+    'Arial',
+    box.fontSize,
+    white,
+    white,
+    assColor('#171C26', 0x30),
+    assColor('#000000', 0xff),
+    -1,
+    0,
+    0,
+    0,
+    100,
+    100,
+    0,
+    0,
+    3,
+    box.padding,
+    0,
+    8,
+    box.marginH,
+    box.marginH,
+    box.marginV,
+    1,
+  ].join(',')
   // Name, Fontname, Fontsize, Primary, Secondary, Outline, Back, Bold, Italic, Underline, StrikeOut,
   // ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
   const style = [
@@ -144,6 +191,7 @@ function header(options: AssOptions, layout: CaptionLayout): string {
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     `Style: ${style}`,
+    `Style: ${overlayStyle}`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -154,14 +202,30 @@ function dialogue(start: number, end: number, text: string): string {
   return `Dialogue: 0,${formatCentis(start)},${formatCentis(end)},Caption,,0,0,0,,${text}`
 }
 
+function overlayEvent(overlay: Overlay): string | null {
+  const start = toCentis(overlay.start)
+  const end = toCentis(overlay.end)
+  const text = escapeAssText(overlay.text.trim())
+  if (end <= start || !text) return null
+  const fadeMs = overlay.end - overlay.start >= OVERLAY_FADE_SECONDS * 3 ? OVERLAY_FADE_SECONDS * 1000 : 0
+  const tags = fadeMs ? `{\\fad(${fadeMs},${fadeMs})}` : ''
+  // Layer 1: drawn above the captions if the two ever meet.
+  return `Dialogue: 1,${formatCentis(start)},${formatCentis(end)},Overlay,,0,0,0,,${tags}${text}`
+}
+
 /**
  * The full .ass file. 'line' = one white event per chunk. 'highlight' = one event per word
  * inside each chunk, back to back (each ends exactly where the next starts, so there is no
- * flicker), with the spoken word in Kodak yellow. 'off' = header only.
+ * flicker), with the spoken word in Kodak yellow. 'off' = no caption events.
+ * On-screen text overlays are added whatever the caption style.
  */
-export function buildAss(chunks: CaptionChunk[], options: AssOptions): string {
+export function buildAss(chunks: CaptionChunk[], options: AssOptions, overlays: Overlay[] = []): string {
   const layout = captionLayout(options.width, options.height, options.format)
   const lines = [header(options, layout)]
+  for (const overlay of overlays) {
+    const event = overlayEvent(overlay)
+    if (event) lines.push(event)
+  }
   if (options.style === 'off') return `${lines.join('\n')}\n`
 
   const tags = layout.pos ? `\\an5\\pos(${layout.pos.x},${layout.pos.y})` : ''

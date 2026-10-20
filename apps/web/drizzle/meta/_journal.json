@@ -8,6 +8,20 @@
       "when": 1792385555149,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792472266238,
+      "tag": "0001_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792537381341,
+      "tag": "0002_job_guard",
+      "breakpoints": true
     }
   ]
 }

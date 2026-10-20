@@ -22,6 +22,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import {
   Button,
+  ButtonLink,
   CopyButton,
   DropZone,
   Field,
@@ -30,14 +31,16 @@ import {
   ProgressBar,
   Segmented,
   Select,
+  Spinner,
   Switch,
   useConfirm,
 } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
+import { resolveChannel } from '@/lib/channels'
 import { cn } from '@/lib/cn'
 import type { JobDTO, ProjectFull } from '@/lib/dto'
 import { formatWhen } from '@/lib/format'
-import { keys, useProjectAction, useSaver, useSettings, useStatus } from '@/lib/hooks'
+import { keys, usePlaylists, useProjectAction, useSaver, useSettings, useStatus } from '@/lib/hooks'
 import type { StepId, Tone } from '@/lib/stage'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import { JobSteps, Warnings } from './job-panel'
@@ -77,14 +80,15 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   const setPost = usePost(data)
   const client = useQueryClient()
   const { data: status } = useStatus()
+  const { saver } = useSaver(project.id)
   const [writing, setWriting] = useState(false)
-  const playlists = useQuery({
-    queryKey: ['playlists'],
-    queryFn: () => api.get<{ playlists: { id: string; title: string }[] }>('/api/google/youtube'),
-    enabled: Boolean(status?.youtube.connected),
-    staleTime: 5 * 60_000,
-  })
+  const channels = status?.channels ?? []
+  // Resolved exactly as publishing resolves it.
+  const channel = resolveChannel(channels, project.channelId, project.channelYoutubeId)
+  const disconnected = !channel && Boolean(project.channelYoutubeId)
+  const playlists = usePlaylists(channel?.id ?? null, Boolean(channel))
   const tagChars = post.tags.reduce((n, t) => n + t.length + (t.includes(' ') ? 2 : 0) + 1, 0)
+  const locked = Boolean(project.youtubeVideoId)
 
   const write = async () => {
     setWriting(true)
@@ -193,6 +197,40 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
           <TagInput tags={post.tags} onChange={(tags) => setPost({ tags }, 0)} />
         </Field>
         <div className="grid gap-5 sm:grid-cols-2">
+          {(channels.length > 1 || disconnected) && (
+            <Field
+              label="Channel"
+              className="sm:col-span-2"
+              error={
+                disconnected
+                  ? 'This video was set to post to a channel that is disconnected. Reconnect it in Settings, or pick another one here.'
+                  : null
+              }
+              hint={locked ? 'Already on YouTube. Start over to post it to another channel.' : undefined}
+            >
+              <Select
+                value={channel?.id ?? ''}
+                disabled={locked}
+                onChange={(e) => {
+                  // Playlists belong to a channel: clear the pick when the channel changes.
+                  void saver.project({ channelId: e.target.value }, 0)
+                  if (post.playlistId) setPost({ playlistId: '' }, 0)
+                }}
+              >
+                {!channel && (
+                  <option value="" disabled>
+                    Disconnected channel
+                  </option>
+                )}
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                    {c.isDefault ? ' (default)' : ''}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
           <Field label="Category">
             <Select value={post.categoryId} onChange={(e) => setPost({ categoryId: e.target.value }, 0)}>
               {YOUTUBE_CATEGORIES.map((c) => (
@@ -304,8 +342,14 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
   const { project, characters } = data
   const { saver } = useSaver(project.id)
   const upload = useUploader(project.id)
+  const action = useProjectAction(project.id)
+  const { data: status } = useStatus()
+  const { confirm, element } = useConfirm()
   const [progress, setProgress] = useState<number | null>(null)
+  const [generating, setGenerating] = useState<string | null>(null)
+  const [own, setOwn] = useState('')
   const ideas = project.post.thumbnailIdeas
+  const canGenerate = status?.gemini.configured === true
 
   const onFiles = async ([file]: File[]) => {
     try {
@@ -319,15 +363,36 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
     }
   }
 
+  const generate = async (key: string, prompt: string) => {
+    if (
+      project.thumbnailUrl &&
+      !(await confirm({
+        title: 'Replace the thumbnail?',
+        body: 'Gemini makes a new thumbnail. The current one is deleted.',
+        action: 'Generate thumbnail',
+      }))
+    ) {
+      return
+    }
+    setGenerating(key)
+    await action(`/api/projects/${project.id}/ai/thumbnail`, { prompt }, 'Thumbnail ready')
+    setGenerating(null)
+  }
+
   return (
     <Panel
       title="Thumbnail"
       description="1280×720 works best. Custom thumbnails need a phone-verified YouTube channel."
     >
       <div className="grid gap-5 px-5 py-5 md:grid-cols-[320px_1fr]">
-        <DropZone accept="image/*" onFiles={onFiles}>
+        <DropZone accept="image/*" onFiles={onFiles} disabled={generating !== null}>
           {({ open, dragging }) =>
-            project.thumbnailUrl && progress === null ? (
+            generating !== null ? (
+              <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-control)] bg-film text-[13px] text-paper/80">
+                <Spinner />
+                Gemini is designing your thumbnail…
+              </div>
+            ) : project.thumbnailUrl && progress === null ? (
               <div className="group relative aspect-video overflow-hidden rounded-[var(--radius-control)] bg-film">
                 {/* biome-ignore lint/performance/noImgElement: user uploads */}
                 <img src={project.thumbnailUrl} alt="Thumbnail" className="size-full object-cover" />
@@ -366,7 +431,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
         <div className="flex flex-col gap-3">
           {ideas.length === 0 ? (
             <p className="text-[13.5px] leading-relaxed text-ink-2">
-              Use Write with AI above to get three thumbnail ideas with ready-to-copy prompts. Without a
+              Use Write with AI above to get three thumbnail ideas with ready-to-use prompts. Without a
               thumbnail, YouTube picks a frame from the video.
             </p>
           ) : (
@@ -378,16 +443,55 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
               return (
                 <div
                   key={idea}
-                  className="flex items-start gap-3 rounded-[var(--radius-control)] border border-line px-3 py-2.5"
+                  className="flex flex-wrap items-start gap-3 rounded-[var(--radius-control)] border border-line px-3 py-2.5"
                 >
-                  <p className="flex-1 text-[13.5px] leading-snug">{idea}</p>
-                  <CopyButton text={prompt} label="Copy prompt" />
+                  <p className="min-w-48 flex-1 text-[13.5px] leading-snug">{idea}</p>
+                  <div className="flex gap-1.5">
+                    <CopyButton text={prompt} label="Copy prompt" />
+                    {canGenerate && (
+                      <Button
+                        variant="dark"
+                        size="sm"
+                        busy={generating === `idea-${i}`}
+                        disabled={generating !== null}
+                        onClick={() => generate(`idea-${i}`, prompt)}
+                        icon={<Sparkles className="size-3.5" />}
+                      >
+                        Generate
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )
             })
           )}
+          {canGenerate && (
+            <Field label="Or describe your own" hint="Characters and your art style are added for you.">
+              <div className="flex gap-2">
+                <Input
+                  className="min-w-0"
+                  value={own}
+                  maxLength={1000}
+                  onChange={(e) => setOwn(e.target.value)}
+                  placeholder="A shocked octopus holding a glowing jar, bold yellow background"
+                />
+                <Button
+                  variant="plain"
+                  busy={generating === 'own'}
+                  disabled={!own.trim() || generating !== null}
+                  onClick={() =>
+                    generate('own', buildThumbnailPrompt(own, { artStyle: project.artStyle, characters }))
+                  }
+                  icon={<Sparkles className="size-4" />}
+                >
+                  Generate
+                </Button>
+              </div>
+            </Field>
+          )}
         </div>
       </div>
+      {element}
     </Panel>
   )
 }
@@ -396,7 +500,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
 
 interface ScheduleData {
   timezone: string
-  entries: { at: string; project: { id: string } | null }[]
+  entries: { at: string; channelId: string | null; project: { id: string } | null }[]
 }
 
 function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) => void }) {
@@ -415,8 +519,20 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
   const [busy, setBusy] = useState(false)
   const stage = stageOf(data)
   const missing = scenes.length - stage.imagesDone
-  const nextSlot = schedule.data?.entries.find((e) => !e.project || e.project.id === project.id)
+  const channels = status?.channels ?? []
+  const channel = resolveChannel(channels, project.channelId, project.channelYoutubeId)
+  const disconnected = !channel && Boolean(project.channelYoutubeId)
+  // Each channel has its own slots; only this channel's free ones count.
+  const nextSlot = schedule.data?.entries.find(
+    (e) =>
+      (e.channelId ?? null) === (channel?.id ?? null) &&
+      Date.parse(e.at) > Date.now() &&
+      (!e.project || e.project.id === project.id),
+  )
   const tz = schedule.data?.timezone ?? settings?.timezone
+  const notifying = Boolean(
+    status && (status.notifications.discord || status.notifications.telegram || status.notifications.email),
+  )
 
   const checks: { label: string; tone: Tone; detail: string; step?: StepId; href?: string }[] = [
     {
@@ -432,7 +548,7 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
         ? 'Scenes match the speech'
         : project.voiceoverUrl
           ? 'Match the scenes to it'
-          : 'Upload the voice-over',
+          : 'Upload one, or record it with AI',
       step: 'voiceover',
     },
     {
@@ -444,10 +560,12 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
     },
     {
       label: 'YouTube',
-      tone: status?.youtube.connected ? 'ok' : 'idle',
-      detail: status?.youtube.connected
-        ? `Posting to ${status.youtube.label}`
-        : 'Not connected — the video is rendered but not posted',
+      tone: channel ? 'ok' : disconnected ? 'bad' : 'idle',
+      detail: channel
+        ? `Posting to ${channel.title}`
+        : disconnected
+          ? 'Its channel is disconnected — reconnect it, or pick another under Post details'
+          : 'Not connected — the video is rendered but not posted',
       href: '/settings',
     },
     {
@@ -462,15 +580,17 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
       label: 'Worker',
       tone: status?.worker.configured ? (status.worker.reachable ? 'ok' : 'idle') : 'bad',
       detail: !status?.worker.configured
-        ? 'Not set up — add WORKER_URL and WORKER_SECRET'
-        : status.worker.reachable
-          ? 'Online'
-          : 'Asleep — it wakes up when you start (about a minute)',
+        ? 'Not set up — see Settings'
+        : status.worker.mode === 'github'
+          ? 'GitHub Actions starts a run for this video'
+          : status.worker.reachable
+            ? 'Online'
+            : 'Asleep — it wakes up when you start (about a minute)',
       href: '/settings',
     },
   ]
 
-  const blocked = !scenes.length || !status?.worker.configured
+  const blocked = !scenes.length || !status?.worker.configured || disconnected
   const finish = async () => {
     if (!stage.timed && project.voiceoverUrl) {
       const ok = await confirm({
@@ -626,10 +746,7 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
         >
           {when === 'now' ? 'Finish & post' : 'Finish & schedule'}
         </Button>
-        <p className="text-[12.5px] leading-snug text-ink-3">
-          Keep a Cutroom tab open until the upload finishes. On Render&apos;s free plan the worker sleeps when
-          nothing is checking on it.
-        </p>
+        <CloseHint notifying={notifying} />
       </div>
       {element}
     </Panel>
@@ -638,11 +755,32 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
 
 // ---------------------------------------------------------------- job
 
+/** The worker keeps itself awake (or runs on GitHub Actions), so the page can be closed. */
+function CloseHint({ notifying }: { notifying: boolean }) {
+  return (
+    <p className="text-[12.5px] leading-snug text-ink-3">
+      You can close this page: the worker carries on by itself.{' '}
+      {notifying ? (
+        'You’ll get a message when it needs you or is done.'
+      ) : (
+        <>
+          Set up{' '}
+          <a href="/settings#notifications" className="underline underline-offset-2">
+            notifications
+          </a>{' '}
+          to hear when it needs you or is done.
+        </>
+      )}
+    </p>
+  )
+}
+
 function JobPanel({ data, job }: { data: ProjectFull; job: JobDTO }) {
   const { project } = data
   const client = useQueryClient()
   const action = useProjectAction(project.id)
   const { saver } = useSaver(project.id)
+  const { data: status } = useStatus()
   const { confirm, element } = useConfirm()
   const [busy, setBusy] = useState<string | null>(null)
   const warnings = job.result.warnings ?? []
@@ -740,9 +878,14 @@ function JobPanel({ data, job }: { data: ProjectFull; job: JobDTO }) {
                 Waiting for the worker. If it was asleep it needs about a minute to start.
               </p>
             )}
-            <p className="text-[12.5px] leading-snug text-ink-3">
-              Keep a Cutroom tab open until it finishes. The free worker sleeps when nothing checks on it.
-            </p>
+            <CloseHint
+              notifying={Boolean(
+                status &&
+                  (status.notifications.discord ||
+                    status.notifications.telegram ||
+                    status.notifications.email),
+              )}
+            />
             <Button
               variant="ghost"
               size="sm"
@@ -760,49 +903,50 @@ function JobPanel({ data, job }: { data: ProjectFull; job: JobDTO }) {
           <div className="flex flex-col gap-2">
             {project.youtubeVideoId && (
               <div className="flex flex-wrap gap-2">
-                <a
+                <ButtonLink
                   href={`https://youtu.be/${project.youtubeVideoId}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="contents"
+                  variant="dark"
+                  icon={<ExternalLink className="size-4" />}
                 >
-                  <Button variant="dark" icon={<ExternalLink className="size-4" />}>
-                    Open on YouTube
-                  </Button>
-                </a>
-                <a
+                  Open on YouTube
+                </ButtonLink>
+                <ButtonLink
                   href={`https://studio.youtube.com/video/${project.youtubeVideoId}/edit`}
                   target="_blank"
                   rel="noreferrer"
-                  className="contents"
+                  icon={<ExternalLink className="size-4" />}
                 >
-                  <Button variant="plain" icon={<ExternalLink className="size-4" />}>
-                    YouTube Studio
-                  </Button>
-                </a>
+                  YouTube Studio
+                </ButtonLink>
               </div>
             )}
             <div className="flex flex-wrap gap-2">
               {project.driveFolderUrl && (
-                <a href={project.driveFolderUrl} target="_blank" rel="noreferrer" className="contents">
-                  <Button variant="plain" icon={<FolderOpen className="size-4" />}>
-                    Drive folder
-                  </Button>
-                </a>
+                <ButtonLink
+                  href={project.driveFolderUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  icon={<FolderOpen className="size-4" />}
+                >
+                  Drive folder
+                </ButtonLink>
               )}
               {project.outputUrl && (
-                <a href={project.outputUrl} download className="contents">
-                  <Button variant="plain" icon={<Download className="size-4" />}>
-                    Download MP4
-                  </Button>
-                </a>
+                <ButtonLink href={project.outputUrl} download icon={<Download className="size-4" />}>
+                  Download MP4
+                </ButtonLink>
               )}
               {project.srtUrl && (
-                <a href={project.srtUrl} download className="contents">
-                  <Button variant="ghost" icon={<Download className="size-4" />}>
-                    Captions
-                  </Button>
-                </a>
+                <ButtonLink
+                  href={project.srtUrl}
+                  download
+                  variant="ghost"
+                  icon={<Download className="size-4" />}
+                >
+                  Captions
+                </ButtonLink>
               )}
             </div>
             <Button

@@ -1,5 +1,5 @@
 import type { JobPayload, JobResult, StepKey, StepStatus } from '@cutroom/shared/protocol'
-import { sendEvent } from '../api'
+import { LostJob, sendEvent } from '../api'
 import { throttle } from '../util'
 
 export interface JobContext {
@@ -19,15 +19,34 @@ export interface JobContext {
   warn: (message: string) => Promise<void>
 }
 
-export function createContext(payload: JobPayload, workDir: string, signal: AbortSignal): JobContext {
+/**
+ * `lost` is called when the web app refuses a report (the job was stopped, or another worker
+ * took it over), so the run can stop instead of finishing work nobody will use.
+ */
+export function createContext(
+  payload: JobPayload,
+  workDir: string,
+  signal: AbortSignal,
+  lost: () => void = () => {},
+): JobContext {
   const jobId = payload.job.id
   const data: JobResult = { ...payload.job.result }
   const finishedSteps = new Set(
     payload.job.steps.filter((s) => s.status === 'done' || s.status === 'skipped').map((s) => s.key),
   )
   const progress = throttle((key: StepKey, fraction: number, detail: string) => {
-    sendEvent(jobId, { type: 'step', key, status: 'running', progress: fraction, detail }).catch(() => {})
+    sendEvent(jobId, { type: 'step', key, status: 'running', progress: fraction, detail }).catch((error) => {
+      if (error instanceof LostJob) lost()
+    })
   }, 3000)
+  const send = async (event: Parameters<typeof sendEvent>[1]) => {
+    try {
+      await sendEvent(jobId, event)
+    } catch (error) {
+      if (error instanceof LostJob) lost()
+      throw error
+    }
+  }
 
   const ctx: JobContext = {
     jobId,
@@ -37,7 +56,7 @@ export function createContext(payload: JobPayload, workDir: string, signal: Abor
     data,
     async result(patch) {
       Object.assign(data, patch)
-      await sendEvent(jobId, { type: 'result', patch })
+      await send({ type: 'result', patch })
     },
     async step(key, status, detail) {
       if (status === 'running') ctx.current = key
@@ -45,11 +64,11 @@ export function createContext(payload: JobPayload, workDir: string, signal: Abor
         progress.flush()
         finishedSteps.add(key)
       }
-      await sendEvent(jobId, { type: 'step', key, status, detail })
+      await send({ type: 'step', key, status, detail })
     },
     progress,
     async waiting(key, detail) {
-      await sendEvent(jobId, { type: 'waiting', key, detail })
+      await send({ type: 'waiting', key, detail })
     },
     finished: (key) => finishedSteps.has(key),
     async warn(message) {

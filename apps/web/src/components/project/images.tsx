@@ -2,9 +2,20 @@
 
 import { buildImagePrompt, sceneCharacters } from '@cutroom/shared/prompts'
 import { formatTimecode } from '@cutroom/shared/timing'
-import { MOTIONS, type Motion, outputSize } from '@cutroom/shared/types'
-import { ArrowRight, Download, ImagePlus, Images, Replace, Trash2, TriangleAlert } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MOTIONS, type Motion, normalizeTransition, outputSize, TRANSITIONS } from '@cutroom/shared/types'
+import { useQueryClient } from '@tanstack/react-query'
+import {
+  ArrowRight,
+  Download,
+  ImagePlus,
+  Images,
+  Replace,
+  Sparkles,
+  Square,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import {
   Button,
@@ -15,31 +26,146 @@ import {
   ProgressBar,
   Segmented,
   Select,
+  Spinner,
   Switch,
   Tip,
+  useConfirm,
   useFilePicker,
 } from '@/components/ui'
-import { errorText } from '@/lib/api'
+import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { useSaver } from '@/lib/hooks'
+import { keys, useSaver, useStatus } from '@/lib/hooks'
 import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
-import { MOTION_LABEL } from './script'
+import { MOTION_LABEL, TRANSITION_LABEL } from './script'
 import type { StepProps } from './workspace'
 
 type Progress = Record<string, number>
 
+/**
+ * Image generation in progress. It lives outside the component so it carries on, and stays
+ * visible, when you switch to another step and back: no scene is requested (and billed) twice.
+ */
+const generation = {
+  scenes: new Set<string>(),
+  batches: new Map<string, { done: number; total: number; stop: boolean }>(),
+  version: 0,
+  listeners: new Set<() => void>(),
+}
+
+function emitGeneration() {
+  generation.version++
+  for (const listener of generation.listeners) listener()
+}
+
+function subscribeGeneration(listener: () => void) {
+  generation.listeners.add(listener)
+  return () => {
+    generation.listeners.delete(listener)
+  }
+}
+
+/** Re-renders whenever generation starts, finishes or makes progress. */
+function useGeneration() {
+  return useSyncExternalStore(
+    subscribeGeneration,
+    () => generation.version,
+    () => 0,
+  )
+}
+
 export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepProps) {
   const { project, scenes, characters } = data
   const { saver } = useSaver(project.id)
+  const client = useQueryClient()
   const upload = useUploader(project.id)
+  const { data: status } = useStatus()
+  const { confirm, element: confirmDialog } = useConfirm()
   const [progress, setProgress] = useState<Progress>({})
   const [missingOnly, setMissingOnly] = useState(false)
+  useGeneration()
+  const generating = generation.scenes
+  const batch = generation.batches.get(project.id) ?? null
   const done = scenes.filter((s) => s.imageUrl).length
   const scenesRef = useRef(scenes)
   scenesRef.current = scenes
+  const canGenerate = status?.gemini.configured === true
+
+  /** Gemini paints one scene. Returns 'stop' when nothing else will work either (billing, key). */
+  const generateOne = useCallback(
+    async (scene: SceneDTO): Promise<'ok' | 'failed' | 'stop'> => {
+      if (generation.scenes.has(scene.id)) return 'failed'
+      generation.scenes.add(scene.id)
+      emitGeneration()
+      try {
+        // Prompt edits are saved with a short delay; make sure Gemini gets the latest one.
+        await saver.flushAll()
+        const updated = await api.post<SceneDTO | { ok: false }>(`/api/scenes/${scene.id}/image`)
+        if ('id' in updated) {
+          client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
+            prev ? { ...prev, scenes: prev.scenes.map((s) => (s.id === updated.id ? updated : s)) } : prev,
+          )
+        }
+        return 'ok'
+      } catch (error) {
+        toast.error(`Scene ${scene.index + 1}: ${errorText(error)}`)
+        return error instanceof ApiError && [400, 401, 402].includes(error.status) ? 'stop' : 'failed'
+      } finally {
+        generation.scenes.delete(scene.id)
+        emitGeneration()
+      }
+    },
+    [client, project.id, saver],
+  )
+
+  const generateScene = async (scene: SceneDTO) => {
+    if (
+      scene.imageUrl &&
+      !(await confirm({
+        title: `Replace scene ${scene.index + 1}'s image?`,
+        body: 'Gemini makes a new picture from the prompt. The current image is deleted.',
+        action: 'Generate new image',
+      }))
+    ) {
+      return
+    }
+    await generateOne(scene)
+  }
+
+  /**
+   * Every scene still without an image, two at a time. It keeps going if you open another step
+   * (its progress lives outside this component), and only one batch runs per project.
+   */
+  const generateMissing = async () => {
+    if (generation.batches.has(project.id)) return
+    const targets = scenesRef.current.filter((s) => !s.imageUrl && !generation.scenes.has(s.id))
+    if (targets.length === 0) return
+    const run = { done: 0, total: targets.length, stop: false }
+    generation.batches.set(project.id, run)
+    emitGeneration()
+    let next = 0
+    let made = 0
+    try {
+      await Promise.all(
+        [0, 1].map(async () => {
+          while (next < targets.length && !run.stop) {
+            const scene = targets[next++]
+            const outcome = await generateOne(scene)
+            run.done++
+            if (outcome === 'ok') made++
+            if (outcome === 'stop') run.stop = true
+            emitGeneration()
+          }
+        }),
+      )
+    } finally {
+      generation.batches.delete(project.id)
+      emitGeneration()
+    }
+    if (made) toast.success(`Generated ${plural(made, 'image')}`)
+  }
 
   const uploadTo = useCallback(
     async (scene: SceneDTO, file: File) => {
@@ -200,11 +326,34 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 <ProgressBar value={done / scenes.length} tone="you" className="mt-2 max-w-md" />
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {canGenerate &&
+                  (batch ? (
+                    <Button
+                      variant="plain"
+                      onClick={() => {
+                        batch.stop = true
+                        emitGeneration()
+                      }}
+                      icon={<Square className="size-3.5" />}
+                    >
+                      Stop ({batch.done} of {batch.total})
+                    </Button>
+                  ) : (
+                    !complete && (
+                      <Tip
+                        content={`Uses ${status?.gemini.imageModel}. Image models need billing on your Gemini key.`}
+                      >
+                        <Button variant="go" onClick={generateMissing} icon={<Sparkles className="size-4" />}>
+                          Generate {scenes.length - done} with AI
+                        </Button>
+                      </Tip>
+                    )
+                  ))}
                 <Button variant="plain" onClick={downloadPrompts} icon={<Download className="size-4" />}>
                   All prompts (.txt)
                 </Button>
                 <Button
-                  variant={complete ? 'plain' : 'go'}
+                  variant={complete || canGenerate ? 'plain' : 'go'}
                   onClick={picker.open}
                   icon={<Images className="size-4" />}
                 >
@@ -228,9 +377,10 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                   'Drop to place them: files named like scene-03.png go to that scene, the rest fill empty scenes in order.'
                 ) : (
                   <>
-                    Copy a prompt into your image tool with the reference images attached, then drop the
-                    result on its scene. Or select a scene and press <Kbd>Ctrl</Kbd> <Kbd>V</Kbd> to paste a
-                    copied image.
+                    {canGenerate
+                      ? 'Generate the pictures with AI (character reference images are attached for you), or copy a prompt into your own image tool and drop the result on its scene.'
+                      : 'Copy a prompt into your image tool with the reference images attached, then drop the result on its scene.'}{' '}
+                    Or select a scene and press <Kbd>Ctrl</Kbd> <Kbd>V</Kbd> to paste a copied image.
                   </>
                 )}
               </p>
@@ -257,6 +407,8 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             progress={progress[scene.id]}
             onSelect={() => selectScene(scene.id)}
             onFile={(file) => uploadOne(scene, file)}
+            generating={generating.has(scene.id)}
+            onGenerate={canGenerate && !batch ? () => generateScene(scene) : undefined}
           />
         ))}
       </ol>
@@ -265,6 +417,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           Every scene has an image.
         </p>
       )}
+      {confirmDialog}
     </div>
   )
 }
@@ -277,6 +430,8 @@ function SceneImageRow({
   progress,
   onSelect,
   onFile,
+  generating,
+  onGenerate,
 }: {
   data: ProjectFull
   scene: SceneDTO
@@ -285,6 +440,9 @@ function SceneImageRow({
   progress: number | undefined
   onSelect: () => void
   onFile: (file: File) => void
+  generating: boolean
+  /** Undefined when AI images are not available (no Gemini key, or a batch is running). */
+  onGenerate?: () => void
 }) {
   const { project } = data
   const { saver } = useSaver(project.id)
@@ -325,6 +483,7 @@ function SceneImageRow({
             portrait={portrait}
             dragging={dragging}
             progress={progress}
+            generating={generating}
             onPick={open}
             onFocusPoint={(x, y) => set({ focusX: x, focusY: y })}
           />
@@ -356,6 +515,21 @@ function SceneImageRow({
           </p>
           <div className="flex flex-wrap items-center gap-2 px-2 py-2">
             <CopyButton text={prompt} label="Copy prompt" variant="dark" />
+            {(onGenerate || generating) && (
+              <Button
+                variant="plain"
+                size="sm"
+                busy={generating}
+                disabled={!onGenerate || progress !== undefined}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onGenerate?.()
+                }}
+                icon={<Sparkles className="size-3.5" />}
+              >
+                {generating ? 'Generating…' : scene.imageUrl ? 'Generate again' : 'Generate'}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)}>
               {expanded ? 'Show less' : 'Show all'}
             </Button>
@@ -397,6 +571,19 @@ function SceneImageRow({
                 </option>
               ))}
             </Select>
+            {scene.index > 0 && (
+              <Select
+                aria-label="Transition in"
+                value={normalizeTransition(scene.transition)}
+                onChange={(e) => set({ transition: e.target.value })}
+              >
+                {TRANSITIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t === 'cut' ? 'Cut in' : `${TRANSITION_LABEL[t]} in`}
+                  </option>
+                ))}
+              </Select>
+            )}
             {lowRes && (
               <p className="flex gap-1.5 text-[12.5px] leading-snug text-kodak-ink">
                 <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -441,6 +628,7 @@ function Frame({
   portrait,
   dragging,
   progress,
+  generating,
   onPick,
   onFocusPoint,
 }: {
@@ -448,10 +636,24 @@ function Frame({
   portrait: boolean
   dragging: boolean
   progress: number | undefined
+  generating: boolean
   onPick: () => void
   onFocusPoint: (x: number, y: number) => void
 }) {
   const size = portrait ? 'h-[196px] w-[110px]' : 'h-[124px] w-[220px]'
+  if (generating) {
+    return (
+      <div
+        className={cn(
+          'flex shrink-0 flex-col items-center justify-center gap-2 rounded-[var(--radius-frame)] bg-film text-[12.5px] text-paper/80',
+          size,
+        )}
+      >
+        <Spinner />
+        <span className="px-2 text-center leading-tight">Gemini is painting…</span>
+      </div>
+    )
+  }
   if (!scene.imageUrl || progress !== undefined) {
     return (
       <button

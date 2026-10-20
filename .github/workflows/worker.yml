@@ -1,0 +1,53 @@
+# The Cutroom worker on GitHub Actions: the web app starts one run per job (rendering, uploads,
+# AI voice-overs) when GITHUB_DISPATCH_TOKEN and GITHUB_REPO are set on Vercel.
+# Setup: docs/DEPLOYMENT.md, "Optional: run the worker on GitHub Actions".
+name: Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Cutroom job id (the web app fills this in)
+        required: true
+        type: string
+
+# Never two runs of the same job at once (the web app also hands each job to one worker only).
+concurrency:
+  group: cutroom-job-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install ffmpeg and caption fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-liberation
+      - run: pnpm install --frozen-lockfile --filter @cutroom/worker...
+      - name: Run the job
+        working-directory: apps/worker
+        env:
+          # Passed through the environment, never pasted into the command line.
+          JOB_ID: ${{ inputs.job_id }}
+          APP_URL: ${{ secrets.APP_URL }}
+          WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_MODEL: ${{ vars.ELEVENLABS_MODEL }}
+        run: pnpm exec tsx src/once.ts "$JOB_ID"

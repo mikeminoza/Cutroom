@@ -3,16 +3,28 @@
 // Pipeline (built for a fraction of one CPU core and ~512 MB of RAM):
 //  1. Each scene becomes its own short video-only clip. The image is decoded, fitted and
 //     colour-converted ONCE, then that single frame is looped, so the per-frame work is just the
-//     motion transform, the caption overlay and the x264 encode. Captions are burned here too:
-//     the clip is stamped with its absolute timeline time so libass picks the right events.
+//     motion transform, the caption overlay and the x264 encode. Captions and on-screen text are
+//     burned here too: the clip is stamped with its absolute timeline time so libass picks the
+//     right events. Transitions live inside the clips as well: a dip through black fades the end
+//     of one clip and the start of the next; a crossfade feeds the previous picture into the
+//     incoming clip and fades it out on top, still moving, over the first half second.
 //  2. The clips (identical codec settings) are joined with the concat demuxer and stream-copied
 //     in a final pass that only builds the audio (voice, music, ducking) — the video is encoded
 //     exactly once, which roughly halves the CPU time of a "re-encode to burn captions" pass.
 //  3. ffprobe reads the real duration back.
 import { rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { chunkCaptions, toSrt } from '@cutroom/shared/captions'
-import type { CaptionStyle, ImageFit, Motion, Resolution, VideoFormat, Word } from '@cutroom/shared/types'
+import { chunkCaptions, type Overlay, toSrt } from '@cutroom/shared/captions'
+import { planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
+import type {
+  CaptionStyle,
+  ImageFit,
+  Motion,
+  Resolution,
+  Transition,
+  VideoFormat,
+  Word,
+} from '@cutroom/shared/types'
 import { outputSize } from '@cutroom/shared/types'
 import { buildAss } from './ass'
 import { defaultThreads, probeDuration, probeImageSize, runFfmpeg, throwIfAborted } from './ffmpeg'
@@ -28,6 +40,8 @@ export interface RenderScene {
   /** 0..1 focus point used when cropping for 'cover' (and as the zoom anchor). */
   focusX: number
   focusY: number
+  /** How this scene's picture comes in. Ignored for scenes without an image. */
+  transition: Transition
 }
 
 export interface RenderInput {
@@ -42,6 +56,8 @@ export interface RenderInput {
   duration: number
   /** Caption words with times. */
   words: Word[]
+  /** On-screen text, burned in whatever the caption style. */
+  overlays?: Overlay[]
   musicPath: string | null
   /** 0..1, background music level under the voice. */
   musicVolume: number
@@ -105,7 +121,13 @@ export interface Segment {
   visual: Visual | null
   /** Index of the first scene it covers (for progress messages). */
   sceneIndex: number
+  /** How the picture comes in. */
+  transition: Transition
+  /** Fades in frames, filled in once all segments are known. */
+  plan: TransitionPlan
 }
+
+const NO_FADES: TransitionPlan = { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
 const clamp01 = (n: number) => (Number.isFinite(n) ? clamp(n, 0, 1) : 0.5)
@@ -128,8 +150,12 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
 
   const segments: Segment[] = []
   let lastVisual: Visual | null = null
+  // The transition of the scene that brought in lastVisual. Usually that scene's own segment uses
+  // it; when its time rounds to no frames, the next segment shows its picture and needs it too.
+  let lastTransition: Segment['transition'] = 'cut'
   sorted.forEach((scene, i) => {
     if (scene.imagePath) {
+      lastTransition = scene.transition ?? 'cut'
       lastVisual = {
         path: resolve(scene.imagePath),
         fit: scene.fit,
@@ -145,10 +171,32 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
       previous.frames += frames
       return
     }
-    segments.push({ startFrame: bounds[i], frames, visual: lastVisual, sceneIndex: i })
+    segments.push({
+      startFrame: bounds[i],
+      frames,
+      visual: lastVisual,
+      sceneIndex: i,
+      transition: lastTransition,
+      plan: NO_FADES,
+    })
   })
   if (segments.length === 0)
-    segments.push({ startFrame: 0, frames: totalFrames, visual: null, sceneIndex: 0 })
+    segments.push({
+      startFrame: 0,
+      frames: totalFrames,
+      visual: null,
+      sceneIndex: 0,
+      transition: 'cut',
+      plan: NO_FADES,
+    })
+  const plans = planTransitions(
+    segments.map((s) => ({ length: s.frames, hasVisual: s.visual !== null, transition: s.transition })),
+    FPS,
+    true,
+  )
+  segments.forEach((segment, i) => {
+    segment.plan = plans[i]
+  })
   return segments
 }
 
@@ -171,7 +219,8 @@ const num = (n: number) => {
  * The rectangle keeps the focus point fixed while zooming (zoom "into" the subject); pans
  * travel horizontally at a fixed 1/(1-f) zoom. Easing is half linear / half cosine: it starts
  * and ends at half speed, so the motion doesn't snap at cuts but never fully stops either.
- * Returns null when there is nothing to animate.
+ * `frames` is the whole move; `offset` starts this clip part-way through it (the previous
+ * picture continuing its move while it crossfades out). Returns null when nothing animates.
  */
 export function motionFilter(
   motion: Motion,
@@ -180,10 +229,11 @@ export function motionFilter(
   height: number,
   anchorX: number,
   anchorY: number,
+  offset = 0,
 ): string | null {
   if (motion === 'none' || frames < 2) return null
   const seconds = frames / FPS
-  const p = `(in/${frames - 1})`
+  const p = offset > 0 ? `((in+${offset})/${frames - 1})` : `(in/${frames - 1})`
   const eased = `(0.5*${p}+0.25*(1-cos(PI*${p})))`
   const ax = num(clamp(anchorX, 0, width))
   const ay = num(clamp(anchorY, 0, height))
@@ -226,8 +276,16 @@ interface BaseFrame {
   anchorY: number
 }
 
-/** Fits the image into W×H once: 'cover' crops around the focus, 'contain' letterboxes on a blur. */
-function baseFrame(visual: Visual, size: { width: number; height: number }, image: ImageSize): BaseFrame {
+/**
+ * Fits the image into W×H once: 'cover' crops around the focus, 'contain' letterboxes on a blur.
+ * `label` keeps the internal pad names unique when two pictures share one filter graph.
+ */
+function baseFrame(
+  visual: Visual,
+  size: { width: number; height: number },
+  image: ImageSize,
+  label = '',
+): BaseFrame {
   const { width: W, height: H } = size
   const { width: iw, height: ih } = image
   if (visual.fit === 'contain') {
@@ -245,12 +303,13 @@ function baseFrame(visual: Visual, size: { width: number; height: number }, imag
     const bsh = Math.max(bh, Math.round(ih * bs))
     const bx = Math.round((bsw - bw) / 2)
     const by = Math.round((bsh - bh) / 2)
+    const [bg, fg, bgs, fgs] = ['bg', 'fg', 'bgs', 'fgs'].map((name) => `[${label}${name}]`)
     const chain =
-      'split=2[bg][fg];' +
-      `[bg]scale=${bsw}:${bsh}:flags=bilinear,crop=${bw}:${bh}:${bx}:${by},gblur=sigma=7,` +
-      `colorchannelmixer=rr=0.5:gg=0.5:bb=0.5,scale=${W}:${H}:flags=bicubic[bgs];` +
-      `[fg]scale=${fw}:${fh}:flags=lanczos[fgs];` +
-      `[bgs][fgs]overlay=${x}:${y}:format=auto,${TO_YUV}`
+      `split=2${bg}${fg};` +
+      `${bg}scale=${bsw}:${bsh}:flags=bilinear,crop=${bw}:${bh}:${bx}:${by},gblur=sigma=7,` +
+      `colorchannelmixer=rr=0.5:gg=0.5:bb=0.5,scale=${W}:${H}:flags=bicubic${bgs};` +
+      `${fg}scale=${fw}:${fh}:flags=lanczos${fgs};` +
+      `${bgs}${fgs}overlay=${x}:${y}:format=auto,${TO_YUV}`
     return { chain, anchorX: x + visual.focusX * fw, anchorY: y + visual.focusY * fh }
   }
   const s = Math.max(W / iw, H / ih)
@@ -273,44 +332,84 @@ interface SegmentJob {
   args: string[]
 }
 
-function segmentArgs(
+export function segmentArgs(
   segment: Segment,
+  previous: Segment | null,
   file: string,
   size: { width: number; height: number },
-  image: ImageSize | null,
-  captions: boolean,
+  sizes: Map<string, ImageSize>,
+  burn: boolean,
   threads: number,
 ): string[] {
   const { width: W, height: H } = size
-  let input: string[]
+  const { plan } = segment
+  const image = segment.visual ? (sizes.get(segment.visual.path) ?? null) : null
+  const inputs: string[] = []
   let chain: string
   let motion: string | null = null
   if (segment.visual && image) {
-    const base = baseFrame(segment.visual, size, image)
-    input = ['-i', segment.visual.path]
+    const base = baseFrame(segment.visual, size, image, 'a')
+    inputs.push('-i', segment.visual.path)
     chain = base.chain
-    motion = motionFilter(segment.visual.motion, segment.frames, W, H, base.anchorX, base.anchorY)
+    // The move runs on through the next picture's crossfade (plan.tail), so it never stalls.
+    motion = motionFilter(segment.visual.motion, segment.frames + plan.tail, W, H, base.anchorX, base.anchorY)
   } else {
-    input = ['-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`]
+    inputs.push('-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`)
     chain = `format=rgb24,${TO_YUV}`
   }
-  // One decoded frame, repeated; timestamps = absolute timeline frames so libass shows the
-  // right captions, then rebased to 0 for the clip.
-  const steps = [
+  // One decoded frame, repeated, then the move and any dip through black.
+  const picture = [
     `[0:v]${chain}`,
     'loop=loop=-1:size=1:start=0',
     `settb=1/${FPS}`,
-    `setpts=N+${segment.startFrame}`,
+    'setpts=N',
     ...(motion ? [motion] : []),
-    ...(captions ? [`ass=${ASS_NAME}`] : []),
-    'setpts=N[v]',
+    ...(plan.fadeIn > 0 ? [`fade=t=in:s=0:n=${plan.fadeIn}`] : []),
+    ...(plan.fadeOut > 0 ? [`fade=t=out:s=${segment.frames - plan.fadeOut}:n=${plan.fadeOut}`] : []),
   ]
+  // Timestamps = absolute timeline frames so libass shows the right text, then rebased to 0.
+  const finish = [`setpts=N+${segment.startFrame}`, ...(burn ? [`ass=${ASS_NAME}`] : []), 'setpts=N[v]']
+
+  const outgoing = previous?.visual ?? null
+  const outgoingImage = outgoing ? (sizes.get(outgoing.path) ?? null) : null
+  let graph: string
+  if (plan.crossfade > 0 && previous && outgoing && outgoingImage) {
+    // The previous picture, continuing its move from where its own clip ended, fades out on top.
+    const base = baseFrame(outgoing, size, outgoingImage, 'b')
+    inputs.push('-i', outgoing.path)
+    const move = motionFilter(
+      outgoing.motion,
+      previous.frames + previous.plan.tail,
+      W,
+      H,
+      base.anchorX,
+      base.anchorY,
+      previous.frames,
+    )
+    const old = [
+      `[1:v]${base.chain}`,
+      'loop=loop=-1:size=1:start=0',
+      `settb=1/${FPS}`,
+      'setpts=N',
+      ...(move ? [move] : []),
+      `trim=end_frame=${plan.crossfade}`,
+      'format=yuva420p',
+      `fade=t=out:s=0:n=${plan.crossfade}:alpha=1`,
+    ]
+    graph = [
+      `${picture.join(',')}[cur]`,
+      `${old.join(',')}[old]`,
+      `[cur][old]overlay=eof_action=pass:format=yuv420,${finish.join(',')}`,
+    ].join(';')
+  } else {
+    graph = [...picture, ...finish].join(',')
+  }
   return [
     '-filter_complex_threads',
     String(threads),
-    ...input,
+    ...inputs,
     '-filter_complex',
-    steps.join(','),
+    graph,
     '-map',
     '[v]',
     '-frames:v',
@@ -401,13 +500,17 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
   }
   report(0, 'Preparing scenes')
 
-  // Captions: SRT always (YouTube caption track), ASS only when they're burned in.
+  // Captions: SRT always (YouTube caption track). ASS only when captions or on-screen text
+  // are burned in.
   const srtPath = join(workDir, SRT_NAME)
   await writeFile(srtPath, input.words.length ? toSrt(input.words) : '', 'utf8')
-  const burnCaptions = input.captionStyle !== 'off' && input.words.length > 0
-  if (burnCaptions) {
-    const chunks = chunkCaptions(input.words, input.format)
-    const ass = buildAss(chunks, { ...size, format: input.format, style: input.captionStyle })
+  const captionsOn = input.captionStyle !== 'off' && input.words.length > 0
+  const overlays = input.overlays ?? []
+  const burn = captionsOn || overlays.length > 0
+  if (burn) {
+    const chunks = captionsOn ? chunkCaptions(input.words, input.format) : []
+    const style = captionsOn ? input.captionStyle : 'off'
+    const ass = buildAss(chunks, { ...size, format: input.format, style }, overlays)
     await writeFile(join(workDir, ASS_NAME), ass, 'utf8')
   }
 
@@ -430,8 +533,8 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
 
   const jobs: SegmentJob[] = segments.map((segment, i) => {
     const file = `scene-${String(i + 1).padStart(3, '0')}.mp4`
-    const image = segment.visual ? (sizes.get(segment.visual.path) ?? null) : null
-    return { segment, file, args: segmentArgs(segment, file, size, image, burnCaptions, threads) }
+    const previous = segments[i - 1] ?? null
+    return { segment, file, args: segmentArgs(segment, previous, file, size, sizes, burn, threads) }
   })
 
   const sceneCount = Math.max(1, input.scenes.length)

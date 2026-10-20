@@ -8,7 +8,9 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "render:sample": "tsx scripts/render-sample.ts"
+    "render:sample": "tsx scripts/render-sample.ts",
+    "eval:timing": "tsx scripts/eval-timing.ts",
+    "once": "tsx --env-file-if-exists=../../.env src/once.ts"
   },
   "dependencies": {
     "@cutroom/shared": "workspace:*",

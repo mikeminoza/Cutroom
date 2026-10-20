@@ -10,10 +10,11 @@ import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { keys } from '@/lib/hooks'
 import { STATUS_LABEL, statusTone } from '@/lib/stage'
-import { Button, Dialog, Field, Input, StatusPill } from './ui'
+import { Button, ButtonLink, Dialog, Field, Input, Select, StatusPill } from './ui'
 
 interface Entry {
   at: string
+  channelId: string | null
   project: {
     id: string
     title: string
@@ -25,6 +26,7 @@ interface Entry {
 
 interface ScheduleData {
   timezone: string
+  channels: { id: string; title: string }[]
   entries: Entry[]
   recent: Entry[]
 }
@@ -52,17 +54,22 @@ export function SchedulePage() {
     queryFn: () => api.get<ScheduleData>('/api/schedule'),
   })
   const [moving, setMoving] = useState<Entry | null>(null)
+  const [channelId, setChannelId] = useState('all')
 
   const tz = data?.timezone ?? 'UTC'
+  const channels = data?.channels ?? []
+  const many = channels.length > 1
+  const visible = (data?.entries ?? []).filter((e) => channelId === 'all' || e.channelId === channelId)
+  const channelName = (id: string | null) => (many ? channels.find((c) => c.id === id)?.title : undefined)
   const groups: { label: string; entries: Entry[] }[] = []
-  for (const entry of data?.entries ?? []) {
+  for (const entry of visible) {
     const label = weekLabel(entry.at, tz)
     const group = groups.find((g) => g.label === label)
     if (group) group.entries.push(entry)
     else groups.push({ label, entries: [entry] })
   }
-  const booked = data?.entries.filter((e) => e.project).length ?? 0
-  const open = (data?.entries.length ?? 0) - booked
+  const booked = visible.filter((e) => e.project).length
+  const open = visible.length - booked
 
   return (
     <div className="mx-auto max-w-[920px] px-4 py-8 sm:px-8 lg:py-12">
@@ -79,9 +86,24 @@ export function SchedulePage() {
             )}
           </p>
         </div>
-        <Link href="/settings#schedule">
-          <Button variant="plain">Edit posting slots</Button>
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {many && (
+            <Select
+              aria-label="Channel"
+              value={channelId}
+              onChange={(e) => setChannelId(e.target.value)}
+              className="w-52"
+            >
+              <option value="all">All channels</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}
+                </option>
+              ))}
+            </Select>
+          )}
+          <ButtonLink href="/settings#schedule">Edit posting slots</ButtonLink>
+        </div>
       </header>
 
       {error && <p className="text-[14px] text-bad">Could not load the schedule: {errorText(error)}</p>}
@@ -92,9 +114,9 @@ export function SchedulePage() {
           <p className="text-[14.5px] text-ink-2">
             No posting slots yet. Add the days and times you want to post on.
           </p>
-          <Link href="/settings#schedule" className="mt-4 inline-block">
-            <Button variant="go">Add posting slots</Button>
-          </Link>
+          <ButtonLink href="/settings#schedule" variant="go" className="mt-4">
+            Add posting slots
+          </ButtonLink>
         </div>
       )}
 
@@ -105,9 +127,10 @@ export function SchedulePage() {
             <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
               {group.entries.map((entry) => (
                 <SlotRow
-                  key={entry.at + (entry.project?.id ?? '')}
+                  key={entry.at + (entry.channelId ?? '') + (entry.project?.id ?? '')}
                   entry={entry}
                   timeZone={tz}
+                  channel={channelName(entry.channelId)}
                   onMove={() => setMoving(entry)}
                 />
               ))}
@@ -120,7 +143,13 @@ export function SchedulePage() {
             <h2 className="wide mb-3 text-[15px] font-semibold text-ink-2">Recently posted</h2>
             <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
               {data.recent.map((entry) => (
-                <SlotRow key={entry.at + (entry.project?.id ?? '')} entry={entry} timeZone={tz} past />
+                <SlotRow
+                  key={entry.at + (entry.project?.id ?? '')}
+                  entry={entry}
+                  timeZone={tz}
+                  channel={channelName(entry.channelId)}
+                  past
+                />
               ))}
             </ul>
           </section>
@@ -134,11 +163,14 @@ export function SchedulePage() {
 function SlotRow({
   entry,
   timeZone,
+  channel,
   onMove,
   past,
 }: {
   entry: Entry
   timeZone: string
+  /** Shown when there is more than one channel. */
+  channel?: string
   onMove?: () => void
   past?: boolean
 }) {
@@ -171,9 +203,10 @@ function SlotRow({
           <StatusPill tone={statusTone(entry.project.status)}>
             {STATUS_LABEL[entry.project.status]}
           </StatusPill>
+          {channel && <span className="text-[12.5px] text-ink-3">{channel}</span>}
         </div>
       ) : (
-        <p className="text-[14px] text-ink-3">Open slot</p>
+        <p className="text-[14px] text-ink-3">Open slot{channel ? ` · ${channel}` : ''}</p>
       )}
       <div className="flex gap-1.5">
         {entry.project?.youtubeVideoId && (

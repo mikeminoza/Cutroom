@@ -1,13 +1,13 @@
 'use client'
 
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, ImagePlus, Plus, Trash2, UserRound, X } from 'lucide-react'
+import { ArrowRight, BookmarkPlus, ImagePlus, Library, Plus, Trash2, UserRound, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Button, DropZone, Field, Panel, Spinner, useConfirm } from '@/components/ui'
+import { Button, DropZone, Field, Menu, Panel, Spinner, useConfirm } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import type { CharacterDTO, ProjectFull } from '@/lib/dto'
-import { keys } from '@/lib/hooks'
+import { keys, useLibrary } from '@/lib/hooks'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import type { StepProps } from './workspace'
 
@@ -15,11 +15,15 @@ export function CharactersStep({ data, goTo }: StepProps) {
   const client = useQueryClient()
   const [adding, setAdding] = useState(false)
   const projectId = data.project.id
+  const library = useLibrary()
 
-  const add = async () => {
+  const add = async (libraryId?: string) => {
     setAdding(true)
     try {
-      const character = await api.post<CharacterDTO>(`/api/projects/${projectId}/characters`)
+      const character = await api.post<CharacterDTO>(
+        `/api/projects/${projectId}/characters`,
+        libraryId ? { libraryId } : {},
+      )
       client.setQueryData<ProjectFull>(keys.project(projectId), (prev) =>
         prev ? { ...prev, characters: [...prev.characters, character] } : prev,
       )
@@ -34,11 +38,26 @@ export function CharactersStep({ data, goTo }: StepProps) {
     <div className="flex flex-col gap-5">
       <Panel
         title="Characters"
-        description="Recurring people, mascots or avatars. Their description goes into every scene prompt that features them, and their reference images sit next to that prompt so you can attach them in your image tool. That is what keeps them looking the same from scene to scene."
+        description="Recurring people, mascots or avatars. Their description goes into every scene prompt that features them, and their reference images go with it (attached for you when Gemini makes the pictures). That is what keeps them looking the same from scene to scene."
         actions={
-          <Button variant="plain" busy={adding} onClick={add} icon={<Plus className="size-4" />}>
-            Add character
-          </Button>
+          <>
+            {(library.data?.length ?? 0) > 0 && (
+              <Menu
+                trigger={
+                  <Button variant="ghost" busy={adding} icon={<Library className="size-4" />}>
+                    Add from library
+                  </Button>
+                }
+                items={(library.data ?? []).map((c) => ({
+                  label: c.name || 'Unnamed character',
+                  onSelect: () => void add(c.id),
+                }))}
+              />
+            )}
+            <Button variant="plain" busy={adding} onClick={() => add()} icon={<Plus className="size-4" />}>
+              Add character
+            </Button>
+          </>
         }
       >
         {data.characters.length === 0 ? (
@@ -47,7 +66,7 @@ export function CharactersStep({ data, goTo }: StepProps) {
             <p className="max-w-[52ch] text-[14px] text-ink-2">
               No characters yet. Skip this step if your video has no recurring character.
             </p>
-            <Button variant="go" busy={adding} onClick={add} icon={<Plus className="size-4" />}>
+            <Button variant="go" busy={adding} onClick={() => add()} icon={<Plus className="size-4" />}>
               Add a character
             </Button>
           </div>
@@ -123,6 +142,26 @@ function CharacterCard({ character, projectId }: { character: CharacterDTO; proj
       await api.patch(`/api/characters/${character.id}`, { images })
     } catch (error) {
       toast.error(errorText(error))
+    }
+  }
+
+  const [saving, setSaving] = useState(false)
+  const saveToLibrary = async () => {
+    setSaving(true)
+    try {
+      await api.post('/api/library/characters', {
+        characterId: character.id,
+        name: character.name,
+        description: character.description,
+      })
+      await client.invalidateQueries({ queryKey: keys.library })
+      toast.success(`${character.name || 'Character'} saved to the library`, {
+        description: 'Add it to any project from the Characters step.',
+      })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -202,7 +241,17 @@ function CharacterCard({ character, projectId }: { character: CharacterDTO; proj
           className="min-h-20"
         />
       </Field>
-      <div>
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          busy={saving}
+          disabled={!character.name.trim()}
+          onClick={saveToLibrary}
+          icon={<BookmarkPlus className="size-3.5" />}
+        >
+          Save to library
+        </Button>
         <Button variant="danger" size="sm" onClick={remove} icon={<Trash2 className="size-3.5" />}>
           Remove
         </Button>

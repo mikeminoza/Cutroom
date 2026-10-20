@@ -1,6 +1,7 @@
 'use client'
 
 import { Check, Copy, LoaderCircle, X } from 'lucide-react'
+import Link from 'next/link'
 import { DropdownMenu, Dialog as RDialog, Switch as RSwitch, Tooltip as RTooltip } from 'radix-ui'
 import { forwardRef, useCallback, useId, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -33,6 +34,51 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   icon?: React.ReactNode
 }
 
+const buttonBase =
+  'inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-[var(--radius-control)] transition-colors'
+
+export interface ButtonLinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
+  href: string
+  variant?: ButtonVariant
+  size?: ButtonSize
+  icon?: React.ReactNode
+  disabled?: boolean
+}
+
+/**
+ * A link that looks like a Button. (A <button> inside a link is invalid HTML,
+ * and a disabled one there still lets the click through to the link.) App pages
+ * go through Next's Link; API routes, downloads and other sites use a plain <a>.
+ */
+export function ButtonLink({
+  href,
+  variant = 'plain',
+  size = 'md',
+  icon,
+  disabled,
+  className,
+  children,
+  ...rest
+}: ButtonLinkProps) {
+  const classes = cn(buttonBase, buttonVariants[variant], buttonSizes[size], className)
+  if (disabled) {
+    return (
+      <span aria-disabled="true" className={cn(classes, 'pointer-events-none opacity-45')}>
+        {icon}
+        {children}
+      </span>
+    )
+  }
+  const page = href.startsWith('/') && !href.startsWith('/api/') && rest.download === undefined
+  const Anchor = page ? Link : 'a'
+  return (
+    <Anchor href={href} className={classes} {...rest}>
+      {icon}
+      {children}
+    </Anchor>
+  )
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = 'plain', size = 'md', busy, icon, className, children, disabled, ...rest },
   ref,
@@ -43,7 +89,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type="button"
       disabled={disabled || busy}
       className={cn(
-        'inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-[var(--radius-control)] transition-colors disabled:pointer-events-none disabled:opacity-45',
+        buttonBase,
+        'disabled:pointer-events-none disabled:opacity-45',
         buttonVariants[variant],
         buttonSizes[size],
         className,

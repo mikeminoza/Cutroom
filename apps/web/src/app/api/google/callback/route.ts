@@ -1,6 +1,6 @@
 import { channelInfo, clientFromRefresh, exchangeCode, type GoogleProvider } from '@cutroom/shared/google'
 import { NextResponse } from 'next/server'
-import { saveConnection } from '@/server/connections'
+import { saveChannel, saveDrive } from '@/server/connections'
 import { route } from '@/server/http'
 import { appUrl } from '@/server/settings'
 
@@ -24,19 +24,25 @@ export const GET = route(async (request) => {
   if (!code) return back('denied')
   try {
     const tokens = await exchangeCode(code, `${base}/api/google/callback`)
-    let label: string | null = tokens.email
     if (provider === 'youtube') {
       const channel = await channelInfo(clientFromRefresh(tokens.refreshToken))
       if (!channel) return back('no-channel')
-      label = channel.title
+      await saveChannel({
+        youtubeId: channel.id,
+        title: channel.title,
+        email: tokens.email,
+        refreshToken: tokens.refreshToken,
+        scope: tokens.scope,
+      })
+      return back('youtube-connected', channel.title)
     }
-    await saveConnection(provider, {
+    await saveDrive({
       refreshToken: tokens.refreshToken,
       email: tokens.email,
-      label,
+      label: tokens.email,
       scope: tokens.scope,
     })
-    return back(`${provider}-connected`)
+    return back('drive-connected')
   } catch (error) {
     return back('failed', error instanceof Error ? error.message : String(error))
   }

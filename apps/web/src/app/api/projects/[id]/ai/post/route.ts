@@ -2,6 +2,7 @@ import { writePostDetails } from '@cutroom/shared/ai'
 import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
 import { totalDuration } from '@cutroom/shared/timing'
 import { EMPTY_POST } from '@cutroom/shared/types'
+import { topTitles } from '@/server/analytics'
 import { badRequest, route } from '@/server/http'
 import { getCharacters, getProjectRow, getScenes, toCharacterDTO, updateProject } from '@/server/projects'
 import { getSettings } from '@/server/settings'
@@ -26,6 +27,7 @@ export const POST = route(async (_request, { params }: Ctx) => {
     scenes: scenes.map((s) => ({ start: s.start, narration: s.narration })),
     defaultTags: settings.defaults.tags,
     descriptionFooter: settings.defaults.descriptionFooter,
+    topTitles: await topTitles(project.channelId, project.channelYoutubeId),
   })
   const current = { ...EMPTY_POST, ...project.post }
   const post = {

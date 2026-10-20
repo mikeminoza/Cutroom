@@ -46,8 +46,16 @@ const STATUS_WORD: Record<JobStep['status'], string> = {
 
 /** The job's steps in order. The running step shows live detail and progress. */
 export function JobSteps({ job, className }: { job: JobDTO; className?: string }) {
+  // A job that has not started yet may carry why its worker could not be started.
+  const startProblem = job.status === 'queued' ? job.progressDetail : null
   return (
     <ol className={cn('flex flex-col', className)}>
+      {startProblem && (
+        <li className="mb-3 flex gap-2 rounded-[var(--radius-control)] bg-bad-wash px-3 py-2 text-[13px] text-bad">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <span>{startProblem}</span>
+        </li>
+      )}
       {job.steps.map((step, i) => {
         const live = step.status === 'running' && job.progressStep === step.key
         const detail = live ? (job.progressDetail ?? step.detail) : step.detail

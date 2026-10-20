@@ -5,7 +5,17 @@ import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from './api'
-import type { ProjectDTO, ProjectFull, ProjectSummary, SceneDTO, StatusDTO } from './dto'
+import type {
+  IdeaDTO,
+  LibraryCharacterDTO,
+  PerformanceDTO,
+  ProjectDTO,
+  ProjectFull,
+  ProjectSummary,
+  SceneDTO,
+  SeriesDTO,
+  StatusDTO,
+} from './dto'
 
 export const keys = {
   projects: ['projects'] as const,
@@ -13,6 +23,62 @@ export const keys = {
   status: ['status'] as const,
   settings: ['settings'] as const,
   schedule: ['schedule'] as const,
+  series: ['series'] as const,
+  library: ['library'] as const,
+  ideas: ['ideas'] as const,
+  performance: ['performance'] as const,
+  voices: ['voices'] as const,
+  playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
+}
+
+export function useSeriesList() {
+  return useQuery({ queryKey: keys.series, queryFn: () => api.get<SeriesDTO[]>('/api/series') })
+}
+
+export function useLibrary() {
+  return useQuery({
+    queryKey: keys.library,
+    queryFn: () => api.get<LibraryCharacterDTO[]>('/api/library/characters'),
+  })
+}
+
+export function useIdeas() {
+  return useQuery({ queryKey: keys.ideas, queryFn: () => api.get<IdeaDTO[]>('/api/ideas') })
+}
+
+export function usePerformance() {
+  return useQuery({ queryKey: keys.performance, queryFn: () => api.get<PerformanceDTO>('/api/performance') })
+}
+
+export interface VoiceOption {
+  id: string
+  name: string
+  description: string
+}
+
+export function useVoices(enabled = true) {
+  return useQuery({
+    queryKey: keys.voices,
+    queryFn: () =>
+      api.get<{ gemini: VoiceOption[]; elevenlabs: VoiceOption[]; elevenlabsError: string | null }>(
+        '/api/voices',
+      ),
+    staleTime: 10 * 60_000,
+    enabled,
+  })
+}
+
+/** A channel's playlists (the default channel when `channelId` is null). */
+export function usePlaylists(channelId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.playlists(channelId),
+    queryFn: () =>
+      api.get<{ playlists: { id: string; title: string }[] }>(
+        `/api/google/youtube${channelId ? `?channel=${encodeURIComponent(channelId)}` : ''}`,
+      ),
+    enabled,
+    staleTime: 5 * 60_000,
+  })
 }
 
 export function useStatus() {
@@ -42,7 +108,7 @@ export function useProject(id: string) {
     queryFn: () => api.get<ProjectFull>(`/api/projects/${id}`),
     refetchInterval: (query) => {
       const jobs = query.state.data?.jobs
-      const statuses = [jobs?.retime?.status, jobs?.publish?.status]
+      const statuses = [jobs?.retime?.status, jobs?.publish?.status, jobs?.voice?.status]
       if (statuses.some((s) => s === 'queued' || s === 'running')) return 3000
       if (statuses.includes('waiting')) return 15_000
       return false

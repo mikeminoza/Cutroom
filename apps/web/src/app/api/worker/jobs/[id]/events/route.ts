@@ -10,7 +10,8 @@ export async function POST(request: Request, { params }: Ctx): Promise<Response>
   if (!isWorker(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   try {
     const event = (await request.json()) as WorkerEvent
-    await applyEvent((await params).id, event)
+    const runner = request.headers.get('x-cutroom-runner')?.slice(0, 200) ?? null
+    await applyEvent((await params).id, event, runner)
     return NextResponse.json({ ok: true })
   } catch (error) {
     return toErrorResponse(error)

@@ -116,3 +116,22 @@ export function chaptersToText(chapters: Chapter[]): string {
 export function totalDuration(scenes: { end: number }[]): number {
   return scenes.reduce((max, s) => Math.max(max, s.end), 0)
 }
+
+/** YouTube accepts Shorts up to three minutes long. */
+export const SHORT_MAX_SECONDS = 180
+
+/**
+ * The stretch of a video that scenes `from`..`to` (positions in playing order) cover, as the video
+ * lays them out: from where the first starts (0 for the very first) to where the next one starts
+ * (the end of the video for the last).
+ */
+export function sceneRange(
+  scenes: { start: number }[],
+  from: number,
+  to: number,
+  duration: number,
+): { start: number; end: number } {
+  const start = from <= 0 ? 0 : scenes[from].start
+  const end = to >= scenes.length - 1 ? duration : scenes[to + 1].start
+  return { start, end: Math.max(start, end) }
+}

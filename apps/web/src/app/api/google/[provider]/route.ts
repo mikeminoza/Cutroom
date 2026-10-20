@@ -1,6 +1,14 @@
 import { clientFromRefresh, driveUsage, type GoogleProvider, listPlaylists } from '@cutroom/shared/google'
-import { deleteConnection, getConnection } from '@/server/connections'
-import { badRequest, route } from '@/server/http'
+import { z } from 'zod'
+import {
+  channelFor,
+  deleteChannel,
+  deleteDrive,
+  getChannel,
+  getDrive,
+  setDefaultChannel,
+} from '@/server/connections'
+import { badRequest, notFound, readJson, route } from '@/server/http'
 
 type Ctx = { params: Promise<{ provider: string }> }
 
@@ -9,17 +17,37 @@ function provider(value: string): GoogleProvider {
   return value
 }
 
-/** YouTube: your playlists. Drive: storage used. */
-export const GET = route(async (_request, { params }: Ctx) => {
+/** YouTube: the playlists of ?channel= (or the default channel). Drive: storage used. */
+export const GET = route(async (request, { params }: Ctx) => {
   const which = provider((await params).provider)
-  const connection = await getConnection(which)
-  if (!connection) return which === 'youtube' ? { playlists: [] } : { usage: null }
-  const client = clientFromRefresh(connection.refreshToken)
-  if (which === 'youtube') return { playlists: await listPlaylists(client) }
-  return { usage: await driveUsage(client) }
+  if (which === 'youtube') {
+    const channel = await channelFor(new URL(request.url).searchParams.get('channel'), null)
+    if (!channel) return { playlists: [] }
+    return { playlists: await listPlaylists(clientFromRefresh(channel.refreshToken)) }
+  }
+  const drive = await getDrive()
+  if (!drive) return { usage: null }
+  return { usage: await driveUsage(clientFromRefresh(drive.refreshToken)) }
 })
 
-export const DELETE = route(async (_request, { params }: Ctx) => {
-  await deleteConnection(provider((await params).provider))
+/** YouTube: make ?channel= the default channel. */
+export const PATCH = route(async (request, { params }: Ctx) => {
+  if (provider((await params).provider) !== 'youtube') badRequest('Only YouTube channels have a default.')
+  const { channel } = await readJson(request, z.object({ channel: z.string().max(100) }))
+  if (!(await getChannel(channel))) notFound('That channel')
+  await setDefaultChannel(channel)
+  return { ok: true }
+})
+
+/** YouTube: disconnect ?channel=. Drive: disconnect Drive. */
+export const DELETE = route(async (request, { params }: Ctx) => {
+  const which = provider((await params).provider)
+  if (which === 'drive') {
+    await deleteDrive()
+    return { ok: true }
+  }
+  const id = new URL(request.url).searchParams.get('channel')
+  if (!id) badRequest('Say which channel to disconnect.')
+  await deleteChannel(id)
   return { ok: true }
 })

@@ -90,10 +90,10 @@ export function nextStep(input: StageInput): NextStep {
   if (status === 'published' || status === 'rendered') return { step: 'publish', text: 'Done' }
   if (!input.hasScript && input.sceneCount === 0) return { step: 'script', text: 'Write or paste the script' }
   if (input.sceneCount === 0) return { step: 'script', text: 'Split the script into scenes' }
-  if (!input.hasVoiceover) return { step: 'voiceover', text: 'Upload the voice-over' }
+  if (!input.hasVoiceover) return { step: 'voiceover', text: 'Add the voice-over' }
   if (!input.timed) return { step: 'voiceover', text: 'Match the scenes to the voice-over' }
   const missing = input.sceneCount - input.imagesDone
   if (missing > 0)
-    return { step: 'images', text: `Upload ${missing} scene ${missing === 1 ? 'image' : 'images'}` }
+    return { step: 'images', text: `Add ${missing} scene ${missing === 1 ? 'image' : 'images'}` }
   return { step: 'publish', text: 'Finish & schedule' }
 }

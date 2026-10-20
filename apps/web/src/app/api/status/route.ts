@@ -1,24 +1,36 @@
-import { geminiModel, hasGeminiKey } from '@cutroom/shared/ai'
+import { geminiImageModel, geminiModel, geminiTtsModel, hasGeminiKey } from '@cutroom/shared/ai'
+import { hasElevenLabsKey } from '@cutroom/shared/elevenlabs'
 import { storageDriver } from '@cutroom/shared/storage'
 import type { StatusDTO } from '@/lib/dto'
 import { authEnabled } from '@/server/auth'
 import { connectionSummaries, hasGoogleClient } from '@/server/connections'
 import { route } from '@/server/http'
-import { pingWorker, workerUrl } from '@/server/jobs'
+import { pingWorker, workerConfigured, workerMode, workerUrl } from '@/server/jobs'
+import { notifyChannels } from '@/server/notify'
 
 export const GET = route(async (): Promise<StatusDTO> => {
   const [connections, worker] = await Promise.all([connectionSummaries(), pingWorker()])
+  const mode = workerMode()
   return {
-    gemini: { configured: hasGeminiKey(), model: geminiModel() },
+    gemini: {
+      configured: hasGeminiKey(),
+      model: geminiModel(),
+      imageModel: geminiImageModel(),
+      ttsModel: geminiTtsModel(),
+    },
+    elevenlabs: { configured: hasElevenLabsKey() },
     google: { configured: hasGoogleClient() },
     youtube: connections.youtube,
+    channels: connections.channels,
     drive: connections.drive,
     worker: {
-      configured: Boolean(workerUrl() && process.env.WORKER_SECRET),
+      mode,
+      configured: workerConfigured(),
       reachable: worker.reachable,
-      url: workerUrl(),
+      url: mode === 'github' ? `GitHub Actions (${process.env.GITHUB_REPO})` : workerUrl(),
       busy: worker.busy,
     },
+    notifications: notifyChannels(),
     storage: storageDriver(),
     blobToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     database: process.env.DATABASE_URL ? 'neon' : 'local',

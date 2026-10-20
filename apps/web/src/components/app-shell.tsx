@@ -1,6 +1,6 @@
 'use client'
 
-import { CalendarClock, Clapperboard, LogOut, Settings2 } from 'lucide-react'
+import { CalendarClock, ChartColumn, Clapperboard, Library, Lightbulb, LogOut, Settings2 } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { api } from '@/lib/api'
@@ -11,7 +11,10 @@ import { Dot } from './ui'
 
 const NAV = [
   { href: '/', label: 'Projects', icon: Clapperboard },
+  { href: '/ideas', label: 'Ideas', icon: Lightbulb },
   { href: '/schedule', label: 'Schedule', icon: CalendarClock },
+  { href: '/performance', label: 'Performance', icon: ChartColumn },
+  { href: '/library', label: 'Library', icon: Library },
   { href: '/settings', label: 'Settings', icon: Settings2 },
 ]
 
@@ -37,9 +40,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const services: { label: string; tone: Tone; title: string }[] = status
     ? [
         {
-          label: 'YouTube',
+          label: status.channels.length > 1 ? `YouTube (${status.channels.length})` : 'YouTube',
           tone: status.youtube.connected ? 'ok' : 'idle',
-          title: status.youtube.connected ? `Posting to ${status.youtube.label}` : 'Not connected',
+          title: status.youtube.connected ? status.channels.map((c) => c.title).join(', ') : 'Not connected',
         },
         {
           label: 'Drive',
@@ -47,7 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           title: status.drive.connected ? `Saving to ${status.drive.email}` : 'Not connected',
         },
         {
-          label: 'Worker',
+          label: status.worker.mode === 'github' ? 'Worker (GitHub)' : 'Worker',
           tone: !status.worker.configured
             ? 'idle'
             : status.worker.reachable
@@ -57,11 +60,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               : 'bad',
           title: !status.worker.configured
             ? 'Not set up'
-            : status.worker.reachable
-              ? status.worker.busy
-                ? 'Working on a job'
-                : 'Online'
-              : 'Asleep or offline — it wakes up when a job starts',
+            : status.worker.mode === 'github'
+              ? 'GitHub Actions runs each job'
+              : status.worker.reachable
+                ? status.worker.busy
+                  ? 'Working on a job'
+                  : 'Online'
+                : 'Asleep or offline — it wakes up when a job starts',
         },
       ]
     : []
@@ -78,6 +83,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               key={href}
               href={href}
               aria-current={isActive(href) ? 'page' : undefined}
+              aria-label={label}
+              title={label}
               className={cn(
                 'flex items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-[14px] transition-colors',
                 isActive(href)
@@ -86,7 +93,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               )}
             >
               <Icon className="size-4" aria-hidden />
-              <span className="hidden sm:inline">{label}</span>
+              <span className="hidden lg:inline">{label}</span>
             </Link>
           ))}
         </nav>

@@ -8,8 +8,11 @@ import type {
   ProjectStatus,
   Resolution,
   SceneInput,
+  SeriesTemplate,
   Transcript,
   VideoFormat,
+  VideoStats,
+  VoiceSettings,
 } from '@cutroom/shared/types'
 
 export interface ProjectDTO {
@@ -46,6 +49,14 @@ export interface ProjectDTO {
   outputUrl: string | null
   srtUrl: string | null
   archived: boolean
+  textOverlays: boolean
+  voice: VoiceSettings | null
+  seriesId: string | null
+  channelId: string | null
+  /** Kept while the channel is disconnected, so the video waits for it. */
+  channelYoutubeId: string | null
+  stats: VideoStats | null
+  sourceProjectId: string | null
   createdAt: string
   updatedAt: string
 }
@@ -73,7 +84,7 @@ export interface ProjectFull {
   project: ProjectDTO
   scenes: SceneDTO[]
   characters: CharacterDTO[]
-  jobs: { retime: JobDTO | null; publish: JobDTO | null }
+  jobs: { retime: JobDTO | null; publish: JobDTO | null; voice: JobDTO | null }
 }
 
 export interface ProjectSummary {
@@ -86,6 +97,9 @@ export interface ProjectSummary {
   scheduledAt: string | null
   youtubeVideoId: string | null
   updatedAt: string
+  seriesId: string | null
+  channelId: string | null
+  stats: VideoStats | null
   frames: { start: number; end: number; imageUrl: string | null }[]
   hasScript: boolean
   hasVoiceover: boolean
@@ -93,15 +107,80 @@ export interface ProjectSummary {
   job: { type: JobType; status: JobStatus; progress: number | null; detail: string | null } | null
 }
 
+export interface ChannelDTO {
+  id: string
+  youtubeId: string | null
+  title: string
+  email: string | null
+  isDefault: boolean
+  /** Connected with permission to read watch time and retention. */
+  analytics: boolean
+}
+
 export interface StatusDTO {
-  gemini: { configured: boolean; model: string }
+  gemini: { configured: boolean; model: string; imageModel: string; ttsModel: string }
+  elevenlabs: { configured: boolean }
   google: { configured: boolean }
+  /** The default channel. */
   youtube: { connected: boolean; email: string | null; label: string | null }
+  channels: ChannelDTO[]
   drive: { connected: boolean; email: string | null; label: string | null }
-  worker: { configured: boolean; reachable: boolean; url: string | null; busy: boolean }
+  worker: {
+    mode: 'render' | 'github'
+    configured: boolean
+    reachable: boolean
+    url: string | null
+    busy: boolean
+  }
+  notifications: { discord: boolean; telegram: boolean; email: boolean }
   storage: 'local' | 'blob'
   /** Browser uploads and the worker need the read-write token, not only the OIDC link. */
   blobToken: boolean
   database: 'neon' | 'local'
   auth: boolean
+}
+
+export interface SeriesDTO {
+  id: string
+  name: string
+  description: string
+  template: SeriesTemplate
+  episodes: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface LibraryCharacterDTO {
+  id: string
+  name: string
+  description: string
+  images: { url: string; key: string }[]
+  createdAt: string
+}
+
+export interface IdeaDTO {
+  id: string
+  title: string
+  angle: string
+  seriesId: string | null
+  status: 'new' | 'used' | 'dismissed'
+  projectId: string | null
+  createdAt: string
+}
+
+export interface PerformanceVideo {
+  id: string
+  title: string
+  format: VideoFormat
+  youtubeVideoId: string
+  channelId: string | null
+  seriesId: string | null
+  scheduledAt: string | null
+  stats: VideoStats | null
+}
+
+export interface PerformanceDTO {
+  videos: PerformanceVideo[]
+  channels: ChannelDTO[]
+  notes: string[]
 }

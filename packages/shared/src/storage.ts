@@ -4,11 +4,11 @@
 // URLs stored in the database are either absolute Blob URLs or app-relative
 // "/api/files/<key>" paths served by the web app in development.
 import { createReadStream, createWriteStream, existsSync } from 'node:fs'
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { del, put } from '@vercel/blob'
+import { copy, del, put } from '@vercel/blob'
 
 export type StorageDriver = 'local' | 'blob'
 
@@ -49,10 +49,19 @@ export const LOCAL_PREFIX = '/api/files/'
 
 /** Resolves a storage key to a path inside the local root, refusing traversal. */
 export function localPath(key: string): string {
+  // Keys are plain relative paths. '..' or '.' segments could point at another project's files
+  // even while staying inside the storage root, so they are refused outright.
+  if (!isPlainKey(key)) throw new Error('Invalid file key')
   const root = localRoot()
   const resolved = path.resolve(root, key)
   if (!resolved.startsWith(root + path.sep)) throw new Error('Invalid file key')
   return resolved
+}
+
+/** A relative key made of ordinary segments: no '..', '.', empty segments or backslashes. */
+export function isPlainKey(key: string): boolean {
+  if (!key || key.includes('\\') || key.includes('\0')) return false
+  return key.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
 }
 
 export function safeName(name: string): string {
@@ -109,6 +118,90 @@ export async function deleteFile(url: string | null | undefined): Promise<void> 
     else if (/^https?:\/\//.test(url) && blobConfigured()) await del(url)
   } catch {
     // Deleting is best-effort; a leftover file is harmless.
+  }
+}
+
+/** The storage key of a stored file's URL (the part after the Blob host, or after /api/files/). */
+export function keyOf(url: string): string {
+  try {
+    if (url.startsWith(LOCAL_PREFIX)) return decodeURIComponent(url.slice(LOCAL_PREFIX.length))
+    return decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+  } catch {
+    // A malformed %-escape or URL: not a key anything can match.
+    return ''
+  }
+}
+
+/**
+ * True when `url` is a file this app stored, inside `folder`: a local /api/files/ URL in
+ * development, or a URL on a Vercel Blob store when Blob is the storage. Keys with '..' and URLs
+ * on other hosts are refused, so a URL can't pass as one project's file while naming another's.
+ */
+export function isStoredUnder(url: string, folder: string): boolean {
+  const prefix = `${folder.replace(/\/+$/, '')}/`
+  if (url.startsWith(LOCAL_PREFIX)) {
+    const key = keyOf(url)
+    return isPlainKey(key) && key.startsWith(prefix)
+  }
+  if (storageDriver() !== 'blob') return false
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.blob.vercel-storage.com')) return false
+  const key = keyOf(url)
+  return isPlainKey(key) && key.startsWith(prefix)
+}
+
+/**
+ * Copies a stored file into `folder` (a new key), so two owners never share one file: posting a
+ * video deletes its working files, which must not take a series' or the library's copy with it.
+ */
+export async function copyStoredFile(url: string, folder: string): Promise<StoredFile> {
+  const name = keyOf(url).split('/').pop() ?? 'file'
+  // Keys end in "<random>-<name>"; keep the readable part.
+  const key = makeKey(folder, name.replace(/^[a-z0-9]{8}-/, ''))
+  if (url.startsWith(LOCAL_PREFIX)) {
+    const source = localPath(keyOf(url))
+    const target = localPath(key)
+    await mkdir(path.dirname(target), { recursive: true })
+    // Local storage only exists in development: keep the bundler from tracing the whole project.
+    await pipeline(createReadStream(/*turbopackIgnore: true*/ source), createWriteStream(target))
+    return { key, url: `${LOCAL_PREFIX}${key}` }
+  }
+  if (storageDriver() === 'blob') {
+    const blob = await copy(url, key, { access: 'public', addRandomSuffix: false, allowOverwrite: true })
+    return { key: blob.pathname, url: blob.url }
+  }
+  // An absolute URL while storing locally: fetch it.
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`Could not copy ${url} (HTTP ${response.status})`)
+  return putFile(
+    key,
+    Buffer.from(await response.arrayBuffer()),
+    response.headers.get('content-type') ?? guessContentType(name),
+  )
+}
+
+/** Reads a stored file into memory (reference images for image generation). */
+export async function readStoredFile(
+  url: string,
+  appUrl: string,
+): Promise<{ data: Buffer; contentType: string }> {
+  if (url.startsWith(LOCAL_PREFIX)) {
+    const local = localPath(keyOf(url))
+    // Local storage only exists in development: keep the bundler from tracing the whole project.
+    if (existsSync(/*turbopackIgnore: true*/ local)) {
+      return { data: await readFile(/*turbopackIgnore: true*/ local), contentType: guessContentType(local) }
+    }
+  }
+  const response = await fetch(absoluteUrl(url, appUrl), { signal: AbortSignal.timeout(30_000) })
+  if (!response.ok) throw new Error(`Could not read ${url} (HTTP ${response.status})`)
+  return {
+    data: Buffer.from(await response.arrayBuffer()),
+    contentType: response.headers.get('content-type')?.split(';')[0] || guessContentType(url),
   }
 }
 

@@ -1,7 +1,7 @@
 'use client'
 
 import { WEEKDAYS } from '@cutroom/shared/schedule'
-import { type AppSettings, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
+import { type AppSettings, GEMINI_VOICES, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -9,11 +9,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import type { ChannelDTO } from '@/lib/dto'
 import { formatBytes } from '@/lib/format'
-import { keys, useSettings, useStatus } from '@/lib/hooks'
+import { keys, usePlaylists, useSettings, useStatus, useVoices } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
 import {
   Button,
+  ButtonLink,
   Dot,
   Field,
   Input,
@@ -47,7 +49,7 @@ export function SettingsPage() {
     const result = params.get('google')
     if (!result) return
     const message = GOOGLE_MESSAGES[result] ?? GOOGLE_MESSAGES.failed
-    if (message.ok) toast.success(message.text)
+    if (message.ok) toast.success(message.text, { description: params.get('detail') ?? undefined })
     else toast.error(message.text, { description: params.get('detail') ?? undefined })
     router.replace('/settings', { scroll: false })
   }, [params, router])
@@ -100,29 +102,77 @@ function Connections() {
   const { data: status, isLoading } = useStatus()
   const client = useQueryClient()
   const { confirm, element } = useConfirm()
+  const [testing, setTesting] = useState(false)
   const drive = useQuery({
     queryKey: ['drive-usage'],
     queryFn: () => api.get<{ usage: { used: number; limit: number | null } | null }>('/api/google/drive'),
     enabled: Boolean(status?.drive.connected),
   })
 
-  const disconnect = async (provider: 'youtube' | 'drive') => {
+  const refresh = () =>
+    Promise.all([
+      client.invalidateQueries({ queryKey: keys.status }),
+      client.invalidateQueries({ queryKey: ['playlists'] }),
+    ])
+
+  const disconnectDrive = async () => {
     const ok = await confirm({
-      title: `Disconnect ${provider === 'youtube' ? 'YouTube' : 'Google Drive'}?`,
-      body:
-        provider === 'youtube'
-          ? 'Videos are still rendered, but nothing is posted until you connect again. Videos already scheduled on YouTube stay scheduled.'
-          : 'New videos stay in app storage instead. Files already in Drive are not touched.',
+      title: 'Disconnect Google Drive?',
+      body: 'New videos stay in app storage instead. Files already in Drive are not touched.',
       action: 'Disconnect',
       danger: true,
     })
     if (!ok) return
     try {
-      await api.del(`/api/google/${provider}`)
-      await client.invalidateQueries({ queryKey: keys.status })
+      await api.del('/api/google/drive')
+      await refresh()
       toast.success('Disconnected')
     } catch (error) {
       toast.error(errorText(error))
+    }
+  }
+
+  const disconnectChannel = async (channel: ChannelDTO) => {
+    const ok = await confirm({
+      title: `Disconnect ${channel.title}?`,
+      body: 'Videos meant for this channel are rendered, but not posted, until you connect it again. Videos already scheduled on YouTube stay scheduled.',
+      action: 'Disconnect',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await api.del(`/api/google/youtube?channel=${encodeURIComponent(channel.id)}`)
+      await refresh()
+      toast.success('Disconnected')
+    } catch (error) {
+      toast.error(errorText(error))
+    }
+  }
+
+  const makeDefault = async (channel: ChannelDTO) => {
+    try {
+      await api.patch('/api/google/youtube', { channel: channel.id })
+      await refresh()
+      toast.success(`${channel.title} is now the default channel`)
+    } catch (error) {
+      toast.error(errorText(error))
+    }
+  }
+
+  const sendTest = async () => {
+    setTesting(true)
+    try {
+      const { results } = await api.post<{ results: { channel: string; ok: boolean; error?: string }[] }>(
+        '/api/notifications/test',
+      )
+      for (const r of results) {
+        if (r.ok) toast.success(`${r.channel}: test message sent`)
+        else toast.error(`${r.channel}: ${r.error}`)
+      }
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -130,6 +180,13 @@ function Connections() {
     return <div className="h-72 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
   const googleReady = status.google.configured
   const usage = drive.data?.usage
+  const channels = status.channels
+  const notify = status.notifications
+  const notifyNames = [
+    notify.discord && 'Discord',
+    notify.telegram && 'Telegram',
+    notify.email && 'email',
+  ].filter(Boolean) as string[]
 
   return (
     <Panel
@@ -143,7 +200,11 @@ function Connections() {
           status={status.gemini.configured ? `Ready, using ${status.gemini.model}` : 'No API key'}
           detail={
             status.gemini.configured ? (
-              'Writes scripts, splits scenes, times the voice-over and drafts post details.'
+              <>
+                Writes scripts, splits scenes, times the voice-over and drafts post details. Voice-overs use{' '}
+                {status.gemini.ttsModel} (free tier). Pictures use {status.gemini.imageModel}, which needs
+                billing turned on for the key&apos;s Google Cloud project.
+              </>
             ) : (
               <>
                 Get a free key at{' '}
@@ -162,30 +223,64 @@ function Connections() {
         />
         <Row
           name="YouTube"
-          tone={status.youtube.connected ? 'ok' : 'idle'}
-          status={status.youtube.connected ? `Posting to ${status.youtube.label}` : 'Not connected'}
+          tone={channels.length ? 'ok' : 'idle'}
+          status={
+            channels.length === 0
+              ? 'Not connected'
+              : channels.length === 1
+                ? `Posting to ${channels[0].title}`
+                : `${channels.length} channels`
+          }
           detail={
-            status.youtube.connected
-              ? status.youtube.email
-              : googleReady
-                ? 'Connect the Google account that owns your channel.'
-                : 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see the README).'
+            channels.length === 0 ? (
+              googleReady ? (
+                'Connect the Google account that owns your channel.'
+              ) : (
+                'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see the README).'
+              )
+            ) : (
+              <ul className="mt-1.5 flex flex-col gap-2">
+                {channels.map((channel) => (
+                  <li key={channel.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="text-[13.5px] font-medium text-ink">{channel.title}</span>
+                    {channel.isDefault && channels.length > 1 && (
+                      <span className="rounded-full bg-sunk px-2 py-px text-[11.5px] text-ink-2">
+                        Default
+                      </span>
+                    )}
+                    {channel.email && <span>{channel.email}</span>}
+                    {!channel.analytics && (
+                      <span className="text-kodak-ink">Reconnect to see watch time on Performance</span>
+                    )}
+                    <span className="ml-auto flex gap-1">
+                      {!channel.isDefault && (
+                        <Button variant="ghost" size="sm" onClick={() => makeDefault(channel)}>
+                          Make default
+                        </Button>
+                      )}
+                      {!channel.analytics && (
+                        <ButtonLink href="/api/google/connect?provider=youtube" variant="ghost" size="sm">
+                          Reconnect
+                        </ButtonLink>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => disconnectChannel(channel)}>
+                        Disconnect
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )
           }
         >
-          {status.youtube.connected ? (
-            <Button variant="ghost" size="sm" onClick={() => disconnect('youtube')}>
-              Disconnect
-            </Button>
-          ) : (
-            <a
-              href="/api/google/connect?provider=youtube"
-              className={cn(!googleReady && 'pointer-events-none')}
-            >
-              <Button variant="go" size="sm" disabled={!googleReady}>
-                Connect YouTube
-              </Button>
-            </a>
-          )}
+          <ButtonLink
+            href="/api/google/connect?provider=youtube"
+            variant={channels.length ? 'plain' : 'go'}
+            size="sm"
+            disabled={!googleReady}
+          >
+            {channels.length ? 'Add a channel' : 'Connect YouTube'}
+          </ButtonLink>
         </Row>
         <Row
           name="Google Drive"
@@ -210,20 +305,25 @@ function Connections() {
           }
         >
           {status.drive.connected ? (
-            <Button variant="ghost" size="sm" onClick={() => disconnect('drive')}>
+            <Button variant="ghost" size="sm" onClick={disconnectDrive}>
               Disconnect
             </Button>
           ) : (
-            <a
-              href="/api/google/connect?provider=drive"
-              className={cn(!googleReady && 'pointer-events-none')}
-            >
-              <Button variant="plain" size="sm" disabled={!googleReady}>
-                Connect Drive
-              </Button>
-            </a>
+            <ButtonLink href="/api/google/connect?provider=drive" size="sm" disabled={!googleReady}>
+              Connect Drive
+            </ButtonLink>
           )}
         </Row>
+        <Row
+          name="ElevenLabs"
+          tone={status.elevenlabs.configured ? 'ok' : 'idle'}
+          status={status.elevenlabs.configured ? 'Ready' : 'Not set up (optional)'}
+          detail={
+            status.elevenlabs.configured
+              ? 'Your ElevenLabs voices are available for AI voice-overs, with exact word timing.'
+              : 'Paid voices with exact word timing. Set ELEVENLABS_API_KEY for the web app and the worker. Gemini voices work without it.'
+          }
+        />
         <Row
           name="Worker"
           tone={
@@ -238,18 +338,26 @@ function Connections() {
           status={
             !status.worker.configured
               ? 'Not set up'
-              : status.worker.reachable
+              : status.worker.mode === 'github'
                 ? status.worker.busy
-                  ? 'Online, working on a job'
-                  : 'Online'
-                : 'Asleep or unreachable'
+                  ? 'GitHub Actions, working on a job'
+                  : 'GitHub Actions'
+                : status.worker.reachable
+                  ? status.worker.busy
+                    ? 'Online, working on a job'
+                    : 'Online'
+                  : 'Asleep or unreachable'
           }
           detail={
             !status.worker.configured
-              ? 'Set WORKER_URL and WORKER_SECRET. Locally, pnpm dev starts it on port 8787.'
-              : status.worker.reachable
-                ? status.worker.url
-                : 'Free Render workers sleep after 15 idle minutes and wake up in about a minute when a job starts.'
+              ? status.worker.mode === 'github'
+                ? 'Set GITHUB_DISPATCH_TOKEN, GITHUB_REPO and WORKER_SECRET, and add the repository secrets (see DEPLOYMENT.md).'
+                : 'Set WORKER_URL and WORKER_SECRET. Locally, pnpm dev starts it on port 8787.'
+              : status.worker.mode === 'github'
+                ? `${status.worker.url}. Each job starts its own run, so nothing sleeps.`
+                : status.worker.reachable
+                  ? `${status.worker.url}. It keeps itself awake while a job runs.`
+                  : 'Free Render workers sleep after 15 idle minutes and wake up in about a minute when a job starts.'
           }
         >
           <Button
@@ -259,6 +367,22 @@ function Connections() {
           >
             Check again
           </Button>
+        </Row>
+        <Row
+          name="Notifications"
+          tone={notifyNames.length ? 'ok' : 'idle'}
+          status={notifyNames.length ? `Sending to ${notifyNames.join(', ')}` : 'Not set up'}
+          detail={
+            notifyNames.length
+              ? 'Choose which events send a message under Notifications below.'
+              : 'Get a message when a video needs your approval, fails or goes out. Set up Discord, Telegram or email in the environment (see ENVIRONMENT.md).'
+          }
+        >
+          {notifyNames.length > 0 && (
+            <Button variant="ghost" size="sm" busy={testing} onClick={sendTest}>
+              Send a test
+            </Button>
+          )}
         </Row>
         <Row
           name="Storage"
@@ -300,11 +424,15 @@ function PreferencesForm() {
   const [busy, setBusy] = useState(false)
   const settings = draft ?? saved ?? null
   const dirty = Boolean(draft && saved && JSON.stringify(draft) !== JSON.stringify(saved))
-  const playlists = useQuery({
-    queryKey: ['playlists'],
-    queryFn: () => api.get<{ playlists: { id: string; title: string }[] }>('/api/google/youtube'),
-    enabled: Boolean(status?.youtube.connected),
-  })
+  const playlists = usePlaylists(null, Boolean(status?.youtube.connected))
+  const voices = useVoices(Boolean(status?.elevenlabs.configured))
+  // Switching to ElevenLabs before its voice list arrives leaves the voice blank; fill it once it loads.
+  const firstVoice = voices.data?.elevenlabs[0]?.id
+  useEffect(() => {
+    if (firstVoice && draft?.voice.provider === 'elevenlabs' && !draft.voice.voice) {
+      setDraft({ ...draft, voice: { ...draft.voice, voice: firstVoice } })
+    }
+  }, [draft, firstVoice])
   const zones = useMemo(() => {
     try {
       return Intl.supportedValuesOf('timeZone')
@@ -320,6 +448,10 @@ function PreferencesForm() {
     setDraft({ ...settings, defaults: { ...settings.defaults, ...patch } })
 
   const save = async () => {
+    if (!settings.voice.voice.trim()) {
+      toast.error('Pick a default AI voice, or switch the voice service back to Gemini.')
+      return
+    }
     setBusy(true)
     try {
       const next = await api.put<AppSettings>('/api/settings', settings)
@@ -545,6 +677,109 @@ function PreferencesForm() {
           </div>
         </div>
       </Panel>
+
+      <Panel
+        title="AI voice"
+        description="The voice new AI voice-overs start with. You can pick another one per video on its Voice-over step."
+      >
+        <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+          <Field label="Voice service" className="sm:col-span-2">
+            <Segmented
+              ariaLabel="Default voice service"
+              value={settings.voice.provider}
+              onChange={(provider) =>
+                update({
+                  voice: {
+                    ...settings.voice,
+                    provider,
+                    voice:
+                      provider === 'gemini'
+                        ? GEMINI_VOICES.some((v) => v.name === settings.voice.voice)
+                          ? settings.voice.voice
+                          : 'Kore'
+                        : (voices.data?.elevenlabs[0]?.id ?? ''),
+                  },
+                })
+              }
+              options={[
+                { value: 'gemini', label: 'Gemini' },
+                { value: 'elevenlabs', label: 'ElevenLabs' },
+              ]}
+            />
+          </Field>
+          <Field
+            label="Voice"
+            error={
+              settings.voice.provider === 'elevenlabs' && !status?.elevenlabs.configured
+                ? 'Add ELEVENLABS_API_KEY to use ElevenLabs.'
+                : null
+            }
+          >
+            <Select
+              value={settings.voice.voice}
+              onChange={(e) => update({ voice: { ...settings.voice, voice: e.target.value } })}
+            >
+              {settings.voice.provider === 'gemini'
+                ? GEMINI_VOICES.map((v) => (
+                    <option key={v.name} value={v.name}>
+                      {v.name} — {v.character.toLowerCase()}
+                    </option>
+                  ))
+                : (voices.data?.elevenlabs ?? []).map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+              {settings.voice.provider === 'elevenlabs' && !voices.data?.elevenlabs.length && (
+                <option value="">No voices loaded</option>
+              )}
+            </Select>
+          </Field>
+          {settings.voice.provider === 'gemini' && (
+            <Field label="Delivery" aside="Optional">
+              <Input
+                value={settings.voice.style}
+                maxLength={300}
+                onChange={(e) => update({ voice: { ...settings.voice, style: e.target.value } })}
+                placeholder="Warm, unhurried documentary narrator"
+              />
+            </Field>
+          )}
+        </div>
+      </Panel>
+
+      <div id="notifications" className="scroll-mt-6">
+        <Panel
+          title="Notifications"
+          description={
+            status &&
+            (status.notifications.discord || status.notifications.telegram || status.notifications.email)
+              ? 'Which events send you a message.'
+              : 'Which events send you a message once Discord, Telegram or email is set up in the environment.'
+          }
+        >
+          <div className="flex flex-col gap-4 px-5 py-5">
+            <Switch
+              checked={settings.notifications.approval}
+              onCheckedChange={(approval) =>
+                update({ notifications: { ...settings.notifications, approval } })
+              }
+              label="A video is waiting for your approval"
+            />
+            <Switch
+              checked={settings.notifications.failed}
+              onCheckedChange={(failed) => update({ notifications: { ...settings.notifications, failed } })}
+              label="Something failed"
+              description="Rendering, uploading or recording a voice-over stopped with an error."
+            />
+            <Switch
+              checked={settings.notifications.posted}
+              onCheckedChange={(posted) => update({ notifications: { ...settings.notifications, posted } })}
+              label="A video is posted or scheduled"
+            />
+          </div>
+        </Panel>
+      </div>
 
       <Panel title="Storage">
         <div className="px-5 py-5">

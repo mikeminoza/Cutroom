@@ -7,7 +7,13 @@ import {
   totalDuration,
   WORDS_PER_SECOND,
 } from '@cutroom/shared/timing'
-import { MOTIONS, type Motion } from '@cutroom/shared/types'
+import {
+  MOTIONS,
+  type Motion,
+  normalizeTransition,
+  TRANSITIONS,
+  type Transition,
+} from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, ChevronDown, Plus, Scissors, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -27,6 +33,12 @@ export const MOTION_LABEL: Record<Motion, string> = {
   'pan-left': 'Pan left',
   'pan-right': 'Pan right',
   none: 'Still',
+}
+
+export const TRANSITION_LABEL: Record<Transition, string> = {
+  cut: 'Cut',
+  crossfade: 'Crossfade',
+  'fade-black': 'Dip to black',
 }
 
 export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepProps) {
@@ -392,6 +404,18 @@ function SceneCard({
               ))}
             </Select>
           </Field>
+          <Field label="Transition in" hint="How this picture replaces the previous one.">
+            <Select
+              value={normalizeTransition(scene.transition)}
+              onChange={(e) => set({ transition: e.target.value }, 0)}
+            >
+              {TRANSITIONS.map((t) => (
+                <option key={t} value={t}>
+                  {TRANSITION_LABEL[t]}
+                </option>
+              ))}
+            </Select>
+          </Field>
           {characters.length > 0 && (
             <Field label="Characters in the picture" className="sm:col-span-2">
               <div className="flex flex-wrap gap-1.5">
@@ -427,10 +451,14 @@ function SceneCard({
               </div>
             </Field>
           )}
-          <Field label="On-screen text" hint="Optional overlay, a few words.">
-            <SyncedInput value={scene.onScreenText} onValue={(onScreenText) => set({ onScreenText })} />
+          <Field label="On-screen text" hint="A few words shown at the top while the scene plays.">
+            <SyncedInput
+              value={scene.onScreenText}
+              maxLength={200}
+              onValue={(onScreenText) => set({ onScreenText })}
+            />
           </Field>
-          <Field label="Notes" hint="Sound effect or music cue.">
+          <Field label="Notes" hint="For you: a sound effect or music cue. Not used in the video.">
             <SyncedInput value={scene.notes} onValue={(notes) => set({ notes })} />
           </Field>
         </div>

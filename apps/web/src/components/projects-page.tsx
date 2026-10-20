@@ -2,23 +2,31 @@
 
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Eye, Layers, Plus } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { ProjectSummary } from '@/lib/dto'
+import type { ProjectSummary, SeriesDTO } from '@/lib/dto'
 import { formatLength, formatWhen, timeAgo } from '@/lib/format'
-import { keys, useProjects } from '@/lib/hooks'
+import { keys, useProjects, useSeriesList } from '@/lib/hooks'
 import { nextStep, STATUS_LABEL, statusTone } from '@/lib/stage'
 import { MiniStrip } from './filmstrip'
-import { Button, Dialog, Dot, Field, Input, ProgressBar, StatusPill, Textarea } from './ui'
+import { Button, Dialog, Dot, Field, Input, ProgressBar, Select, StatusPill, Textarea } from './ui'
+
+const compactViews = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 
 export function ProjectsPage() {
   const { data: projects, isLoading, error } = useProjects()
+  const seriesList = useSeriesList()
   const [creating, setCreating] = useState(false)
+  const [filter, setFilter] = useState('all')
+  const series = seriesList.data ?? []
+  const shown = (projects ?? []).filter((p) =>
+    filter === 'all' ? true : filter === 'none' ? !p.seriesId : p.seriesId === filter,
+  )
 
   return (
     <div className="mx-auto max-w-[1180px] px-4 py-8 sm:px-8 lg:py-12">
@@ -29,9 +37,27 @@ export function ProjectsPage() {
             Each project turns a script, a voice-over and your images into a scheduled YouTube video.
           </p>
         </div>
-        <Button variant="go" size="lg" icon={<Plus className="size-4" />} onClick={() => setCreating(true)}>
-          New video
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {series.length > 0 && (projects?.length ?? 0) > 0 && (
+            <Select
+              aria-label="Show"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="w-52"
+            >
+              <option value="all">All videos</option>
+              {series.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+              <option value="none">Not in a series</option>
+            </Select>
+          )}
+          <Button variant="go" size="lg" icon={<Plus className="size-4" />} onClick={() => setCreating(true)}>
+            New video
+          </Button>
+        </div>
       </header>
 
       {error ? (
@@ -41,21 +67,31 @@ export function ProjectsPage() {
       ) : isLoading ? (
         <ListSkeleton />
       ) : projects && projects.length > 0 ? (
-        <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
-          {projects.map((project) => (
-            <ProjectRow key={project.id} project={project} />
-          ))}
-        </ul>
+        shown.length > 0 ? (
+          <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
+            {shown.map((project) => (
+              <ProjectRow
+                key={project.id}
+                project={project}
+                series={series.find((s) => s.id === project.seriesId) ?? null}
+              />
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-[var(--radius-panel)] border border-line bg-panel px-5 py-10 text-center text-[14px] text-ink-2">
+            No videos here yet.
+          </p>
+        )
       ) : (
         <EmptyState onCreate={() => setCreating(true)} />
       )}
 
-      <NewProjectDialog open={creating} onOpenChange={setCreating} />
+      <NewProjectDialog open={creating} onOpenChange={setCreating} series={series} />
     </div>
   )
 }
 
-function ProjectRow({ project }: { project: ProjectSummary }) {
+function ProjectRow({ project, series }: { project: ProjectSummary; series: SeriesDTO | null }) {
   const imagesDone = project.frames.filter((f) => f.imageUrl).length
   const stageInput = {
     status: project.status,
@@ -87,6 +123,21 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
             <span className="text-[12.5px] text-ink-3">
               {project.format === 'portrait' ? 'Short' : 'Video'}
             </span>
+            {series && (
+              <span className="inline-flex items-center gap-1 text-[12.5px] text-ink-3">
+                <Layers className="size-3" aria-hidden />
+                {series.name}
+              </span>
+            )}
+            {project.stats && (
+              <span
+                className="inline-flex items-center gap-1 text-[12.5px] text-ink-2"
+                title={`${project.stats.views.toLocaleString('en-US')} views`}
+              >
+                <Eye className="size-3" aria-hidden />
+                {compactViews.format(project.stats.views)}
+              </span>
+            )}
           </div>
           {project.topic && (
             <p className="mt-1 line-clamp-1 max-w-[70ch] text-[13.5px] text-ink-2">{project.topic}</p>
@@ -227,22 +278,39 @@ function FormatOption({
   )
 }
 
-function NewProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function NewProjectDialog({
+  open,
+  onOpenChange,
+  series,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  series: SeriesDTO[]
+}) {
   const router = useRouter()
   const client = useQueryClient()
   const [title, setTitle] = useState('')
   const [topic, setTopic] = useState('')
   const [format, setFormat] = useState<VideoFormat>('landscape')
+  const [seriesId, setSeriesId] = useState('')
   const [busy, setBusy] = useState(false)
+  const chosen = series.find((s) => s.id === seriesId) ?? null
 
   const create = async () => {
     setBusy(true)
     try {
-      const { id } = await api.post<{ id: string }>('/api/projects', { title, topic, format })
+      const { id } = await api.post<{ id: string }>('/api/projects', {
+        title,
+        topic,
+        format: chosen?.template.format ?? format,
+        seriesId: chosen?.id ?? null,
+      })
       await client.invalidateQueries({ queryKey: keys.projects })
       onOpenChange(false)
       setTitle('')
       setTopic('')
+      setSeriesId('')
+      if (chosen) void client.invalidateQueries({ queryKey: keys.series })
       router.push(`/projects/${id}?step=${topic.trim() ? 'script' : 'brief'}`)
     } catch (error) {
       toast.error(errorText(error))
@@ -275,22 +343,44 @@ function NewProjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           void create()
         }}
       >
-        <div role="radiogroup" aria-label="Format" className="grid gap-2.5 sm:grid-cols-2">
-          <FormatOption
-            value="landscape"
-            selected={format === 'landscape'}
-            onSelect={() => setFormat('landscape')}
-            title="Video"
-            detail="16:9, long-form"
-          />
-          <FormatOption
-            value="portrait"
-            selected={format === 'portrait'}
-            onSelect={() => setFormat('portrait')}
-            title="Short"
-            detail="9:16, up to 3 minutes"
-          />
-        </div>
+        {series.length > 0 && (
+          <Field
+            label="Series"
+            aside="Optional"
+            hint={
+              chosen
+                ? 'Starts with the series’ brief, look, voice, music, characters and post settings.'
+                : undefined
+            }
+          >
+            <Select value={seriesId} onChange={(e) => setSeriesId(e.target.value)}>
+              <option value="">No series</option>
+              {series.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {!chosen && (
+          <div role="radiogroup" aria-label="Format" className="grid gap-2.5 sm:grid-cols-2">
+            <FormatOption
+              value="landscape"
+              selected={format === 'landscape'}
+              onSelect={() => setFormat('landscape')}
+              title="Video"
+              detail="16:9, long-form"
+            />
+            <FormatOption
+              value="portrait"
+              selected={format === 'portrait'}
+              onSelect={() => setFormat('portrait')}
+              title="Short"
+              detail="9:16, up to 3 minutes"
+            />
+          </div>
+        )}
         <Field
           label="What is the video about?"
           hint="One or two sentences. Gemini uses this if you ask it to write the script."

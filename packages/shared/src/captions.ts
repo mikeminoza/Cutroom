@@ -110,3 +110,40 @@ export function toSrt(words: Word[]): string {
 export function captionsEnabled(style: CaptionStyle): boolean {
   return style !== 'off'
 }
+
+export interface Overlay {
+  start: number
+  end: number
+  text: string
+}
+
+/** On-screen text fades in and out over this long (shorter overlays just appear). */
+export const OVERLAY_FADE_SECONDS = 0.2
+
+/**
+ * Each scene's on-screen text, shown for the scene's whole time on screen as the video lays it out:
+ * the first scene from 0, every scene until the next one starts, the last until the end.
+ * `scenes` must be in playing order.
+ */
+export function overlayEvents(
+  scenes: { start: number; onScreenText: string }[],
+  duration: number,
+): Overlay[] {
+  const result: Overlay[] = []
+  scenes.forEach((scene, i) => {
+    const text = scene.onScreenText.replace(/\s+/g, ' ').trim()
+    if (!text) return
+    const start = i === 0 ? 0 : Math.max(0, scene.start)
+    const end = i === scenes.length - 1 ? duration : Math.min(duration, scenes[i + 1].start)
+    if (end - start >= 0.1) result.push({ start, end, text })
+  })
+  return result
+}
+
+/** 0..1 visibility of an overlay at `time` (fades at both ends). */
+export function overlayOpacity(overlay: Overlay, time: number): number {
+  if (time < overlay.start || time >= overlay.end) return 0
+  const fade = overlay.end - overlay.start >= OVERLAY_FADE_SECONDS * 3 ? OVERLAY_FADE_SECONDS : 0
+  if (fade === 0) return 1
+  return Math.min(1, (time - overlay.start) / fade, (overlay.end - time) / fade)
+}

@@ -1,12 +1,20 @@
 'use client'
 
-import { activeChunk, captionWords, chunkCaptions, toSrt } from '@cutroom/shared/captions'
+import {
+  activeChunk,
+  captionWords,
+  chunkCaptions,
+  overlayEvents,
+  overlayOpacity,
+  toSrt,
+} from '@cutroom/shared/captions'
 import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
-import type { CaptionStyle, Motion } from '@cutroom/shared/types'
+import { blackLevel, planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
+import { type CaptionStyle, type Motion, normalizeTransition, type Transition } from '@cutroom/shared/types'
 import { ArrowRight, Download, Music, Pause, Play, SkipBack, SkipForward, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Button, DropZone, Field, Panel, ProgressBar, Segmented } from '@/components/ui'
+import { Button, DropZone, Field, Panel, ProgressBar, Segmented, Switch } from '@/components/ui'
 import { errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { SceneDTO } from '@/lib/dto'
@@ -46,18 +54,78 @@ export function motionStyle(
   return { transform: 'none', origin: '50% 50%' }
 }
 
-function sceneAt(scenes: SceneDTO[], time: number): number {
+/** Index of the last item that starts at or before `time` (0 when none do). */
+function indexAt(items: { start: number }[], time: number): number {
   let lo = 0
-  let hi = scenes.length - 1
+  let hi = items.length - 1
   let found = 0
   while (lo <= hi) {
     const mid = (lo + hi) >> 1
-    if (scenes[mid].start <= time) {
+    if (items[mid].start <= time) {
       found = mid
       lo = mid + 1
     } else hi = mid - 1
   }
   return found
+}
+
+/** Frame rate of the render (apps/worker/src/render/render.ts). */
+const FPS = 30
+
+/** One picture's time on screen, laid out exactly as the render lays out its clips. */
+export interface PictureSegment {
+  start: number
+  end: number
+  /** The scene whose image is shown; null = the dark frame before the first image. */
+  scene: SceneDTO | null
+  plan: TransitionPlan
+}
+
+/**
+ * Scenes without an image extend the previous picture (it keeps moving), like the render.
+ * Each scene runs from its start until the next scene starts; the first from 0, the last to the end.
+ */
+export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSegment[] {
+  // Cut points are rounded to whole frames exactly like the render (planSegments in
+  // apps/worker/src/render/render.ts), so a scene shorter than one frame vanishes in both.
+  const totalFrames = Math.max(1, Math.round(duration * FPS))
+  const bounds: number[] = []
+  scenes.forEach((scene, i) => {
+    const frame = i === 0 ? 0 : Math.min(totalFrames, Math.max(0, Math.round(scene.start * FPS)))
+    bounds.push(Math.max(frame, bounds[i - 1] ?? 0))
+  })
+  bounds.push(totalFrames)
+
+  const segments: (PictureSegment & { transition: Transition })[] = []
+  let lastVisual: SceneDTO | null = null
+  scenes.forEach((scene, i) => {
+    if (scene.imageUrl) lastVisual = scene
+    if (bounds[i + 1] - bounds[i] <= 0) return
+    const start = bounds[i] / FPS
+    const end = bounds[i + 1] / FPS
+    const previous = segments[segments.length - 1]
+    if (!scene.imageUrl && previous && previous.scene === lastVisual) {
+      previous.end = end
+      return
+    }
+    segments.push({
+      start,
+      end,
+      scene: lastVisual,
+      transition: scene.imageUrl ? normalizeTransition(scene.transition) : 'cut',
+      plan: { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 },
+    })
+  })
+  const plans = planTransitions(
+    segments.map((s) => ({
+      length: Math.max(0, s.end - s.start),
+      hasVisual: s.scene !== null,
+      transition: s.transition,
+    })),
+    1,
+    false,
+  )
+  return segments.map(({ transition: _t, ...s }, i) => ({ ...s, plan: plans[i] }))
 }
 
 export function PreviewStep({ data, goTo }: StepProps) {
@@ -67,6 +135,7 @@ export function PreviewStep({ data, goTo }: StepProps) {
   const [musicProgress, setMusicProgress] = useState<number | null>(null)
   const duration = project.voiceoverDuration ?? totalDuration(scenes)
   const words = useMemo(() => captionWords(project.transcript, scenes), [project.transcript, scenes])
+  const withText = scenes.filter((s) => s.onScreenText.trim()).length
 
   const downloadSrt = () => {
     const blob = new Blob([toSrt(words)], { type: 'application/x-subrip' })
@@ -131,6 +200,20 @@ export function PreviewStep({ data, goTo }: StepProps) {
             >
               Download captions (.srt)
             </Button>
+          </div>
+        </Panel>
+        <Panel title="On-screen text">
+          <div className="flex flex-col gap-3 px-5 py-4">
+            <Switch
+              checked={project.textOverlays}
+              onCheckedChange={(textOverlays) => saver.project({ textOverlays }, 0)}
+              label="Show on-screen text"
+              description={
+                withText > 0
+                  ? `${withText} ${withText === 1 ? 'scene has' : 'scenes have'} a short title, shown at the top while the scene plays.`
+                  : 'No scene has on-screen text yet. Add it under Picture details on the Script step.'
+              }
+            />
           </div>
         </Panel>
         <Panel title="Background music">
@@ -224,16 +307,27 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   const { project, scenes } = data
   const audio = useRef<HTMLAudioElement>(null)
   const music = useRef<HTMLAudioElement>(null)
-  const image = useRef<HTMLImageElement>(null)
+  const current = useRef<HTMLImageElement>(null)
+  const outgoing = useRef<HTMLDivElement>(null)
+  const outgoingImage = useRef<HTMLImageElement>(null)
+  const black = useRef<HTMLDivElement>(null)
+  const textBox = useRef<HTMLDivElement>(null)
   const clock = useRef({ playing: false, base: 0, startedAt: 0 })
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [index, setIndex] = useState(0)
+  const [segmentIndex, setSegmentIndex] = useState(0)
+  const [overlayIndex, setOverlayIndex] = useState(-1)
   const portrait = project.format === 'portrait'
 
   const chunks = useMemo(
     () => chunkCaptions(captionWords(project.transcript, scenes), project.format),
     [project.transcript, project.format, scenes],
+  )
+  const segments = useMemo(() => pictureSegments(scenes, duration), [scenes, duration])
+  const overlays = useMemo(
+    () => (project.textOverlays ? overlayEvents(scenes, duration) : []),
+    [project.textOverlays, scenes, duration],
   )
 
   const now = useCallback(() => {
@@ -242,7 +336,60 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
     return c.playing ? c.base + (performance.now() - c.startedAt) / 1000 : c.base
   }, [project.voiceoverUrl])
 
-  // Frame loop: motion is written straight to the image so React only re-renders on scene and word changes.
+  /**
+   * Writes motion and fades for segment `s` at time `t` straight to the DOM. Only called for the
+   * segment React has mounted: the refs point at that segment's pictures, never at the last one's.
+   */
+  const paintPictures = useCallback(
+    (t: number, s: number) => {
+      const segment = segments[s]
+      if (!segment) return
+      const elapsed = t - segment.start
+      // A picture keeps moving through the next picture's crossfade (plan.tail), as rendered.
+      const moveLength = Math.max(0.1, segment.end - segment.start + segment.plan.tail)
+      if (segment.scene && current.current) {
+        const style = motionStyle(
+          segment.scene.motion,
+          elapsed / moveLength,
+          moveLength,
+          segment.scene.focusY,
+          segment.scene.focusX,
+        )
+        current.current.style.transform = style.transform
+        current.current.style.transformOrigin = style.origin
+      }
+      const previous = segments[s - 1]
+      const fading = segment.plan.crossfade > 0 && elapsed < segment.plan.crossfade && previous?.scene
+      if (outgoing.current)
+        outgoing.current.style.opacity = fading ? String(1 - elapsed / segment.plan.crossfade) : '0'
+      if (fading && previous?.scene && outgoingImage.current) {
+        const length = Math.max(0.1, previous.end - previous.start + previous.plan.tail)
+        const style = motionStyle(
+          previous.scene.motion,
+          (t - previous.start) / length,
+          length,
+          previous.scene.focusY,
+          previous.scene.focusX,
+        )
+        outgoingImage.current.style.transform = style.transform
+        outgoingImage.current.style.transformOrigin = style.origin
+      }
+      if (black.current)
+        black.current.style.opacity = String(blackLevel(segment.plan, elapsed, segment.end - t))
+    },
+    [segments],
+  )
+
+  // The segment whose pictures are in the DOM right now. Set after React commits a new one,
+  // which is also painted then, before the browser draws it (no one-frame flash at a cut).
+  const mounted = useRef(segmentIndex)
+  useLayoutEffect(() => {
+    mounted.current = segmentIndex
+    paintPictures(Math.min(now(), duration), segmentIndex)
+  }, [segmentIndex, paintPictures, now, duration])
+
+  // Frame loop: motion, fades and the text box are written straight to the DOM, so React only
+  // re-renders when the scene, the picture or the caption word changes.
   useEffect(() => {
     let frame = 0
     let lastUi = 0
@@ -252,30 +399,19 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
         t = duration
         if (clock.current.playing) {
           clock.current = { playing: false, base: duration, startedAt: 0 }
+          music.current?.pause()
           setPlaying(false)
         }
       }
-      const i = sceneAt(scenes, t)
+      const i = indexAt(scenes, t)
       setIndex((prev) => (prev === i ? prev : i))
-      // A scene without an image holds the previous image, which keeps moving (as in the render).
-      let held = i
-      while (held > 0 && !scenes[held].imageUrl) held--
-      const scene = scenes[held]
-      if (scene && image.current) {
-        let next = held + 1
-        while (next < scenes.length && !scenes[next].imageUrl) next++
-        const end = next < scenes.length ? scenes[next].start : Math.max(duration, scene.end)
-        const length = Math.max(0.1, end - scene.start)
-        const style = motionStyle(
-          scene.motion,
-          (t - scene.start) / length,
-          length,
-          scene.focusY,
-          scene.focusX,
-        )
-        image.current.style.transform = style.transform
-        image.current.style.transformOrigin = style.origin
-      }
+      const s = indexAt(segments, t)
+      setSegmentIndex((prev) => (prev === s ? prev : s))
+      if (mounted.current === s) paintPictures(t, s)
+      const o = overlays.length ? indexAt(overlays, t) : -1
+      const overlay = o >= 0 && t >= overlays[o].start && t < overlays[o].end ? overlays[o] : null
+      setOverlayIndex((prev) => (prev === (overlay ? o : -1) ? prev : overlay ? o : -1))
+      if (textBox.current) textBox.current.style.opacity = overlay ? String(overlayOpacity(overlay, t)) : '0'
       if (ts - lastUi > 80) {
         lastUi = ts
         setTime(t)
@@ -284,7 +420,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [now, scenes, duration])
+  }, [now, scenes, segments, overlays, duration, paintPictures])
 
   useEffect(() => {
     if (music.current) music.current.volume = Math.min(1, project.musicVolume)
@@ -321,9 +457,11 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   }
 
   const scene = scenes[index]
-  // Missing image: hold the last scene that has one, like the render does.
-  const shown = scene?.imageUrl ? scene : [...scenes.slice(0, index)].reverse().find((s) => s.imageUrl)
+  const segment = segments[segmentIndex]
+  const shown = segment?.scene ?? null
+  const previous = segment && segment.plan.crossfade > 0 ? (segments[segmentIndex - 1]?.scene ?? null) : null
   const chunk = project.captionStyle === 'off' ? null : activeChunk(chunks, time)
+  const overlay = overlayIndex >= 0 ? overlays[overlayIndex] : null
 
   return (
     <Panel>
@@ -347,34 +485,41 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
             portrait ? 'aspect-[9/16] max-h-[70vh]' : 'aspect-video w-full',
           )}
         >
-          {shown?.imageUrl && (
-            <>
-              {shown.fit === 'contain' && (
-                // biome-ignore lint/performance/noImgElement: user uploads
-                <img
-                  src={shown.imageUrl}
-                  alt=""
-                  aria-hidden
-                  className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-xl brightness-75"
-                />
-              )}
-              {/* biome-ignore lint/performance/noImgElement: user uploads */}
-              <img
-                ref={image}
-                key={shown.id}
-                src={shown.imageUrl}
-                alt={`Scene ${shown.index + 1}`}
-                className={cn(
-                  'absolute inset-0 size-full will-change-transform',
-                  shown.fit === 'cover' ? 'object-cover' : 'object-contain',
-                )}
-                style={{ objectPosition: `${shown.focusX * 100}% ${shown.focusY * 100}%` }}
-              />
-            </>
-          )}
-          {!shown?.imageUrl && (
+          {shown?.imageUrl ? (
+            <Picture key={`cur-${segmentIndex}`} scene={shown} imageRef={current} />
+          ) : (
             <div className="absolute inset-0 grid place-items-center text-[13px] text-paper/50">
               Scene {(scene?.index ?? 0) + 1} has no image yet
+            </div>
+          )}
+          {previous?.imageUrl && (
+            <div ref={outgoing} className="absolute inset-0" style={{ opacity: 0 }}>
+              <Picture key={`old-${segmentIndex}`} scene={previous} imageRef={outgoingImage} />
+            </div>
+          )}
+          <div
+            ref={black}
+            aria-hidden
+            className="pointer-events-none absolute inset-0 bg-black"
+            style={{ opacity: 0 }}
+          />
+          {overlay && (
+            <div
+              ref={textBox}
+              className={cn(
+                'pointer-events-none absolute inset-x-[8%] flex justify-center text-center',
+                portrait ? 'top-[13%]' : 'top-[7%]',
+              )}
+              style={{ opacity: 0 }}
+            >
+              <span
+                className={cn(
+                  'bg-[#171c26]/80 leading-[1.2] font-[700] text-white',
+                  portrait ? 'px-[1cqh] text-[3.2cqh]' : 'px-[1.8cqh] py-[0.5cqh] text-[5.6cqh]',
+                )}
+              >
+                {overlay.text}
+              </span>
             </div>
           )}
           {chunk && (
@@ -417,7 +562,16 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
 
       {project.voiceoverUrl && (
         // biome-ignore lint/a11y/useMediaCaption: captions are drawn on the stage
-        <audio ref={audio} src={project.voiceoverUrl} preload="auto" onEnded={() => setPlaying(false)} />
+        <audio
+          ref={audio}
+          src={project.voiceoverUrl}
+          preload="auto"
+          onEnded={() => {
+            // The music loops on its own: stop it with the voice-over.
+            music.current?.pause()
+            setPlaying(false)
+          }}
+        />
       )}
       {project.musicUrl && (
         // biome-ignore lint/a11y/useMediaCaption: background music
@@ -482,5 +636,39 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
         </div>
       </div>
     </Panel>
+  )
+}
+
+/** One picture on the stage: 'contain' sits on a blurred copy of itself, like the render. */
+function Picture({
+  scene,
+  imageRef,
+}: {
+  scene: SceneDTO
+  imageRef: React.RefObject<HTMLImageElement | null>
+}) {
+  return (
+    <>
+      {scene.fit === 'contain' && (
+        // biome-ignore lint/performance/noImgElement: user uploads
+        <img
+          src={scene.imageUrl ?? undefined}
+          alt=""
+          aria-hidden
+          className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-xl brightness-75"
+        />
+      )}
+      {/* biome-ignore lint/performance/noImgElement: user uploads */}
+      <img
+        ref={imageRef}
+        src={scene.imageUrl ?? undefined}
+        alt={`Scene ${scene.index + 1}`}
+        className={cn(
+          'absolute inset-0 size-full will-change-transform',
+          scene.fit === 'cover' ? 'object-cover' : 'object-contain',
+        )}
+        style={{ objectPosition: `${scene.focusX * 100}% ${scene.focusY * 100}%` }}
+      />
+    </>
   )
 }

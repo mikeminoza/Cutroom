@@ -1,6 +1,6 @@
 import { clientFromRefresh, reschedule } from '@cutroom/shared/google'
 import { z } from 'zod'
-import { getConnection } from '@/server/connections'
+import { channelFor } from '@/server/connections'
 import { badRequest, readJson, route } from '@/server/http'
 import { getProjectFull, getProjectRow, updateProject } from '@/server/projects'
 
@@ -15,10 +15,10 @@ export const PUT = route(async (request, { params }: Ctx) => {
   if (when.getTime() < Date.now() + 15 * 60_000) badRequest('Pick a time at least 15 minutes from now.')
   const project = await getProjectRow(id)
   if (project.youtubeVideoId) {
-    const youtube = await getConnection('youtube')
-    if (!youtube) badRequest('Connect YouTube to move an uploaded video.')
+    const channel = await channelFor(project.channelId, project.channelYoutubeId)
+    if (!channel) badRequest('Connect the channel this video is on to move it.')
     await reschedule(
-      clientFromRefresh(youtube.refreshToken),
+      clientFromRefresh(channel.refreshToken),
       project.youtubeVideoId,
       when.toISOString(),
       project.post.madeForKids,

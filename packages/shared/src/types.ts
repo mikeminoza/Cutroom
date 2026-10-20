@@ -23,6 +23,118 @@ export type ProjectStatus =
 
 export const MOTIONS: Motion[] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'none']
 
+/** How a scene's picture comes in: a hard cut, a crossfade from the previous picture, or a dip through black. */
+export type Transition = 'cut' | 'crossfade' | 'fade-black'
+
+export const TRANSITIONS: Transition[] = ['cut', 'crossfade', 'fade-black']
+
+/** Scenes written before transitions were rendered hold free text ("dissolve", "fade"...). */
+export function normalizeTransition(value: string | null | undefined): Transition {
+  const v = (value ?? '').trim().toLowerCase()
+  if ((TRANSITIONS as string[]).includes(v)) return v as Transition
+  if (/black|dip/.test(v)) return 'fade-black'
+  if (/cross|dissolve|fade|blend|mix/.test(v)) return 'crossfade'
+  return 'cut'
+}
+
+export type TtsProvider = 'gemini' | 'elevenlabs'
+
+export interface VoiceSettings {
+  provider: TtsProvider
+  /** Gemini: a prebuilt voice name. ElevenLabs: a voice id. */
+  voice: string
+  /** Gemini only: delivery for the whole read, e.g. "warm, unhurried documentary narrator". */
+  style: string
+}
+
+export const DEFAULT_VOICE: VoiceSettings = { provider: 'gemini', voice: 'Kore', style: '' }
+
+/** Gemini's prebuilt voices and the character Google describes for each. */
+export const GEMINI_VOICES: { name: string; character: string }[] = [
+  { name: 'Kore', character: 'Firm' },
+  { name: 'Charon', character: 'Informative' },
+  { name: 'Puck', character: 'Upbeat' },
+  { name: 'Zephyr', character: 'Bright' },
+  { name: 'Fenrir', character: 'Excitable' },
+  { name: 'Leda', character: 'Youthful' },
+  { name: 'Orus', character: 'Firm' },
+  { name: 'Aoede', character: 'Breezy' },
+  { name: 'Callirrhoe', character: 'Easy-going' },
+  { name: 'Autonoe', character: 'Bright' },
+  { name: 'Enceladus', character: 'Breathy' },
+  { name: 'Iapetus', character: 'Clear' },
+  { name: 'Umbriel', character: 'Easy-going' },
+  { name: 'Algieba', character: 'Smooth' },
+  { name: 'Despina', character: 'Smooth' },
+  { name: 'Erinome', character: 'Clear' },
+  { name: 'Algenib', character: 'Gravelly' },
+  { name: 'Rasalgethi', character: 'Informative' },
+  { name: 'Laomedeia', character: 'Upbeat' },
+  { name: 'Achernar', character: 'Soft' },
+  { name: 'Alnilam', character: 'Firm' },
+  { name: 'Schedar', character: 'Even' },
+  { name: 'Gacrux', character: 'Mature' },
+  { name: 'Pulcherrima', character: 'Forward' },
+  { name: 'Achird', character: 'Friendly' },
+  { name: 'Zubenelgenubi', character: 'Casual' },
+  { name: 'Vindemiatrix', character: 'Gentle' },
+  { name: 'Sadachbia', character: 'Lively' },
+  { name: 'Sadaltager', character: 'Knowledgeable' },
+  { name: 'Sulafat', character: 'Warm' },
+]
+
+/** YouTube numbers for a posted video, refreshed daily. Analytics fields need the analytics permission. */
+export interface VideoStats {
+  views: number
+  likes: number
+  comments: number
+  watchMinutes: number | null
+  averageViewSeconds: number | null
+  averageViewPercent: number | null
+  subscribersGained: number | null
+  publishedAt: string | null
+  fetchedAt: string
+}
+
+export interface TemplateCharacter {
+  name: string
+  description: string
+  images: { url: string; key: string }[]
+}
+
+/** Everything a series reuses for each new episode. Files are copies owned by the series. */
+export interface SeriesTemplate {
+  topic: string
+  audience: string
+  tone: string
+  language: string
+  artStyle: string
+  format: VideoFormat
+  resolution: Resolution
+  captionStyle: CaptionStyle
+  mode: PostingMode
+  targetMinutes: number
+  pace: number
+  notes: string
+  textOverlays: boolean
+  musicUrl: string | null
+  musicName: string | null
+  musicVolume: number
+  voice: VoiceSettings | null
+  channelId: string | null
+  /** YouTube's id of that channel, so episodes still find it after a disconnect and reconnect. */
+  channelYoutubeId?: string | null
+  post: {
+    categoryId: string
+    privacy: Privacy
+    madeForKids: boolean
+    playlistId: string
+    language: string
+    tags: string[]
+  }
+  characters: TemplateCharacter[]
+}
+
 export interface Word {
   text: string
   start: number
@@ -125,6 +237,16 @@ export interface AppSettings {
     captionStyle: CaptionStyle
   }
   freeBlobAfterPosting: boolean
+  /** Default voice for AI voice-overs. */
+  voice: VoiceSettings
+  /** Which events send a message to the channels set up in the environment. */
+  notifications: NotificationPrefs
+}
+
+export interface NotificationPrefs {
+  approval: boolean
+  failed: boolean
+  posted: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -147,6 +269,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     captionStyle: 'highlight',
   },
   freeBlobAfterPosting: true,
+  voice: DEFAULT_VOICE,
+  notifications: { approval: true, failed: true, posted: true },
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.
