@@ -16,6 +16,10 @@ for (const name of [
   'WORKER_URL',
   'GITHUB_DISPATCH_TOKEN',
   'GITHUB_REPO',
+  // Set by GitHub Actions itself when these tests run in CI.
+  'GITHUB_WORKFLOW_FILE',
+  'GITHUB_BRANCH',
+  'GITHUB_API_URL',
   'NOTIFY_DISCORD_WEBHOOK_URL',
   'NOTIFY_TELEGRAM_BOT_TOKEN',
   'NOTIFY_TELEGRAM_CHAT_ID',

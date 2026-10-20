@@ -48,7 +48,7 @@ function github(): { token: string; repo: string; workflow: string; ref: string 
   return {
     token,
     repo,
-    workflow: process.env.GITHUB_WORKFLOW || 'worker.yml',
+    workflow: process.env.GITHUB_WORKFLOW_FILE || 'worker.yml',
     ref: process.env.GITHUB_BRANCH || 'main',
   }
 }

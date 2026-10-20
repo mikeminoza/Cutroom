@@ -30,7 +30,7 @@ Locally both read a single `.env` file at the repository root. In production you
 | `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID` | ✓ | – | No | `123456:ABC…`, `987654321` |
 | `RESEND_API_KEY`, `NOTIFY_EMAIL_TO`, `NOTIFY_EMAIL_FROM` | ✓ | – | No | `re_…`, `you@example.com` |
 | `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO` | ✓ | – | Only for the GitHub Actions worker | `github_pat_…`, `you/Cutroom` |
-| `GITHUB_WORKFLOW`, `GITHUB_BRANCH`, `WORKER_MODE` | ✓ | – | No | `worker.yml`, `main`, `render` |
+| `GITHUB_WORKFLOW_FILE`, `GITHUB_BRANCH`, `WORKER_MODE` | ✓ | – | No | `worker.yml`, `main`, `render` |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | – | ✓ | No | `C:\ffmpeg\bin\ffmpeg.exe` |
 | `FFMPEG_THREADS` | – | ✓ | No | `1` |
 | `WORKER_PUBLIC_URL` | – | ✓ | No | `https://my-worker.example.com` |
@@ -185,13 +185,13 @@ Optional, web app only. Cutroom sends a message when a video waits for your appr
 
 After a redeploy, **Settings → Connections → Notifications → Send a test** checks every channel.
 
-### GitHub Actions worker: `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, `GITHUB_WORKFLOW`, `GITHUB_BRANCH`, `WORKER_MODE`
+### GitHub Actions worker: `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, `GITHUB_WORKFLOW_FILE`, `GITHUB_BRANCH`, `WORKER_MODE`
 
 Optional, web app only. When `GITHUB_DISPATCH_TOKEN` and `GITHUB_REPO` are set, jobs run on GitHub Actions (`.github/workflows/worker.yml`) instead of the worker at `WORKER_URL`. Each job starts its own run: more CPU than Render's free plan, and nothing to keep awake. Setup: [DEPLOYMENT.md → Optional: the worker on GitHub Actions](DEPLOYMENT.md#11-optional-the-worker-on-github-actions).
 
 - `GITHUB_DISPATCH_TOKEN`: a fine-grained personal access token with access to this repository only and the **Actions: Read and write** permission.
 - `GITHUB_REPO`: `owner/name`, for example `you/Cutroom`.
-- `GITHUB_WORKFLOW`: optional, the workflow file name. Defaults to `worker.yml`.
+- `GITHUB_WORKFLOW_FILE`: optional, the workflow file name. Defaults to `worker.yml`. (Not `GITHUB_WORKFLOW`: GitHub Actions sets that one itself.)
 - `GITHUB_BRANCH`: optional, the branch whose workflow runs. Defaults to `main`.
 - `WORKER_MODE`: optional. Set to `render` to keep using `WORKER_URL` while the GitHub variables are set.
 
