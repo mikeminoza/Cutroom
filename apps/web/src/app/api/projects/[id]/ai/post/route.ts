@@ -7,8 +7,9 @@ import { badRequest, route } from '@/server/http'
 import { getCharacters, getProjectRow, getScenes, toCharacterDTO, updateProject } from '@/server/projects'
 import { getSettings } from '@/server/settings'
 
-// Gemini answers within 50 s or the request ends with a clear message (see requestDeadline).
-export const maxDuration = 60
+// Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
+// default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
+export const maxDuration = 300
 
 type Ctx = { params: Promise<{ id: string }> }
 

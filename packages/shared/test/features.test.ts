@@ -570,13 +570,14 @@ describe('Gemini calls', () => {
     }
   })
 
-  it('on Vercel, stops in time with a clear message instead of hitting the 60-second cut-off', async () => {
+  it('on Vercel, stops in time with a clear message instead of hitting the cut-off', async () => {
+    const { AI_BUDGET_MS } = await import('../src/ai')
     process.env.VERCEL = '1'
     const start = Date.now()
     const now = vi.spyOn(Date, 'now')
     try {
       // Gemini is overloaded and only a second of the budget is left: no time for another try.
-      now.mockReturnValueOnce(start).mockReturnValue(start + 49_000)
+      now.mockReturnValueOnce(start).mockReturnValue(start + AI_BUDGET_MS - 1000)
       generateContent.mockRejectedValue(Object.assign(new Error('{"error":{"code":503}}'), { status: 503 }))
       await expect(askForIdeas()).rejects.toMatchObject({ code: 'busy' })
       expect(generateContent).toHaveBeenCalledTimes(1)
@@ -584,7 +585,7 @@ describe('Gemini calls', () => {
       // The answer takes longer than the budget: the request is aborted at the deadline.
       generateContent.mockReset()
       now.mockReset()
-      now.mockReturnValueOnce(start).mockReturnValue(start + 49_500)
+      now.mockReturnValueOnce(start).mockReturnValue(start + AI_BUDGET_MS - 500)
       generateContent.mockImplementation(
         ({ config }: { config: { abortSignal: AbortSignal } }) =>
           new Promise((_, reject) =>

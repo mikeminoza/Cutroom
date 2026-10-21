@@ -5,7 +5,9 @@ import { badRequest, readJson, route } from '@/server/http'
 import { createProject } from '@/server/projects'
 import { getSeries } from '@/server/series'
 
-export const maxDuration = 60
+// Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
+// default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
+export const maxDuration = 300
 
 /**
  * Turns ideas into draft projects (in their series when they have one). Each idea is marked as

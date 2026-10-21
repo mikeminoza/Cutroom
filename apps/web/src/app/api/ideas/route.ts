@@ -8,7 +8,9 @@ import { newId, notFound, readJson, route } from '@/server/http'
 import { getSeries } from '@/server/series'
 import { getSettings } from '@/server/settings'
 
-export const maxDuration = 60
+// Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
+// default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
+export const maxDuration = 300
 
 async function listIdeas(): Promise<IdeaDTO[]> {
   const database = await db()

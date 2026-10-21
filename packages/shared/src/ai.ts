@@ -75,12 +75,14 @@ const RETRY_STATUSES = [429, 500, 502, 503, 504]
 const TOO_SLOW = 'Gemini is taking too long to answer right now. Try again in a minute.'
 
 /**
- * When an AI request must be finished, retries included. Vercel cuts a request off at 60 seconds
- * (the routes' maxDuration), so stop at 50 and answer with a clear message instead of a bare 504.
- * The worker has no such limit.
+ * How long an AI request may take on Vercel, retries included. The AI routes run for up to 300 s
+ * (maxDuration; the Hobby plan's limit with Fluid compute), so stop in time to answer with a clear
+ * message instead of a bare 504. The worker has no such limit.
  */
+export const AI_BUDGET_MS = 270_000
+
 function requestDeadline(): number | undefined {
-  return process.env.VERCEL ? Date.now() + 50_000 : undefined
+  return process.env.VERCEL ? Date.now() + AI_BUDGET_MS : undefined
 }
 
 /** Aborts at the deadline, or when the caller aborts. */

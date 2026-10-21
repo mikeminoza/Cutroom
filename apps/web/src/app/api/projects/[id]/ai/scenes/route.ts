@@ -4,8 +4,9 @@ import { layoutByEstimate } from '@cutroom/shared/timing'
 import { badRequest, route } from '@/server/http'
 import { getCharacters, getProjectFull, getProjectRow, replaceScenes } from '@/server/projects'
 
-// Gemini answers within 50 s or the request ends with a clear message (see requestDeadline).
-export const maxDuration = 60
+// Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
+// default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
+export const maxDuration = 300
 
 type Ctx = { params: Promise<{ id: string }> }
 
