@@ -155,17 +155,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
             </ul>
           </Link>
-          <div className="flex flex-col items-center gap-2 lg:flex-row lg:justify-between lg:px-2.5">
+          <div className="flex flex-col items-center gap-2 lg:items-stretch lg:gap-1 lg:border-t lg:border-line lg:pt-3">
             <ThemeSwitch vertical className="lg:hidden" />
-            <ThemeSwitch className="hidden lg:inline-flex" />
+            <div className="hidden items-center justify-between px-2.5 lg:flex">
+              <span className="text-[12.5px] text-ink-3">Theme</span>
+              <ThemeSwitch />
+            </div>
             {status?.auth && (
               <button
                 type="button"
                 onClick={signOut}
                 title="Sign out"
-                className="flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-[13px] text-ink-3 hover:bg-ink/[0.05] hover:text-ink"
+                className="flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-[13px] whitespace-nowrap text-ink-3 hover:bg-ink/[0.05] hover:text-ink lg:px-2.5 lg:py-2"
               >
-                <LogOut className="size-3.5" aria-hidden />
+                <LogOut className="size-3.5 shrink-0" aria-hidden />
                 <span className="sr-only lg:not-sr-only">Sign out</span>
               </button>
             )}
