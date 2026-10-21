@@ -488,7 +488,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
           {shown?.imageUrl ? (
             <Picture key={`cur-${segmentIndex}`} scene={shown} imageRef={current} />
           ) : (
-            <div className="absolute inset-0 grid place-items-center text-[13px] text-paper/50">
+            <div className="absolute inset-0 grid place-items-center text-[13px] text-film-ink/50">
               Scene {(scene?.index ?? 0) + 1} has no image yet
             </div>
           )}
@@ -553,7 +553,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
             </div>
           )}
           {!playing && (
-            <span className="absolute top-1/2 left-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-ink/70 text-paper">
+            <span className="absolute top-1/2 left-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-film/70 text-film-ink">
               <Play className="ml-0.5 size-6" aria-hidden />
             </span>
           )}

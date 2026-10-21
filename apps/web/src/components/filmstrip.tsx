@@ -34,7 +34,7 @@ export function MiniStrip({
       <div aria-hidden className="sprockets h-[6px] shrink-0 opacity-40" />
       <div className="flex min-h-0 flex-1 gap-[2px] px-[3px]">
         {frames.length === 0 ? (
-          <span className="flex w-full items-center px-2 text-[11.5px] text-paper/50">No scenes yet</span>
+          <span className="flex w-full items-center px-2 text-[11.5px] text-film-ink/50">No scenes yet</span>
         ) : (
           frames.map((frame, i) => (
             <span
@@ -149,7 +149,7 @@ export function Filmstrip({
                       className="absolute inset-0 size-full object-cover"
                     />
                   )}
-                  <span className="tc absolute top-1 left-1 rounded-[2px] bg-film/80 px-1 text-[10.5px] leading-[15px] text-paper/90">
+                  <span className="tc absolute top-1 left-1 rounded-[2px] bg-film/80 px-1 text-[10.5px] leading-[15px] text-film-ink/90">
                     {frame.index + 1}
                   </span>
                 </button>

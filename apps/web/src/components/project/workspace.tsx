@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { useHydrated } from '@/components/client-only'
 import { Filmstrip } from '@/components/filmstrip'
 import { Button, Menu, StatusPill, useConfirm } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
@@ -61,6 +62,15 @@ export function stageOf(data: ProjectFull) {
 
 export function Workspace({ id }: { id: string }) {
   const { data, isLoading, error } = useProject(id)
+  const hydrated = useHydrated()
+  const skeleton = (
+    <div className="mx-auto max-w-[1280px] px-4 py-8 sm:px-8">
+      <div className="h-8 w-72 max-w-full animate-pulse-soft rounded bg-line" />
+      <div className="mt-6 h-10 w-full animate-pulse-soft rounded bg-line/60" />
+      <div className="mt-6 h-[140px] w-full animate-pulse-soft rounded-[var(--radius-panel)] bg-film/80" />
+    </div>
+  )
+  if (!hydrated) return skeleton
   if (error) {
     return (
       <div className="mx-auto max-w-xl px-6 py-24 text-center">
@@ -72,15 +82,7 @@ export function Workspace({ id }: { id: string }) {
       </div>
     )
   }
-  if (isLoading || !data) {
-    return (
-      <div className="mx-auto max-w-[1280px] px-4 py-8 sm:px-8">
-        <div className="h-8 w-72 animate-pulse-soft rounded bg-line" />
-        <div className="mt-6 h-10 w-full animate-pulse-soft rounded bg-line/60" />
-        <div className="mt-6 h-[140px] w-full animate-pulse-soft rounded-[var(--radius-panel)] bg-film/80" />
-      </div>
-    )
-  }
+  if (isLoading || !data) return skeleton
   return <Loaded data={data} />
 }
 
@@ -97,7 +99,18 @@ function Loaded({ data }: { data: ProjectFull }) {
   const step = (params.get('step') as StepId) || next.step
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(params.get('scene'))
   const [dialog, setDialog] = useState<'short' | 'series' | null>(null)
+  const stepsRef = useRef<HTMLElement>(null)
   const seriesList = useSeriesList()
+
+  // On narrow screens the step bar scrolls sideways: keep the current step centred in view.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the step changes; it reads the DOM
+  useEffect(() => {
+    const nav = stepsRef.current
+    const current = nav?.querySelector<HTMLElement>('[aria-current="step"]')
+    if (!nav || !current || nav.scrollWidth <= nav.clientWidth) return
+    const offset = current.getBoundingClientRect().left - nav.getBoundingClientRect().left
+    nav.scrollBy({ left: offset - (nav.clientWidth - current.offsetWidth) / 2, behavior: 'smooth' })
+  }, [step])
   const series = seriesList.data?.find((s) => s.id === project.seriesId) ?? null
 
   const goTo = useCallback(
@@ -231,8 +244,9 @@ function Loaded({ data }: { data: ProjectFull }) {
       )}
 
       <nav
+        ref={stepsRef}
         aria-label="Steps"
-        className="mt-5 -mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden"
+        className="mt-5 -mx-4 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-28px),transparent)] [scrollbar-width:none] sm:mx-0 sm:px-0 sm:[mask-image:none] [&::-webkit-scrollbar]:hidden"
       >
         <ol className="flex min-w-max border-b border-line">
           {STEPS.map((item, i) => {
@@ -255,7 +269,7 @@ function Loaded({ data }: { data: ProjectFull }) {
                       done[item.id]
                         ? 'bg-ink text-paper'
                         : attention
-                          ? 'bg-kodak text-ink'
+                          ? 'bg-kodak text-on-kodak'
                           : current
                             ? 'border border-ink text-ink'
                             : 'border border-line-strong text-ink-3',

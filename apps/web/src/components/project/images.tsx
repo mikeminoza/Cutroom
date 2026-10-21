@@ -645,7 +645,7 @@ function Frame({
     return (
       <div
         className={cn(
-          'flex shrink-0 flex-col items-center justify-center gap-2 rounded-[var(--radius-frame)] bg-film text-[12.5px] text-paper/80',
+          'flex shrink-0 flex-col items-center justify-center gap-2 rounded-[var(--radius-frame)] bg-film text-[12.5px] text-film-ink/80',
           size,
         )}
       >

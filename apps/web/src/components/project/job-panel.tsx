@@ -18,7 +18,7 @@ function StepIcon({ step }: { step: JobStep }) {
       return <LoaderCircle className="size-5 animate-spin text-run" aria-hidden />
     case 'waiting':
       return (
-        <span className="grid size-5 place-items-center rounded-full bg-kodak text-ink">
+        <span className="grid size-5 place-items-center rounded-full bg-kodak text-on-kodak">
           <Hand className="size-3" aria-hidden />
         </span>
       )

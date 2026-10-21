@@ -156,8 +156,8 @@ function ProjectRow({ project, series }: { project: ProjectSummary; series: Seri
             )}
           </div>
         </div>
-        <div className="flex items-center gap-5 text-right md:justify-end">
-          <div className="flex flex-col items-end gap-0.5">
+        <div className="flex items-center gap-5 md:justify-end md:text-right">
+          <div className="flex items-baseline gap-2 md:flex-col md:items-end md:gap-0.5">
             <span className="tc text-[15px] font-medium">{formatLength(project.duration)}</span>
             <span className="text-[12.5px] whitespace-nowrap text-ink-3">
               {project.scheduledAt && ['scheduled', 'published'].includes(project.status)

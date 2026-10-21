@@ -525,7 +525,7 @@ function PreferencesForm() {
                               ),
                             })
                           }
-                          className="tc bg-transparent text-paper [color-scheme:dark] focus:outline-none"
+                          className="tc bg-transparent text-paper [color-scheme:dark] focus:outline-none dark:[color-scheme:light]"
                         />
                         <button
                           type="button"
@@ -794,7 +794,7 @@ function PreferencesForm() {
 
       <div
         className={cn(
-          'sticky bottom-4 z-20 flex items-center justify-between gap-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper transition-[opacity,transform]',
+          'sticky bottom-[calc(var(--tabbar)+env(safe-area-inset-bottom)+12px)] z-20 flex md:bottom-4 items-center justify-between gap-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper transition-[opacity,transform]',
           dirty ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-2 opacity-0',
         )}
         aria-hidden={!dirty}

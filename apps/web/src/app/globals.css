@@ -1,9 +1,13 @@
 @import "tailwindcss";
 
+/* `dark:` follows the theme the app picked (Settings or the sidebar), not only the OS. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /*
   Cutroom design tokens.
   Light-table gray workspace, ink text, and one signal color:
   Kodak yellow means "your move". The filmstrip is the only dark surface.
+  These are the light values; the dark theme overrides them below.
 */
 @theme {
   --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
@@ -11,22 +15,26 @@
   --color-paper: #eceef1;
   --color-panel: #ffffff;
   --color-sunk: #f4f5f7;
-  --color-ink: #171c26;
-  --color-ink-2: #485062;
-  --color-ink-3: #737b8c;
+  --color-ink: #151a23;
+  --color-ink-2: #454d5e;
+  --color-ink-3: #626a7b;
   --color-line: #d9dde3;
   --color-line-strong: #bfc6d0;
+
+  /* Fixed in both themes: text on Kodak yellow, and text on the dark film surfaces. */
+  --color-on-kodak: #151a23;
+  --color-film-ink: #e8ebf0;
 
   --color-kodak: #ffb800;
   --color-kodak-deep: #eaa800;
   --color-kodak-wash: #fff4d1;
   --color-kodak-ink: #5a4100;
 
-  --color-run: #2f6feb;
+  --color-run: #2560d6;
   --color-run-wash: #e7eefd;
   --color-ok: #16794a;
   --color-ok-wash: #e2f2e9;
-  --color-bad: #c33a2f;
+  --color-bad: #b5342a;
   --color-bad-wash: #fbe8e6;
 
   --color-film: #1b202b;
@@ -38,6 +46,44 @@
   --radius-frame: 3px;
 
   --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+}
+
+/*
+  Dark theme: a darkroom. Near-black paper, panels a step lighter, the same Kodak yellow.
+  Film surfaces sit a shade above the panels, so the filmstrip still reads as film.
+*/
+:root {
+  color-scheme: light;
+  /* Height of the phone tab bar (app-shell.tsx); pages keep their sticky bits above it. */
+  --tabbar: 60px;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper: #0e1116;
+  --color-panel: #161a21;
+  --color-sunk: #12151b;
+  --color-ink: #e8ebf0;
+  --color-ink-2: #b2b9c5;
+  --color-ink-3: #8a93a3;
+  --color-line: #272c36;
+  --color-line-strong: #3a414e;
+
+  --color-kodak: #ffb800;
+  --color-kodak-deep: #ffc52e;
+  --color-kodak-wash: #2d2306;
+  --color-kodak-ink: #ffd16a;
+
+  --color-run: #6f9eff;
+  --color-run-wash: #15213a;
+  --color-ok: #46c98a;
+  --color-ok-wash: #10291d;
+  --color-bad: #ff7b6f;
+  --color-bad-wash: #351713;
+
+  /* Film a shade lighter than the panels, so strips and the logo still stand out. */
+  --color-film: #252b37;
+  --color-film-2: #2f3643;
+  --color-film-line: #404858;
 }
 
 @keyframes pulse-soft {
@@ -60,11 +106,12 @@
   }
   body {
     min-height: 100dvh;
+    background: var(--color-paper);
     font-feature-settings: "ss01";
   }
   ::selection {
     background: var(--color-kodak);
-    color: var(--color-ink);
+    color: var(--color-on-kodak);
   }
   :focus-visible {
     outline: 2px solid var(--color-ink);
@@ -111,6 +158,14 @@
     background-size: 14px 10px;
     background-repeat: repeat-x;
     background-position: 4px center;
+  }
+}
+
+/* Phones: toasts sit above the tab bar instead of on top of it. */
+@media (max-width: 767px) {
+  [data-sonner-toaster] {
+    --mobile-offset-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 12px) !important;
+    --offset-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 12px) !important;
   }
 }
 

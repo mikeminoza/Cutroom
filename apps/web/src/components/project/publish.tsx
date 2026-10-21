@@ -388,7 +388,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
         <DropZone accept="image/*" onFiles={onFiles} disabled={generating !== null}>
           {({ open, dragging }) =>
             generating !== null ? (
-              <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-control)] bg-film text-[13px] text-paper/80">
+              <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-control)] bg-film text-[13px] text-film-ink/80">
                 <Spinner />
                 Gemini is designing your thumbnail…
               </div>
@@ -637,7 +637,7 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
                 className={cn(
                   'mt-0.5 grid size-[18px] place-items-center rounded-full',
                   check.tone === 'ok' && 'bg-ok text-panel',
-                  check.tone === 'you' && 'bg-kodak text-ink',
+                  check.tone === 'you' && 'bg-kodak text-on-kodak',
                   check.tone === 'idle' && 'border border-line-strong',
                   check.tone === 'bad' && 'bg-bad text-panel',
                 )}

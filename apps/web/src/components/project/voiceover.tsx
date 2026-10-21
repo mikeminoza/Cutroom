@@ -36,6 +36,7 @@ import { cn } from '@/lib/cn'
 import type { JobDTO, ProjectFull } from '@/lib/dto'
 import { formatLength } from '@/lib/format'
 import { keys, useProjectAction, useSaver, useSettings, useStatus, useVoices } from '@/lib/hooks'
+import { useTheme } from '@/lib/theme'
 import { audioDuration } from '@/lib/upload'
 import { useUploader } from './fields'
 import { JobSteps } from './job-panel'
@@ -121,7 +122,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
               {progress !== null ? (
                 <ProgressBar value={progress} tone="you" className="mt-2 w-64" />
               ) : (
-                <span className="mt-2 inline-flex h-[38px] items-center rounded-[var(--radius-control)] bg-kodak px-4 text-[14px] font-semibold">
+                <span className="mt-2 inline-flex h-[38px] items-center rounded-[var(--radius-control)] bg-kodak px-4 text-[14px] font-semibold text-on-kodak">
                   Choose a file
                 </span>
               )}
@@ -471,7 +472,16 @@ function Transcript({ data }: { data: ProjectFull }) {
   )
 }
 
-const REGION_FILL = ['rgba(23,28,38,0.06)', 'rgba(23,28,38,0.11)']
+// Regions take CSS colors, so they follow the theme by themselves. The waveform is drawn on a
+// canvas, so its colors are picked per theme.
+const REGION_FILL = [
+  'color-mix(in srgb, var(--color-ink) 6%, transparent)',
+  'color-mix(in srgb, var(--color-ink) 11%, transparent)',
+]
+const WAVE_COLORS = {
+  light: { waveColor: '#a3abb9', progressColor: '#151a23', cursorColor: '#eaa800' },
+  dark: { waveColor: '#566072', progressColor: '#e8ebf0', cursorColor: '#ffb800' },
+}
 
 function Waveform({
   data,
@@ -493,6 +503,9 @@ function Waveform({
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [zoom, setZoom] = useState(0)
+  const theme = useTheme()
+  const themeRef = useRef(theme)
+  themeRef.current = theme
 
   const signature = useMemo(() => scenes.map((s) => `${s.id}:${s.start}:${s.end}`).join('|'), [scenes])
 
@@ -529,9 +542,7 @@ function Waveform({
           container: container.current,
           url: project.voiceoverUrl!,
           height: 104,
-          waveColor: '#a3abb9',
-          progressColor: '#171c26',
-          cursorColor: '#eaa800',
+          ...WAVE_COLORS[themeRef.current],
           cursorWidth: 2,
           barWidth: 2,
           barGap: 1,
@@ -585,7 +596,7 @@ function Waveform({
       const label = document.createElement('span')
       label.textContent = String(i + 1)
       label.style.cssText =
-        'font: 600 11px/1 var(--font-archivo), sans-serif; padding: 3px 4px; color: #171c26; font-variant-numeric: tabular-nums;'
+        'font: 600 11px/1 var(--font-archivo), sans-serif; padding: 3px 4px; color: var(--color-ink); font-variant-numeric: tabular-nums;'
       plugin.addRegion({
         id: scene.id,
         start: scene.start,
@@ -602,6 +613,10 @@ function Waveform({
   useEffect(() => {
     if (ready) ws.current?.zoom(zoom)
   }, [zoom, ready])
+
+  useEffect(() => {
+    if (ready) ws.current?.setOptions(WAVE_COLORS[theme])
+  }, [theme, ready])
 
   return (
     <div>

@@ -14,7 +14,7 @@ type ButtonVariant = 'go' | 'plain' | 'ghost' | 'dark' | 'danger'
 type ButtonSize = 'sm' | 'md' | 'lg'
 
 const buttonVariants: Record<ButtonVariant, string> = {
-  go: 'bg-kodak text-ink font-semibold hover:bg-kodak-deep active:translate-y-px',
+  go: 'bg-kodak text-on-kodak font-semibold hover:bg-kodak-deep active:translate-y-px',
   plain: 'bg-panel text-ink border border-line hover:border-line-strong hover:bg-sunk',
   ghost: 'text-ink-2 hover:text-ink hover:bg-ink/[0.05]',
   dark: 'bg-ink text-paper font-medium hover:bg-ink/90',
@@ -402,7 +402,7 @@ export function Dialog({
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
-        <RDialog.Overlay className="fixed inset-0 z-40 bg-ink/40 data-[state=open]:animate-in" />
+        <RDialog.Overlay className="fixed inset-0 z-40 bg-film/50 data-[state=open]:animate-in dark:bg-black/60" />
         <RDialog.Content
           className={cn(
             'fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-[var(--radius-panel)] border border-line bg-panel',
