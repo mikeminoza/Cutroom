@@ -4,6 +4,7 @@
 import {
   AnalyticsUnavailable,
   clientFromRefresh,
+  explainGoogleError,
   hasAnalyticsScope,
   type VideoAnalytics,
   videoAnalytics,
@@ -89,7 +90,9 @@ export async function refreshStats(
         list.map((p) => p.youtubeVideoId as string),
       )
     } catch (error) {
-      notes.push(`${channel.title}: ${error instanceof Error ? error.message : String(error)}`)
+      notes.push(
+        `${channel.title}: ${explainGoogleError(error) ?? (error instanceof Error ? error.message : String(error))}`,
+      )
       continue
     }
     const withAnalytics = hasAnalyticsScope(channel.scope)

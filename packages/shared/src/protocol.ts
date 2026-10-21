@@ -84,6 +84,8 @@ export interface JobResult {
   /** AI voice-over timing kept so a resumed job can align without recording again. */
   voiceWords?: Word[]
   voiceSpans?: SpokenSpan[]
+  /** AI voice-over parts recorded so far, kept so a retry carries on instead of starting over. */
+  voiceParts?: { text: string; url: string; key: string; duration: number; words: Word[] }[]
 }
 
 export interface JobPayloadProject {

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { explainGoogleError } from '@cutroom/shared/google'
 
 export async function makeWorkDir(jobId: string): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), `cutroom-${jobId.slice(0, 8)}-`))
@@ -86,6 +87,8 @@ export function throttle<A extends unknown[]>(fn: (...args: A) => void, ms: numb
 }
 
 export function errorMessage(error: unknown): string {
+  const explained = explainGoogleError(error)
+  if (explained) return explained
   if (error instanceof Error) {
     const google = (error as { errors?: { message?: string }[] }).errors?.[0]?.message
     return google ? `${error.message} (${google})` : error.message

@@ -9,7 +9,7 @@ This guide takes you from the GitHub repository to a live app that posts to YouT
 | Web app (pages + API) | Vercel, Hobby plan | Free |
 | Database | Neon Postgres via the Vercel Marketplace | Free plan |
 | Working files (images, audio) | Vercel Blob | Free up to 1 GB |
-| Worker (timing, rendering, uploads) | Render, free web service | Free |
+| Worker (timing, rendering, uploads) | Render, free web service, or GitHub Actions (section 11, recommended for videos over 3 minutes) | Free |
 | AI | Gemini API, free tier | Free |
 | Finished videos | Google Drive (your account) | Free up to 15 GB, shared with Gmail and Photos |
 | Posting | YouTube Data API | Free |
@@ -33,7 +33,7 @@ This guide takes you from the GitHub repository to a live app that posts to YouT
 8. [Test run](#8-test-run)
 9. [Updating the app later](#9-updating-the-app-later)
 10. [Optional extras](#10-optional-extras)
-11. [Optional: the worker on GitHub Actions](#11-optional-the-worker-on-github-actions)
+11. [Recommended for long videos: the worker on GitHub Actions](#11-recommended-for-long-videos-the-worker-on-github-actions)
 12. [Troubleshooting](#12-troubleshooting)
 
 ---
@@ -67,7 +67,7 @@ Tick these off as you go. The required list gives you a working app that posts t
 | Email messages | A Resend API key (https://resend.com) | `RESEND_API_KEY`, `NOTIFY_EMAIL_TO`; `NOTIFY_EMAIL_FROM` optional | Vercel |
 | Watch time and retention on **Performance** | The YouTube Analytics API and its scope, both already in the required list | none | – |
 | More than one YouTube channel | Nothing: connect each one in **Settings** | none | – |
-| The worker on GitHub Actions instead of Render | A fine-grained GitHub token with **Actions: Read and write** | `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, plus repository secrets | Vercel and GitHub ([11](#11-optional-the-worker-on-github-actions)) |
+| The worker on GitHub Actions instead of Render | A fine-grained GitHub token with **Actions: Read and write** | `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, plus repository secrets | Vercel and GitHub ([11](#11-recommended-for-long-videos-the-worker-on-github-actions)) |
 
 How to get each value is in [ENVIRONMENT.md](ENVIRONMENT.md). After adding a variable, redeploy that service ([9](#9-updating-the-app-later)).
 
@@ -457,9 +457,9 @@ Views, likes and comments work for every connected channel. Watch time and reten
 
 **Settings → Connections → YouTube → Add a channel**, then pick the other account or Brand Account. The first channel is the default; **Make default** changes it. Each video posts to the default channel unless you pick another on its Publish step, and every channel gets its own posting slots.
 
-## 11. Optional: the worker on GitHub Actions
+## 11. Recommended for long videos: the worker on GitHub Actions
 
-Instead of the Render worker, GitHub Actions can run each job in its own run: several CPU cores (1080p renders in a fraction of the time), and nothing that falls asleep. Public repositories run free; private ones include 2,000 minutes a month on GitHub's free plan. Rendering a 5-minute video at 720p takes a few minutes.
+Instead of the Render worker, GitHub Actions can run each job in its own run: several CPU cores, and nothing that falls asleep. Public repositories run free; private ones include 2,000 minutes a month on GitHub's free plan, enough for well over 100 videos. Rendering a 6-minute video at 720p takes a few minutes, where the free Render worker (a tenth of a CPU) takes about half an hour. For 5–8-minute videos, use this.
 
 1. **Create a token for Vercel to start runs.** GitHub → your avatar → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
    - Repository access: **Only select repositories** → your Cutroom repository.
@@ -506,7 +506,7 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | "This Gemini model is not on the free tier" | Picture generation needs billing | Turn on billing for the Gemini key's project ([10](#10-optional-extras)), or copy the prompts into another image tool |
 | AI voice-over: "Add ELEVENLABS_API_KEY…" or no ElevenLabs voices | The key is missing on Vercel or Render, or lacks voices access | Set it on both, with text-to-speech and voices access, and redeploy |
 | Performance shows views but "—" for watch time | YouTube Analytics API off, or the channel was connected without its scope | Steps 3.2 and 3.4, then **Reconnect** the channel in Settings |
-| Job stays queued with "Could not start the GitHub Actions worker" | Wrong `GITHUB_REPO`, or the token lacks **Actions: Read and write** on that repository | Fix the variable or the token ([11](#11-optional-the-worker-on-github-actions)) and redeploy. The job starts on the next check |
+| Job stays queued with "Could not start the GitHub Actions worker" | Wrong `GITHUB_REPO`, or the token lacks **Actions: Read and write** on that repository | Fix the variable or the token ([11](#11-recommended-for-long-videos-the-worker-on-github-actions)) and redeploy. The job starts on the next check |
 | GitHub run fails right away with "WORKER_SECRET and APP_URL must be set" | Repository secrets missing | Add them under **Settings → Secrets and variables → Actions** |
 | "Send a test" reports an error for Telegram | Wrong chat id, or you never messaged the bot | Message the bot first, then read the chat id again from `getUpdates` |
 | Test email never arrives | Resend's test sender only sends to your own Resend account address | Use that address in `NOTIFY_EMAIL_TO`, or verify a domain in Resend and set `NOTIFY_EMAIL_FROM` |
@@ -519,4 +519,10 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | "This video was archived to Drive, so its files are gone" | Its working files were moved to Drive after posting | Make the Short or series from a video that isn't archived |
 | "… could not be copied. Upload it again, or remove it" | A picture or the music of the source video is missing from storage | Upload that file again on the source video, or remove it, then try again |
 | "Another job is already running for this video" | A voice-over, matching or publishing job is still active | Wait for it to finish, or stop it, then try again |
-| Render: very slow renders | The free instance has a fraction of one CPU | Keep 720p. For long videos render 1080p only when needed |
+| Render: very slow renders | The free instance has a tenth of one CPU: a 6-minute video takes about half an hour | Keep 720p, or move the worker to GitHub Actions ([11](#11-recommended-for-long-videos-the-worker-on-github-actions)), which is free and renders it in minutes |
+| "Missed its posting time while rendering, so it moved to the next free slot" | The render took longer than the time left before the slot | Nothing to fix: it posts at the next slot. To avoid it, schedule further ahead or use the GitHub Actions worker |
+| "Google signed Cutroom out of this account" | Google ended the saved login. In **Testing** mode that happens every 7 days | Reconnect in **Settings**, then publish the app ([3.7](#37-publish-the-app-important)) so it stops happening |
+| "The YouTube API's free daily quota is used up" or "reached its upload limit for today" | YouTube's free daily limits | Click **Retry** the next day (the quota resets at midnight Pacific time) |
+| "Not saved to Google Drive: Your Google Drive is full" | Drive's free 15 GB is used up | The video was still posted. Delete old Cutroom folders in Drive |
+| AI voice-over: "Gemini's free daily limit is used up" | The free Gemini voice has a daily cap | Upload your own recording, or click **Retry** tomorrow: the parts recorded so far are kept |
+| Settings → Daily check: "Off: CRON_SECRET is missing" | `APP_PASSWORD` is set without `CRON_SECRET` | Add `CRON_SECRET` on Vercel and redeploy |

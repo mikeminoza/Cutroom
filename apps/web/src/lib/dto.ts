@@ -138,6 +138,8 @@ export interface StatusDTO {
   blobToken: boolean
   database: 'neon' | 'local'
   auth: boolean
+  /** The daily check (Vercel cron): on, off because CRON_SECRET is missing, or not on Vercel. */
+  daily: 'on' | 'needs-secret' | 'local'
 }
 
 export interface SeriesDTO {

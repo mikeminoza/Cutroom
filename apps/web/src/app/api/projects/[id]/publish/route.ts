@@ -1,13 +1,10 @@
-import { nextFreeSlot } from '@cutroom/shared/schedule'
-import { and, inArray, isNotNull, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import { resolveChannel } from '@/lib/channels'
 import { listChannels } from '@/server/connections'
-import { db, schema } from '@/server/db'
 import { badRequest, readJson, route } from '@/server/http'
 import { requireWorker, startJob } from '@/server/jobs'
 import { getProjectFull, getProjectRow, getScenes, latestJob, updateProject } from '@/server/projects'
-import { getSettings } from '@/server/settings'
+import { nextOpenSlot } from '@/server/slots'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -45,28 +42,7 @@ export const POST = route(async (request, { params }: Ctx) => {
     if (at.getTime() < Date.now() + 15 * 60_000) badRequest('Pick a time at least 15 minutes from now.')
     scheduledAt = at
   } else if (body.when === 'slot') {
-    const settings = await getSettings()
-    const database = await db()
-    const others = await database
-      .select({
-        at: schema.projects.scheduledAt,
-        channelId: schema.projects.channelId,
-        channelYoutubeId: schema.projects.channelYoutubeId,
-      })
-      .from(schema.projects)
-      .where(
-        and(
-          ne(schema.projects.id, id),
-          isNotNull(schema.projects.scheduledAt),
-          inArray(schema.projects.status, ['rendering', 'awaiting_approval', 'uploading', 'scheduled']),
-        ),
-      )
-    // Each channel has its own slots: only videos going to the same channel take a slot.
-    const target = channel?.id ?? null
-    const taken = others
-      .filter((o) => (resolveChannel(channels, o.channelId, o.channelYoutubeId)?.id ?? null) === target)
-      .map((o) => o.at as Date)
-    scheduledAt = nextFreeSlot(settings.slots, settings.timezone, taken)
+    scheduledAt = await nextOpenSlot(id, channel?.id ?? null)
     if (!scheduledAt)
       badRequest('No free posting slot in the next 6 weeks. Add slots in Settings or pick a time.')
   }

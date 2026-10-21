@@ -187,7 +187,7 @@ After a redeploy, **Settings → Connections → Notifications → Send a test**
 
 ### GitHub Actions worker: `GITHUB_DISPATCH_TOKEN`, `GITHUB_REPO`, `GITHUB_WORKFLOW_FILE`, `GITHUB_BRANCH`, `WORKER_MODE`
 
-Optional, web app only. When `GITHUB_DISPATCH_TOKEN` and `GITHUB_REPO` are set, jobs run on GitHub Actions (`.github/workflows/worker.yml`) instead of the worker at `WORKER_URL`. Each job starts its own run: more CPU than Render's free plan, and nothing to keep awake. Setup: [DEPLOYMENT.md → Optional: the worker on GitHub Actions](DEPLOYMENT.md#11-optional-the-worker-on-github-actions).
+Optional, web app only. When `GITHUB_DISPATCH_TOKEN` and `GITHUB_REPO` are set, jobs run on GitHub Actions (`.github/workflows/worker.yml`) instead of the worker at `WORKER_URL`. Each job starts its own run: more CPU than Render's free plan, and nothing to keep awake. Setup: [DEPLOYMENT.md → Recommended for long videos: the worker on GitHub Actions](DEPLOYMENT.md#11-recommended-for-long-videos-the-worker-on-github-actions).
 
 - `GITHUB_DISPATCH_TOKEN`: a fine-grained personal access token with access to this repository only and the **Actions: Read and write** permission.
 - `GITHUB_REPO`: `owner/name`, for example `you/Cutroom`.

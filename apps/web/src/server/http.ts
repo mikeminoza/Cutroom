@@ -24,7 +24,7 @@ export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status })
   if (error instanceof AiError) {
     const status =
-      error.code === 'rate_limited'
+      error.code === 'rate_limited' || error.code === 'daily_limit'
         ? 429
         : error.code === 'missing_key'
           ? 400

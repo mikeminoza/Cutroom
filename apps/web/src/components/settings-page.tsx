@@ -335,6 +335,12 @@ function Connections() {
                     Shared with Gmail and Photos.
                   </span>
                   {usage.limit && <ProgressBar value={usage.used / usage.limit} />}
+                  {usage.limit && usage.used / usage.limit >= 0.9 && (
+                    <span className="text-bad">
+                      Almost full. Delete old Cutroom folders in Drive: once it is full, videos still post but
+                      are no longer saved there.
+                    </span>
+                  )}
                 </div>
               ) : (
                 'Finished videos go into a Cutroom folder.'
@@ -395,9 +401,11 @@ function Connections() {
                 : 'Set WORKER_URL and WORKER_SECRET. Locally, pnpm dev starts it on port 8787.'
               : status.worker.mode === 'github'
                 ? `${status.worker.url}. Each job starts its own run, so nothing sleeps.`
-                : status.worker.reachable
-                  ? `${status.worker.url}. It keeps itself awake while a job runs.`
-                  : 'Free Render workers sleep after 15 idle minutes and wake up in about a minute when a job starts.'
+                : `${
+                    status.worker.reachable
+                      ? `${status.worker.url}. It keeps itself awake while a job runs.`
+                      : 'Free Render workers sleep after 15 idle minutes and wake up in about a minute when a job starts.'
+                  } A free Render worker renders slowly (a 6-minute video takes about half an hour); the free GitHub Actions worker takes a few minutes (DEPLOYMENT.md, section 11).`
           }
         >
           <Button
@@ -449,6 +457,22 @@ function Connections() {
           tone={status.auth ? 'ok' : 'idle'}
           status={status.auth ? 'Password required' : 'Open — anyone with the address can use it'}
           detail={status.auth ? undefined : 'Set APP_PASSWORD before deploying.'}
+        />
+        <Row
+          name="Daily check"
+          tone={status.daily === 'on' ? 'ok' : status.daily === 'needs-secret' ? 'bad' : 'idle'}
+          status={
+            status.daily === 'on'
+              ? 'On, every day at 09:00 UTC'
+              : status.daily === 'needs-secret'
+                ? 'Off: CRON_SECRET is missing'
+                : 'Runs only on Vercel'
+          }
+          detail={
+            status.daily === 'needs-secret'
+              ? 'Add CRON_SECRET on Vercel and redeploy. Until then, stalled uploads wait for you to open the app, and Performance only updates when you press Refresh.'
+              : 'Resumes uploads that stalled while no tab was open, and refreshes the Performance numbers.'
+          }
         />
       </ul>
       {element}

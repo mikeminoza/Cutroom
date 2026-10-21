@@ -3,15 +3,16 @@
 // timing needs no transcription: ElevenLabs reports each word's time, and for Gemini the pauses
 // inside each part place the words.
 import path from 'node:path'
-import { synthesizeSpeech } from '@cutroom/shared/ai'
+import { setTimeout as wait } from 'node:timers/promises'
+import { AiError, synthesizeSpeech } from '@cutroom/shared/ai'
 import { type Span, segmentsFromWords, timeWords } from '@cutroom/shared/align'
 import { elevenLabsSpeech } from '@cutroom/shared/elevenlabs'
 import type { JobPayload, SpokenSpan } from '@cutroom/shared/protocol'
-import { downloadTo, makeKey, putLocalFile } from '@cutroom/shared/storage'
+import { deleteFile, downloadTo, makeKey, putLocalFile } from '@cutroom/shared/storage'
 import { formatTimecode } from '@cutroom/shared/timing'
 import { DEFAULT_VOICE, type Word } from '@cutroom/shared/types'
 import { detectSilences, joinSpeech, speechToWav } from '../audio'
-import { throwIfAborted } from '../render/ffmpeg'
+import { runFfmpeg, throwIfAborted } from '../render/ffmpeg'
 import { errorMessage } from '../util'
 import type { JobContext } from './context'
 import { matchScenes } from './match'
@@ -82,34 +83,73 @@ export async function runVoice(payload: JobPayload, ctx: JobContext): Promise<vo
     const chunks = chunkText(textToRead(payload), MAX_CHARS[voice.provider])
     if (chunks.length === 0) throw new Error('Write the script, or split it into scenes, first.')
     await ctx.step('synthesize', 'running', `${provider} is reading the script`)
+    // Parts recorded by an earlier try of this job, reused while their text is unchanged.
+    const parts = [...(ctx.data.voiceParts ?? [])]
     const files: string[] = []
     const spans: SpokenSpan[] = []
     const words: Word[] = []
     let offset = 0
     for (const [i, chunk] of chunks.entries()) {
       throwIfAborted(ctx.signal)
-      ctx.progress('synthesize', i / chunks.length, `Recording part ${i + 1} of ${chunks.length}`)
-      let audio: { data: Buffer; mimeType: string }
-      let partWords: Word[] = []
-      if (voice.provider === 'elevenlabs') {
-        const speech = await elevenLabsSpeech(chunk, {
-          voiceId: voice.voice,
-          previousText: chunks[i - 1],
-          nextText: chunks[i + 1],
-          signal: ctx.signal,
-        })
-        audio = { data: speech.audio, mimeType: 'audio/mpeg' }
-        partWords = speech.words
+      const name = `part-${String(i + 1).padStart(3, '0')}`
+      const kept = parts[i]?.text === chunk ? parts[i] : null
+      let part: NonNullable<typeof kept>
+      let file: string
+      if (kept) {
+        ctx.progress(
+          'synthesize',
+          i / chunks.length,
+          `Part ${i + 1} of ${chunks.length} was already recorded`,
+        )
+        file = path.join(ctx.workDir, `${name}.mp3`)
+        await downloadTo(kept.url, file, payload.appUrl)
+        part = kept
       } else {
-        audio = await synthesizeSpeech(chunk, { voice: voice.voice, style: voice.style, signal: ctx.signal })
+        ctx.progress('synthesize', i / chunks.length, `Recording part ${i + 1} of ${chunks.length}`)
+        let audio: { data: Buffer; mimeType: string }
+        let partWords: Word[] = []
+        if (voice.provider === 'elevenlabs') {
+          const speech = await elevenLabsSpeech(chunk, {
+            voiceId: voice.voice,
+            previousText: chunks[i - 1],
+            nextText: chunks[i + 1],
+            signal: ctx.signal,
+          })
+          audio = { data: speech.audio, mimeType: 'audio/mpeg' }
+          partWords = speech.words
+        } else {
+          audio = await patiently(
+            () => synthesizeSpeech(chunk, { voice: voice.voice, style: voice.style, signal: ctx.signal }),
+            ctx.signal,
+            (wait) =>
+              ctx.progress(
+                'synthesize',
+                i / chunks.length,
+                `Waiting ${wait} s for Gemini's free per-minute limit (part ${i + 1} of ${chunks.length})`,
+              ),
+          )
+        }
+        const wav = await speechToWav(audio, ctx.workDir, name, ctx.signal)
+        file = wav.path
+        // Keep the part, so a retry after a failure later on doesn't record it again.
+        const mp3 = path.join(ctx.workDir, `${name}.mp3`)
+        await runFfmpeg(['-i', wav.path, '-c:a', 'libmp3lame', '-b:a', '128k', mp3], { signal: ctx.signal })
+        const stored = await putLocalFile(
+          makeKey(`projects/${project.id}/voiceover/parts`, `${name}.mp3`),
+          mp3,
+          'audio/mpeg',
+        )
+        await deleteFile(parts[i]?.url)
+        part = { text: chunk, url: stored.url, key: stored.key, duration: wav.duration, words: partWords }
+        parts[i] = part
+        await ctx.result({ voiceParts: parts.slice(0, chunks.length) })
       }
-      const wav = await speechToWav(audio, ctx.workDir, `part-${String(i + 1).padStart(3, '0')}`, ctx.signal)
-      files.push(wav.path)
-      spans.push({ text: chunk, start: round(offset), end: round(offset + wav.duration) })
-      for (const w of partWords) {
+      files.push(file)
+      spans.push({ text: chunk, start: round(offset), end: round(offset + part.duration) })
+      for (const w of part.words) {
         words.push({ text: w.text, start: round(w.start + offset), end: round(w.end + offset) })
       }
-      offset += wav.duration + PART_GAP
+      offset += part.duration + PART_GAP
     }
     ctx.progress('synthesize', 0.97, 'Joining the parts')
     const duration = await joinSpeech(files, PART_GAP, output, ctx.signal)
@@ -128,6 +168,9 @@ export async function runVoice(payload: JobPayload, ctx: JobContext): Promise<vo
       voiceSpans: spans,
       voiceWords: voice.provider === 'elevenlabs' ? words : [],
     })
+    // The joined voice-over is saved: the separate parts are no longer needed.
+    await Promise.all(parts.map((p) => deleteFile(p?.url)))
+    await ctx.result({ voiceParts: [] })
     await ctx.step('synthesize', 'done', `${formatTimecode(duration, false)} recorded with ${provider}`)
   }
 
@@ -151,6 +194,36 @@ export async function runVoice(payload: JobPayload, ctx: JobContext): Promise<vo
   const transcript = { duration: recorded.duration, segments: segmentsFromWords(words), words }
   await ctx.result({ transcript })
   await matchScenes(payload, ctx, transcript)
+}
+
+/** How long to wait out Gemini's per-minute limit, and how many times. */
+const RATE_WAIT_SECONDS = 65
+const RATE_WAITS = 5
+
+/**
+ * Runs a request, waiting out Gemini's free per-minute limit instead of failing: the worker has
+ * time to spare. The daily limit is not waited out; it says to upload a recording instead.
+ */
+export async function patiently<T>(
+  run: () => Promise<T>,
+  signal: AbortSignal,
+  onWait: (seconds: number) => void,
+  seconds = RATE_WAIT_SECONDS,
+): Promise<T> {
+  for (let waits = 0; ; waits++) {
+    try {
+      return await run()
+    } catch (error) {
+      if (error instanceof AiError && error.code === 'daily_limit') {
+        throw new Error(
+          `${error.message} Upload your own recording on the Voice-over step, or retry tomorrow: the parts recorded so far are kept.`,
+        )
+      }
+      if (!(error instanceof AiError) || error.code !== 'rate_limited' || waits >= RATE_WAITS) throw error
+      onWait(seconds)
+      await wait(seconds * 1000, undefined, { signal })
+    }
+  }
 }
 
 async function exists(file: string): Promise<boolean> {

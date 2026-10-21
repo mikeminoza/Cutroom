@@ -210,10 +210,30 @@ function isDuplicateActive(error: unknown): boolean {
   return false
 }
 
+/**
+ * Deletes the AI voice-over parts kept by earlier voice jobs of a project. A new voice job starts
+ * fresh, and only the latest job can be retried, so the older parts would never be used.
+ */
+export async function deleteLeftoverVoiceParts(projectId: string) {
+  const database = await db()
+  const old = await database
+    .select({ id: schema.jobs.id, result: schema.jobs.result })
+    .from(schema.jobs)
+    .where(and(eq(schema.jobs.projectId, projectId), eq(schema.jobs.type, 'voice')))
+  const urls = old.flatMap((j) => (j.result.voiceParts ?? []).map((p) => p.url))
+  if (urls.length === 0) return
+  await Promise.all(urls.map((url) => deleteFile(url)))
+  await database
+    .update(schema.jobs)
+    .set({ result: sql`${schema.jobs.result} - 'voiceParts'` })
+    .where(and(eq(schema.jobs.projectId, projectId), eq(schema.jobs.type, 'voice')))
+}
+
 export async function startJob(projectId: string, type: JobType): Promise<JobRow> {
   const [active] = await activeJobs(projectId, [type])
   if (active) return active
   await assertNoConflict(projectId, type)
+  if (type === 'voice') await deleteLeftoverVoiceParts(projectId)
 
   const database = await db()
   const id = newId()
@@ -508,14 +528,17 @@ async function finishPublish(projectId: string, jobId: string) {
 
   const settings = await getSettings()
   const archived = job.result.archivedKeys ?? []
-  if (
-    settings.freeBlobAfterPosting &&
-    storageDriver() === 'blob' &&
-    archived.length &&
-    project.youtubeVideoId
-  ) {
-    await Promise.all(archived.map((url) => deleteFile(url)))
-    await updateProject(projectId, { archived: true })
+  if (settings.freeBlobAfterPosting && storageDriver() === 'blob' && project.youtubeVideoId) {
+    if (archived.length) {
+      await Promise.all(archived.map((url) => deleteFile(url)))
+      await updateProject(projectId, { archived: true })
+    }
+    // The finished video and its captions are safe on Drive (and on YouTube): Vercel Blob's free
+    // 1 GB shouldn't keep a 100 MB copy of every posted video.
+    if (job.result.driveFileId && (project.outputUrl || project.srtUrl)) {
+      await Promise.all([deleteFile(project.outputUrl), deleteFile(project.srtUrl)])
+      await updateProject(projectId, { outputUrl: null, srtUrl: null })
+    }
   }
 
   const title = project.post?.title || project.title || 'Untitled video'

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { refineTranscript, segmentsFromWords, sliceTranscript, speechParts, timeWords } from '../src/align'
 import { overlayEvents, overlayOpacity } from '../src/captions'
 import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
-import { hasAnalyticsScope } from '../src/google'
+import { explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
 import { sceneRange } from '../src/timing'
@@ -598,6 +598,25 @@ describe('Gemini calls', () => {
     }
   })
 
+  it('tells the daily limit apart from the per-minute one', async () => {
+    generateContent.mockRejectedValue(
+      Object.assign(
+        new Error(
+          'Quota exceeded for metric: generate_requests_per_model_per_day, limit: 15. GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+        ),
+        { status: 429 },
+      ),
+    )
+    vi.useFakeTimers()
+    try {
+      const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'daily_limit' })
+      await vi.advanceTimersByTimeAsync(30_000)
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('writes the script with the channel’s narrator and characters', async () => {
     const { writeScript } = await import('../src/ai')
     generateContent.mockResolvedValueOnce({
@@ -650,5 +669,17 @@ describe('Gemini calls', () => {
       topTitles: [{ title: 'Why octopuses dream', views: 12345 }],
     })
     expect(generateContent.mock.calls[0][0].contents).toContain('"Why octopuses dream" (12,345 views)')
+  })
+})
+
+describe('Google errors', () => {
+  const withReason = (reason: string) => Object.assign(new Error('Request failed'), { errors: [{ reason }] })
+
+  it('explains the ones you can act on, and leaves the rest alone', () => {
+    expect(explainGoogleError(new Error('invalid_grant'))).toMatch(/signed Cutroom out.*Publish app/)
+    expect(explainGoogleError(withReason('quotaExceeded'))).toMatch(/daily quota.*midnight Pacific/)
+    expect(explainGoogleError(withReason('uploadLimitExceeded'))).toMatch(/upload limit for today/)
+    expect(explainGoogleError(withReason('storageQuotaExceeded'))).toMatch(/Drive is full/)
+    expect(explainGoogleError(new Error('Something else'))).toBeNull()
   })
 })

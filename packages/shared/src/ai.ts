@@ -16,7 +16,15 @@ import {
 export class AiError extends Error {
   constructor(
     message: string,
-    readonly code: 'missing_key' | 'rate_limited' | 'bad_output' | 'failed' | 'billing' | 'busy' | 'timeout',
+    readonly code:
+      | 'missing_key'
+      | 'rate_limited'
+      | 'daily_limit'
+      | 'bad_output'
+      | 'failed'
+      | 'billing'
+      | 'busy'
+      | 'timeout',
   ) {
     super(message)
   }
@@ -148,6 +156,13 @@ async function withRetry<T>(
   const message = lastError instanceof Error ? lastError.message : String(lastError)
   const status = httpStatus(lastError)
   if (status === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
+    // Google names the quota that ran out: a per-day one won't come back by waiting a minute.
+    if (/PerDay|per[ _-]?day|daily/i.test(message)) {
+      throw new AiError(
+        "Gemini's free daily limit is used up. It resets at midnight Pacific time.",
+        'daily_limit',
+      )
+    }
     throw new AiError('Gemini free-tier limit reached. Wait a minute and try again.', 'rate_limited')
   }
   if (status !== null && status >= 500) {

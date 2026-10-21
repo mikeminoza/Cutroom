@@ -81,7 +81,9 @@ It ends with a troubleshooting table for the common problems: redirect mismatch,
   - The worker sleeps after 15 minutes without requests and takes about a minute to wake when a job starts.
   - While a job runs, the worker calls its own public address every few minutes, which keeps it awake. You can close the tab.
   - If it is restarted mid-job, the job resumes from the last finished step when it wakes (or when the daily cron runs).
-- **Render free CPU is small.** 720p is the default for that reason. Long videos at 1080p can take a while. The GitHub Actions worker (see DEPLOYMENT.md) has several CPU cores and never sleeps; it is free for public repositories and includes 2,000 minutes a month for private ones.
+- **Render free CPU is small:** a tenth of a CPU renders a 6-minute 720p video in about half an hour. A video whose render runs past its posting time moves to the next free slot. The GitHub Actions worker (see DEPLOYMENT.md) has several CPU cores, renders the same video in minutes and never sleeps; it is free for public repositories and includes 2,000 minutes a month for private ones. Use it for 5–8-minute videos.
+- **Vercel Blob is 1 GB:** with Drive connected, a posted video's working files and its MP4 move out of Blob once they are safe on Drive.
+- **AI voice-overs on the free tier:** Gemini voices have per-minute and daily limits. Long scripts are recorded in parts, waiting out the per-minute limit; after the daily one, a retry continues from the last finished part. Uploading your own recording has no limits.
 - **Vercel Hobby:**
   - For personal, non-commercial use.
   - Blob storage is 1 GB, so finished videos go to Drive, and working files can be cleared from Blob after posting (Settings → Storage).

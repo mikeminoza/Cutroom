@@ -24,6 +24,34 @@ export const SCOPES: Record<GoogleProvider, string[]> = {
 }
 
 /** Channels connected before analytics existed (or with the box unticked) lack the permission. */
+/**
+ * A plain explanation of the Google errors that need you to do something, or null for others.
+ * These are the ones a free setup runs into: a login Google ended (in Testing mode that happens
+ * every 7 days), and the daily quotas of YouTube and Drive.
+ */
+export function explainGoogleError(error: unknown): string | null {
+  const e = error as {
+    message?: string
+    errors?: { reason?: string }[]
+    response?: { data?: { error?: unknown; error_description?: string } }
+  } | null
+  const reasons = (e?.errors ?? []).map((x) => x.reason ?? '')
+  const text = `${e?.message ?? ''} ${String(e?.response?.data?.error ?? '')}`
+  if (/invalid_grant/.test(text)) {
+    return 'Google signed Cutroom out of this account. Reconnect it in Settings. If this happens about once a week, publish your app in Google Cloud (Google Auth platform → Audience → Publish app).'
+  }
+  if (reasons.includes('uploadLimitExceeded')) {
+    return 'YouTube says this channel has reached its upload limit for today. Click Retry tomorrow.'
+  }
+  if (reasons.includes('quotaExceeded') || reasons.includes('dailyLimitExceeded')) {
+    return "The YouTube API's free daily quota is used up. It resets at midnight Pacific time; click Retry after that."
+  }
+  if (reasons.includes('storageQuotaExceeded')) {
+    return 'Your Google Drive is full. Delete old Cutroom folders in Drive to free up space.'
+  }
+  return null
+}
+
 export function hasAnalyticsScope(scope: string | null | undefined): boolean {
   return Boolean(scope?.split(/\s+/).includes(ANALYTICS_SCOPE))
 }

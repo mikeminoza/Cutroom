@@ -51,6 +51,8 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
   const { data: status } = useStatus()
   const { confirm, element } = useConfirm()
   const [progress, setProgress] = useState<number | null>(null)
+  // Your own recording is the main way in; the AI voice is a backup, opened on request.
+  const [showAi, setShowAi] = useState(Boolean(data.jobs.voice))
   const job = data.jobs.retime
   const running = job && ['queued', 'running'].includes(job.status)
   const recentlyFinished =
@@ -97,7 +99,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
 
   if (!project.voiceoverUrl) {
     return (
-      <div className="grid items-start gap-5 lg:grid-cols-2">
+      <div className="flex flex-col gap-4">
         <DropZone
           accept="audio/*"
           onFiles={onFiles}
@@ -115,10 +117,10 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
               )}
             >
               <AudioLines className="size-8 text-ink-2" aria-hidden />
-              <span className="display text-[22px]">Drop your voice-over here</span>
-              <span className="max-w-[46ch] text-[14px] text-ink-2">
-                MP3, WAV or M4A. Gemini will listen to it and move each scene to the moment its words are
-                spoken.
+              <span className="display text-[22px]">Upload your voice-over</span>
+              <span className="max-w-[52ch] text-[14px] text-ink-2">
+                Record the script yourself (a phone is fine), then drop the file here: MP3, WAV or M4A. Each
+                scene is then moved to the moment its words are spoken.
               </span>
               {progress !== null ? (
                 <ProgressBar value={progress} tone="you" className="mt-2 w-64" />
@@ -130,7 +132,18 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
             </button>
           )}
         </DropZone>
-        <AiVoicePanel data={data} />
+        {showAi || recording ? (
+          <AiVoicePanel data={data} />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowAi(true)}
+            className="flex items-center gap-2 self-center rounded-[var(--radius-control)] px-3 py-2 text-[13.5px] text-ink-2 hover:bg-ink/[0.05] hover:text-ink"
+          >
+            <Mic className="size-4" aria-hidden />
+            No recording? Let a free AI voice read the script
+          </button>
+        )}
         {element}
       </div>
     )
@@ -326,11 +339,11 @@ function AiVoicePanel({ data }: { data: ProjectFull }) {
   return (
     <Panel
       title="AI voice-over"
-      description={
+      description={`${
         narrated
           ? `An AI voice reads the narration of your ${narrated} ${narrated === 1 ? 'scene' : 'scenes'}. Every word's timing is known, so the scenes and captions line up exactly.`
           : 'An AI voice reads your script. Every word’s timing is known, so the captions line up exactly.'
-      }
+      } Gemini voices are free with a daily limit: a long script is recorded in parts, pausing for Gemini's per-minute limit when needed, and a retry carries on from the last finished part.`}
     >
       <div className="flex flex-col gap-4 px-5 py-4">
         <Field label="Voice service">

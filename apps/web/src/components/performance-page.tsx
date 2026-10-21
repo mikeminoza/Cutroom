@@ -9,7 +9,7 @@ import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { PerformanceDTO, PerformanceVideo } from '@/lib/dto'
 import { formatWhen, timeAgo } from '@/lib/format'
-import { keys, usePerformance, useSeriesList } from '@/lib/hooks'
+import { keys, usePerformance, useSeriesList, useStatus } from '@/lib/hooks'
 import { Button, Panel, Segmented, Select } from './ui'
 
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
@@ -30,6 +30,7 @@ type Sort = 'views' | 'newest' | 'retention'
 
 export function PerformancePage() {
   const { data, isLoading, error } = usePerformance()
+  const { data: status } = useStatus()
   const seriesList = useSeriesList()
   const client = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
@@ -104,7 +105,9 @@ export function PerformancePage() {
         <div>
           <h1 className="display text-[34px]">Performance</h1>
           <p className="mt-2 max-w-[64ch] text-[14.5px] text-ink-2">
-            How your posted videos are doing. Updated once a day
+            How your posted videos are doing. Watch time and retention arrive 2–3 days after a video goes
+            live.{' '}
+            {status?.daily === 'needs-secret' ? 'Updated when you press Refresh now' : 'Updated once a day'}
             {fetched ? `, last ${timeAgo(fetched)}` : ''}. The best titles also teach Gemini what works on
             your channel.
           </p>
@@ -282,6 +285,18 @@ function VideoRow({
   const stats = video.stats
   const when = stats?.publishedAt ?? video.scheduledAt
   const share = stats ? stats.views / maxViews : 0
+  const now = Date.now()
+  const upcoming = Boolean(video.scheduledAt && new Date(video.scheduledAt).getTime() > now)
+  // YouTube Analytics reports a video's watch time and retention 2–3 days after it goes live.
+  const recent = !upcoming && Boolean(when) && now - new Date(when as string).getTime() < 3 * 86_400_000
+  const later = (value: string) =>
+    value === '—' && (recent || upcoming) ? (
+      <span className="text-[12px] text-ink-3" title="YouTube reports this 2–3 days after a video goes live">
+        {upcoming ? 'after launch' : 'in 2–3 days'}
+      </span>
+    ) : (
+      value
+    )
   return (
     <tr className="border-b border-line last:border-b-0 hover:bg-sunk/60">
       <td className="px-5 py-3">
@@ -323,17 +338,19 @@ function VideoRow({
             </span>
           </div>
         ) : (
-          <span className="text-ink-3">Not counted yet</span>
+          <span className="text-ink-3">
+            {upcoming && video.scheduledAt ? `Goes live ${formatWhen(video.scheduledAt)}` : 'Not counted yet'}
+          </span>
         )}
       </td>
       <td className="tc px-3 py-3 text-right">{stats ? whole.format(stats.likes) : '—'}</td>
       <td className="tc px-3 py-3 text-right">{stats ? whole.format(stats.comments) : '—'}</td>
       <td className="tc px-3 py-3 text-right">
-        {stats?.averageViewPercent != null ? `${Math.round(stats.averageViewPercent)}%` : '—'}
+        {later(stats?.averageViewPercent != null ? `${Math.round(stats.averageViewPercent)}%` : '—')}
       </td>
-      <td className="tc px-3 py-3 text-right">{viewDuration(stats?.averageViewSeconds ?? null)}</td>
+      <td className="tc px-3 py-3 text-right">{later(viewDuration(stats?.averageViewSeconds ?? null))}</td>
       <td className="tc px-5 py-3 text-right">
-        {stats?.watchMinutes != null ? watchTime(stats.watchMinutes) : '—'}
+        {later(stats?.watchMinutes != null ? watchTime(stats.watchMinutes) : '—')}
       </td>
     </tr>
   )

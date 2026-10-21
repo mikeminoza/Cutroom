@@ -35,5 +35,7 @@ export const GET = route(async (): Promise<StatusDTO> => {
     blobToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     database: process.env.DATABASE_URL ? 'neon' : 'local',
     auth: authEnabled(),
+    // A password-protected app refuses the cron without CRON_SECRET (see /api/cron).
+    daily: !process.env.VERCEL ? 'local' : process.env.CRON_SECRET || !authEnabled() ? 'on' : 'needs-secret',
   }
 })

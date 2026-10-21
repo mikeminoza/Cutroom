@@ -71,6 +71,12 @@ export async function sendEvent(jobId: string, event: WorkerEvent): Promise<void
   await call(`/api/worker/jobs/${jobId}/events`, { method: 'POST', body: JSON.stringify(event) })
 }
 
+/** The video missed its posting time: the next free slot (now reserved), or null to post now. */
+export async function nextSlot(jobId: string): Promise<string | null> {
+  const data = await call<{ at: string | null }>(`/api/worker/jobs/${jobId}/reschedule`, { method: 'POST' })
+  return data.at
+}
+
 export async function pendingJobs(): Promise<string[]> {
   const data = await call<{ ids: string[] }>('/api/worker/jobs/pending', undefined, 2)
   return data.ids

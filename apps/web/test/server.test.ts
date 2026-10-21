@@ -49,6 +49,7 @@ const libraryItemRoute = await import('../src/app/api/library/characters/[id]/ro
 const projectRoute = await import('../src/app/api/projects/[id]/route')
 const sceneRoute = await import('../src/app/api/scenes/[id]/route')
 const characterRoute = await import('../src/app/api/characters/[id]/route')
+const rescheduleRoute = await import('../src/app/api/worker/jobs/[id]/reschedule/route')
 const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -868,5 +869,55 @@ describe('files sent by the browser', () => {
     const avatar = await putFile(`projects/${id}/characters/cappy.png`, Buffer.from('c'), 'image/png')
     expect((await characterRoute.PATCH(patch({ images: [avatar] }), ctx(characterId))).status).toBe(200)
     expect(stored(keyOfUrl(theirImage.url))).toBe(true)
+  })
+})
+
+describe('the free worker', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+
+  it('moves a video that missed its posting time to the next free slot, and reserves it', async () => {
+    process.env.WORKER_SECRET = 'test-secret'
+    try {
+      const id = await newProject()
+      const database = await db()
+      await database
+        .update(schema.projects)
+        .set({ scheduledAt: new Date(Date.now() - 60_000) })
+        .where(eq(schema.projects.id, id))
+      const job = await jobs.startJob(id, 'publish')
+      await jobs.claimJob(job.id, 'worker-a')
+      const ask = (headers: Record<string, string>) =>
+        rescheduleRoute.POST(new Request('http://localhost/api', { method: 'POST', headers }), ctx(job.id))
+
+      expect((await ask({})).status).toBe(401)
+      const auth = { authorization: 'Bearer test-secret' }
+      expect((await ask({ ...auth, 'x-cutroom-runner': 'worker-b' })).status).toBe(409)
+      const { at } = await (await ask({ ...auth, 'x-cutroom-runner': 'worker-a' })).json()
+      expect(new Date(at).getTime()).toBeGreaterThan(Date.now() + 14 * 60_000)
+      expect((await projects.getProjectRow(id)).scheduledAt?.toISOString()).toBe(at)
+    } finally {
+      delete process.env.WORKER_SECRET
+    }
+  })
+
+  it('deletes AI voice-over parts an earlier voice job kept, once a new one starts', async () => {
+    const id = await newProject()
+    const part = await putFile(`projects/${id}/voiceover/parts/part-001.mp3`, Buffer.from('p'), 'audio/mpeg')
+    const earlier = await jobs.startJob(id, 'voice')
+    const database = await db()
+    await database
+      .update(schema.jobs)
+      .set({
+        status: 'failed',
+        result: {
+          voiceParts: [
+            { text: 'Capybara wants to eat.', url: part.url, key: part.key, duration: 1, words: [] },
+          ],
+        },
+      })
+      .where(eq(schema.jobs.id, earlier.id))
+    await jobs.startJob(id, 'voice')
+    expect(stored(part.key)).toBe(false)
+    expect((await jobRow(earlier.id)).result.voiceParts).toBeUndefined()
   })
 })

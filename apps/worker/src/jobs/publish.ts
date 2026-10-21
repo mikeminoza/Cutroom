@@ -29,6 +29,7 @@ import {
 } from '@cutroom/shared/storage'
 import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
 import { normalizeTransition } from '@cutroom/shared/types'
+import { nextSlot } from '../api'
 import { runFfmpeg } from '../render/ffmpeg'
 import { renderVideo } from '../render/render'
 import { errorMessage, extensionOf, imageMime, probeSeconds } from '../util'
@@ -167,24 +168,31 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
     } else {
       await ctx.step('drive', 'running', 'Uploading to Google Drive')
       await ensureVideo()
-      const folderId = await projectFolder()
-      const file = await uploadToDrive(drive, {
-        filePath: videoFile,
-        name: 'video.mp4',
-        mimeType: 'video/mp4',
-        folderId,
-        onProgress: (f) => ctx.progress('drive', f, `Uploading to Google Drive (${Math.round(f * 100)}%)`),
-      })
-      if (existsSync(srtFile)) {
-        await uploadToDrive(drive, {
-          filePath: srtFile,
-          name: 'captions.srt',
-          mimeType: 'application/x-subrip',
+      try {
+        const folderId = await projectFolder()
+        const file = await uploadToDrive(drive, {
+          filePath: videoFile,
+          name: 'video.mp4',
+          mimeType: 'video/mp4',
           folderId,
+          onProgress: (f) => ctx.progress('drive', f, `Uploading to Google Drive (${Math.round(f * 100)}%)`),
         })
+        if (existsSync(srtFile)) {
+          await uploadToDrive(drive, {
+            filePath: srtFile,
+            name: 'captions.srt',
+            mimeType: 'application/x-subrip',
+            folderId,
+          })
+        }
+        await ctx.result({ driveFileId: file.id, driveFileUrl: file.url })
+        await ctx.step('drive', 'done', 'Saved in your Cutroom folder')
+      } catch (error) {
+        // Drive is a backup copy: a full or disconnected Drive must not stop the video going out.
+        if (ctx.signal.aborted) throw error
+        await ctx.warn(`Not saved to Google Drive: ${errorMessage(error)}`)
+        await ctx.step('drive', 'skipped', 'Could not save to Google Drive')
       }
-      await ctx.result({ driveFileId: file.id, driveFileUrl: file.url })
-      await ctx.step('drive', 'done', 'Saved in your Cutroom folder')
     }
   }
 
@@ -285,8 +293,13 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       await ensureVideo()
       let publishAt = project.scheduledAt
       if (publishAt && new Date(publishAt).getTime() < Date.now() + 10 * 60_000) {
-        publishAt = null
-        await ctx.warn('The scheduled time had already passed, so the video was posted right away.')
+        // The render ran past the posting time: keep to the schedule rather than post at a random hour.
+        publishAt = await nextSlot(ctx.jobId)
+        await ctx.warn(
+          publishAt
+            ? `Missed its posting time while rendering, so it moved to the next free slot: ${new Date(publishAt).toUTCString()}.`
+            : 'Missed its posting time while rendering and no posting slot was free, so it was posted right away.',
+        )
       }
       const videoId = await uploadVideo(youtube, {
         filePath: videoFile,
@@ -369,10 +382,20 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
   if (!ctx.finished('archive')) {
     if (!drive) {
       await ctx.step('archive', 'skipped', 'Google Drive is not connected')
+    } else if (!ctx.data.driveFileId) {
+      // The video itself didn't reach Drive: keep the working files where they are.
+      await ctx.step('archive', 'skipped', 'The video was not saved to Drive, so the project files stay put')
     } else {
       await ctx.step('archive', 'running', 'Copying project files to Google Drive')
-      const root = await projectFolder()
-      const filesFolder = await ensureFolder(drive, 'files', root)
+      let filesFolder: string
+      try {
+        filesFolder = await ensureFolder(drive, 'files', await projectFolder())
+      } catch (error) {
+        if (ctx.signal.aborted) throw error
+        await ctx.warn(`Project files were not copied to Drive: ${errorMessage(error)}`)
+        await ctx.step('archive', 'skipped', 'Could not reach Google Drive')
+        return 'done'
+      }
       const files: { url: string; name: string }[] = []
       scenes.forEach((s, i) => {
         if (s.imageUrl)

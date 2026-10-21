@@ -1,7 +1,7 @@
 'use client'
 
 import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
-import { formatChapterTime } from '@cutroom/shared/timing'
+import { formatChapterTime, totalDuration } from '@cutroom/shared/timing'
 import { type PostDetails, type PostingMode, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -747,10 +747,41 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
         >
           {when === 'now' ? 'Finish & post' : 'Finish & schedule'}
         </Button>
+        <RenderTime
+          seconds={project.voiceoverDuration ?? totalDuration(data.scenes)}
+          mode={status?.worker.mode ?? 'render'}
+        />
         <CloseHint notifying={notifying} />
       </div>
       {element}
     </Panel>
+  )
+}
+
+/**
+ * Roughly how long the render takes, so a posting time isn't picked that the render can't make.
+ * Measured: a free Render worker (a tenth of a CPU) renders at about a quarter of real time;
+ * GitHub's runners at several times real time, plus a minute to start.
+ */
+function RenderTime({ seconds, mode }: { seconds: number; mode: 'render' | 'github' }) {
+  if (seconds < 60) return null
+  const minutes = seconds / 60
+  if (mode === 'github') {
+    return (
+      <p className="text-[12.5px] leading-snug text-ink-3">
+        Rendering takes a few minutes on GitHub Actions.
+      </p>
+    )
+  }
+  const low = Math.max(5, Math.round(minutes * 4))
+  const high = Math.max(low + 5, Math.round(minutes * 6))
+  return (
+    <p className="text-[12.5px] leading-snug text-ink-3">
+      Rendering takes about {low}–{high} minutes on the free Render worker. If the posting time passes first,
+      the video moves to the next free slot.
+      {minutes >= 3 &&
+        ' The free GitHub Actions worker renders it in a few minutes (deployment guide, section 11).'}
+    </p>
   )
 }
 

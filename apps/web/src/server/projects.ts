@@ -392,6 +392,11 @@ export async function setStatus(id: string, status: ProjectStatus) {
 export async function deleteProject(id: string) {
   const full = await getProjectFull(id)
   const database = await db()
+  // AI voice-over parts a stopped voice job kept for its retry.
+  const voiceJobs = await database
+    .select({ result: schema.jobs.result })
+    .from(schema.jobs)
+    .where(eq(schema.jobs.projectId, id))
   await database.delete(schema.projects).where(eq(schema.projects.id, id))
   const urls = [
     full.project.voiceoverUrl,
@@ -401,6 +406,7 @@ export async function deleteProject(id: string) {
     full.project.srtUrl,
     ...full.scenes.map((s) => s.imageUrl),
     ...full.characters.flatMap((c) => c.images.map((i) => i.url)),
+    ...voiceJobs.flatMap((j) => (j.result.voiceParts ?? []).map((p) => p.url)),
   ]
   await Promise.all(urls.map((u) => deleteFile(u)))
 }
