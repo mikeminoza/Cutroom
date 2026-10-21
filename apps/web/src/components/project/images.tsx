@@ -37,6 +37,7 @@ import { cn } from '@/lib/cn'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useSaver, useStatus } from '@/lib/hooks'
+import { downloadScenePrompts, scenePrompts } from '@/lib/scene-prompts'
 import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
 import { MOTION_LABEL, TRANSITION_LABEL } from './script'
@@ -272,27 +273,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   }, [selectedSceneId, uploadOne])
 
   const picker = useFilePicker('image/*', true, uploadMany)
-  const downloadPrompts = () => {
-    const text = scenes
-      .map((scene) => {
-        const cast = sceneCharacters(scene, characters)
-        return [
-          `Scene ${scene.index + 1}  (${formatTimecode(scene.start)} – ${formatTimecode(scene.end)})`,
-          cast.length ? `Attach reference images for: ${cast.map((c) => c.name).join(', ')}` : null,
-          '',
-          buildImagePrompt(scene, { artStyle: project.artStyle, format: project.format, characters }),
-        ]
-          .filter((line) => line !== null)
-          .join('\n')
-      })
-      .join('\n\n────────────────────────────────────────\n\n')
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${(project.title || 'video').replace(/[^\w-]+/g, '-').toLowerCase()}-image-prompts.txt`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }
+  const downloadPrompts = () => downloadScenePrompts(project.title, scenePrompts(data))
 
   if (scenes.length === 0) {
     return (

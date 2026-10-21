@@ -40,6 +40,7 @@ import { useTheme } from '@/lib/theme'
 import { audioDuration } from '@/lib/upload'
 import { useUploader } from './fields'
 import { JobSteps } from './job-panel'
+import { ScenePromptsPanel } from './scene-prompts'
 import type { StepProps } from './workspace'
 
 export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: StepProps) {
@@ -232,6 +233,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
           {project.transcript && <Transcript data={data} />}
         </div>
       </Panel>
+      {!noScenes && <ScenePromptsPanel data={data} timed={timed} />}
       <AiVoicePanel data={data} />
       {element}
     </div>

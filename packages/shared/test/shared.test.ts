@@ -139,6 +139,21 @@ describe('schedule', () => {
 })
 
 describe('prompts', () => {
+  it('describes the picture from the narration when the scene has no description yet', () => {
+    const scene = {
+      visual: '',
+      imagePrompt: '',
+      characters: [],
+      shot: '',
+      narration: 'Octopuses have three hearts.',
+    }
+    const options = { artStyle: '', format: 'landscape' as const, characters: [] }
+    const firstLine = (s: typeof scene) => buildImagePrompt(s, options).split('\n')[0]
+    expect(firstLine(scene)).toBe('An image showing: Octopuses have three hearts.')
+    // A real description always wins over the narration.
+    expect(firstLine({ ...scene, visual: 'A red octopus' })).toBe('A red octopus')
+  })
+
   it('adds characters, style and format to the scene prompt', () => {
     const prompt = buildImagePrompt(
       {

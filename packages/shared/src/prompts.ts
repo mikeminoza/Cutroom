@@ -8,6 +8,8 @@ export interface PromptScene {
   characters: string[]
   shot: string
   onScreenText?: string
+  /** What is said during the scene: the picture's subject when nothing else describes it. */
+  narration?: string
 }
 
 export function aspectLabel(format: VideoFormat): string {
@@ -25,7 +27,9 @@ export function buildImagePrompt(
 ): string {
   const cast = sceneCharacters(scene, options.characters)
   const lines: string[] = []
-  const body = scene.imagePrompt.trim() || scene.visual.trim()
+  // Scenes split without AI have no picture description yet; the narration still says what to show.
+  const said = scene.narration?.trim()
+  const body = scene.imagePrompt.trim() || scene.visual.trim() || (said ? `An image showing: ${said}` : '')
   if (body) lines.push(body)
   if (scene.shot.trim()) lines.push(`Shot: ${scene.shot.trim()}.`)
   for (const character of cast) {
