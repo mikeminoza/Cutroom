@@ -83,15 +83,23 @@ function Row({
   status,
   detail,
   children,
+  top,
 }: {
   name: string
   tone: Tone
   status: string
   detail?: React.ReactNode
   children?: React.ReactNode
+  /** Align to the top, for a detail that is a list. */
+  top?: boolean
 }) {
   return (
-    <li className="grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-[160px_1fr_auto] sm:items-center">
+    <li
+      className={cn(
+        'grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-[160px_1fr_auto]',
+        top ? 'sm:items-start' : 'sm:items-center',
+      )}
+    >
       <span className="text-[14.5px] font-semibold">{name}</span>
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-[14px]">
@@ -230,13 +238,14 @@ function Connections() {
         />
         <Row
           name="YouTube"
+          top={channels.length > 0}
           tone={channels.length ? 'ok' : 'idle'}
           status={
             channels.length === 0
               ? 'Not connected'
               : channels.length === 1
-                ? `Posting to ${channels[0].title}`
-                : `${channels.length} channels`
+                ? 'Connected'
+                : `${channels.length} channels connected`
           }
           detail={
             channels.length === 0 ? (
@@ -246,20 +255,30 @@ function Connections() {
                 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET first (see the README).'
               )
             ) : (
-              <ul className="mt-1.5 flex flex-col gap-2">
+              <ul className="mt-2.5 divide-y divide-line overflow-hidden rounded-[var(--radius-control)] border border-line">
                 {channels.map((channel) => (
-                  <li key={channel.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="text-[13.5px] font-medium text-ink">{channel.title}</span>
-                    {channel.isDefault && channels.length > 1 && (
-                      <span className="rounded-full bg-sunk px-2 py-px text-[11.5px] text-ink-2">
-                        Default
-                      </span>
-                    )}
-                    {channel.email && <span>{channel.email}</span>}
-                    {!channel.analytics && (
-                      <span className="text-kodak-ink">Reconnect to see watch time on Performance</span>
-                    )}
-                    <span className="ml-auto flex gap-1">
+                  <li key={channel.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+                    <span
+                      aria-hidden
+                      className="grid size-8 shrink-0 place-items-center rounded-full bg-sunk text-[13px] font-semibold text-ink-2"
+                    >
+                      {channel.title.trim().charAt(0).toUpperCase() || 'Y'}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-2">
+                        <span className="truncate text-[13.5px] font-medium text-ink">{channel.title}</span>
+                        {channel.isDefault && channels.length > 1 && (
+                          <span className="shrink-0 rounded-full border border-line bg-sunk px-2 py-px text-[11.5px] text-ink-2">
+                            Default
+                          </span>
+                        )}
+                      </p>
+                      {channel.email && <p className="truncate">{channel.email}</p>}
+                      {!channel.analytics && (
+                        <p className="text-kodak-ink">Reconnect to see watch time on Performance</p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 gap-1">
                       {!channel.isDefault && (
                         <Button variant="ghost" size="sm" onClick={() => makeDefault(channel)}>
                           Make default
@@ -273,21 +292,35 @@ function Connections() {
                       <Button variant="ghost" size="sm" onClick={() => disconnectChannel(channel)}>
                         Disconnect
                       </Button>
-                    </span>
+                    </div>
                   </li>
                 ))}
+                <li>
+                  <ButtonLink
+                    href="/api/google/connect?provider=youtube"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!googleReady}
+                    icon={<Plus className="size-3.5" />}
+                    className="h-10 w-full justify-start rounded-none px-3"
+                  >
+                    Add another channel
+                  </ButtonLink>
+                </li>
               </ul>
             )
           }
         >
-          <ButtonLink
-            href="/api/google/connect?provider=youtube"
-            variant={channels.length ? 'plain' : 'go'}
-            size="sm"
-            disabled={!googleReady}
-          >
-            {channels.length ? 'Add a channel' : 'Connect YouTube'}
-          </ButtonLink>
+          {channels.length === 0 && (
+            <ButtonLink
+              href="/api/google/connect?provider=youtube"
+              variant="go"
+              size="sm"
+              disabled={!googleReady}
+            >
+              Connect YouTube
+            </ButtonLink>
+          )}
         </Row>
         <Row
           name="Google Drive"
