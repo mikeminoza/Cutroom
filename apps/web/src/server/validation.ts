@@ -16,7 +16,15 @@ export const postSchema = z.object({
   description: z.string().max(5000),
   tags: z.array(z.string().max(100)).max(60),
   hashtags: z.array(z.string().max(100)).max(15),
-  chapters: z.array(z.object({ start: z.number().min(0), title: z.string().max(100) })).max(100),
+  chapters: z
+    .array(
+      z.object({
+        start: z.number().min(0),
+        title: z.string().max(100),
+        scene: z.number().int().min(0).optional(),
+      }),
+    )
+    .max(100),
   thumbnailIdeas: z.array(z.string().max(500)).max(10),
   thumbnailPrompt: z.string().max(4000),
   categoryId: z.string().max(4),

@@ -188,7 +188,8 @@ export interface PostDetails {
   description: string
   tags: string[]
   hashtags: string[]
-  chapters: { start: number; title: string }[]
+  /** `scene`: the scene index the chapter starts at (see refreshChapters). */
+  chapters: { start: number; title: string; scene?: number }[]
   thumbnailIdeas: string[]
   thumbnailPrompt: string
   categoryId: string

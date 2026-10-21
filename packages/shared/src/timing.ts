@@ -85,6 +85,8 @@ export function splitBySentences(
 export interface Chapter {
   start: number
   title: string
+  /** The scene (index) the chapter starts at, so its time can follow the scene when it moves. */
+  scene?: number
 }
 
 /**
@@ -102,7 +104,7 @@ export function normalizeChapters(chapters: Chapter[], duration: number): Chapte
   for (const chapter of sorted) {
     const previous = result[result.length - 1]
     if (previous && chapter.start - previous.start < 10) continue
-    result.push({ start: Math.floor(chapter.start), title: chapter.title.trim() })
+    result.push({ ...chapter, start: Math.floor(chapter.start), title: chapter.title.trim() })
   }
   const last = result[result.length - 1]
   if (last && duration - last.start < 10) result.pop()
@@ -111,6 +113,32 @@ export function normalizeChapters(chapters: Chapter[], duration: number): Chapte
 
 export function chaptersToText(chapters: Chapter[]): string {
   return chapters.map((c) => `${formatChapterTime(c.start)} ${c.title}`).join('\n')
+}
+
+/**
+ * Chapters follow their scenes. Post details written before the voice-over was recorded (or before
+ * the scenes were matched to it) have chapter times from estimates; this moves each chapter to its
+ * scene's current start and rewrites the chapter list in the description, when that list is still
+ * the one Cutroom wrote (a list you edited is left alone).
+ */
+export function refreshChapters<P extends { description: string; chapters: Chapter[] }>(
+  post: P,
+  sceneStarts: number[],
+  duration: number,
+): P {
+  if (!post.chapters.some((c) => c.scene !== undefined)) return post
+  const moved = normalizeChapters(
+    post.chapters.map((c) =>
+      c.scene !== undefined && sceneStarts[c.scene] !== undefined ? { ...c, start: sceneStarts[c.scene] } : c,
+    ),
+    duration,
+  )
+  const before = chaptersToText(post.chapters)
+  const after = chaptersToText(moved)
+  if (before === after) return post
+  const description =
+    before && post.description.includes(before) ? post.description.replace(before, after) : post.description
+  return { ...post, chapters: moved, description }
 }
 
 export function totalDuration(scenes: { end: number }[]): number {

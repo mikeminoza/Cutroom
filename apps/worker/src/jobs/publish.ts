@@ -27,7 +27,7 @@ import {
   safeName,
   storageDriver,
 } from '@cutroom/shared/storage'
-import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
+import { formatTimecode, refreshChapters, totalDuration } from '@cutroom/shared/timing'
 import { normalizeTransition } from '@cutroom/shared/types'
 import { nextSlot } from '../api'
 import { runFfmpeg } from '../render/ffmpeg'
@@ -200,9 +200,21 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
   let post = ctx.data.post ?? project.post
   if (!ctx.finished('details')) {
     if (project.post.title.trim() && project.post.description.trim()) {
-      post = project.post
+      // Written earlier, perhaps before the voice-over moved the scenes: bring the chapters along.
+      const length = project.voiceoverDuration ?? project.transcript?.duration ?? totalDuration(scenes)
+      post = refreshChapters(
+        project.post,
+        scenes.map((s) => s.start),
+        length,
+      )
       await ctx.result({ post })
-      await ctx.step('details', 'skipped', 'Using the details you wrote')
+      await ctx.step(
+        'details',
+        'skipped',
+        post === project.post
+          ? 'Using the details you wrote'
+          : 'Using your details, with chapter times updated',
+      )
     } else if (!hasGeminiKey()) {
       // No AI available: post with what the project already knows rather than stopping.
       const firstSentences = project.script

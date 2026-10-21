@@ -5,7 +5,7 @@ import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
 import { explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
-import { sceneRange } from '../src/timing'
+import { chaptersToText, refreshChapters, sceneRange } from '../src/timing'
 import { blackLevel, planTransitions } from '../src/transitions'
 import { normalizeTransition } from '../src/types'
 
@@ -682,5 +682,42 @@ describe('Google errors', () => {
     expect(explainGoogleError(withReason('uploadLimitExceeded'))).toMatch(/upload limit for today/)
     expect(explainGoogleError(withReason('storageQuotaExceeded'))).toMatch(/Drive is full/)
     expect(explainGoogleError(new Error('Something else'))).toBeNull()
+  })
+})
+
+describe('chapters follow their scenes', () => {
+  const chapters = [
+    { start: 0, title: 'Hungry', scene: 0 },
+    { start: 40, title: 'The fridge', scene: 3 },
+    { start: 90, title: 'Nap time', scene: 6 },
+  ]
+  const description = `Cappy is hungry.
+
+Chapters
+${chaptersToText(chapters)}
+
+#capybara`
+  // Where the scenes start once the voice-over is recorded and matched.
+  const starts = [0, 10, 20, 55, 70, 90, 130]
+
+  it('moves each chapter to its scene and rewrites the list in the description', () => {
+    const post = refreshChapters({ description, chapters }, starts, 200)
+    expect(post.chapters.map((c) => c.start)).toEqual([0, 55, 130])
+    expect(post.description).toBe(`Cappy is hungry.
+
+Chapters
+0:00 Hungry
+0:55 The fridge
+2:10 Nap time
+
+#capybara`)
+  })
+
+  it('leaves a chapter list you edited, and chapters from before scenes were tracked', () => {
+    expect(refreshChapters({ description: 'My own words', chapters }, starts, 200).description).toBe(
+      'My own words',
+    )
+    const older = { description, chapters: chapters.map(({ start, title }) => ({ start, title })) }
+    expect(refreshChapters(older, starts, 200)).toBe(older)
   })
 })

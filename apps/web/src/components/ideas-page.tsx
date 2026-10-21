@@ -29,7 +29,8 @@ export function IdeasPage() {
   const [count, setCount] = useState('8')
   const [direction, setDirection] = useState('')
   const [suggesting, setSuggesting] = useState(false)
-  const [writeScripts, setWriteScripts] = useState(true)
+  // Each draft fully written by AI: script, scenes with image prompts, post details.
+  const [writeDrafts, setWriteDrafts] = useState(true)
   const [creating, setCreating] = useState<{ done: number; total: number; label: string } | null>(null)
   const series = seriesList.data?.find((s) => s.id === seriesId) ?? null
   const draftFormat = series?.template.format ?? format
@@ -89,7 +90,11 @@ export function IdeasPage() {
     }
   }
 
-  /** Drafts for the picked ideas, then (optionally) a script for each, one at a time. */
+  /**
+   * Drafts for the picked ideas, then (optionally) each one written by AI, one at a time: the
+   * script in the channel's narrator voice, its scenes with image prompts, then the title,
+   * description and tags. You then only record the voice-over and add the pictures.
+   */
   const createDrafts = async () => {
     const ids = picked.map((i) => i.id)
     setCreating({ done: 0, total: ids.length, label: 'Creating drafts…' })
@@ -103,32 +108,40 @@ export function IdeasPage() {
         client.invalidateQueries({ queryKey: keys.ideas }),
         client.invalidateQueries({ queryKey: keys.projects }),
       ])
-      let written = 0
-      if (writeScripts) {
-        for (const [i, { projectId }] of created.entries()) {
-          setCreating({
-            done: i,
-            total: created.length,
-            label: `Writing script ${i + 1} of ${created.length}…`,
-          })
-          try {
-            await api.post(`/api/projects/${projectId}/ai/script`, { notes: '' })
-            written++
-          } catch (err) {
-            toast.error(errorText(err), {
-              description:
-                err instanceof ApiError && err.status === 429
-                  ? 'The remaining drafts have no script yet. Write them from each project later.'
-                  : undefined,
+      const steps = [
+        { path: 'ai/script', body: { notes: '' }, label: 'script' },
+        { path: 'ai/scenes', body: {}, label: 'scenes and image prompts' },
+        { path: 'ai/post', body: {}, label: 'title, description and tags' },
+      ] as const
+      let complete = 0
+      let partial = 0
+      if (writeDrafts) {
+        drafts: for (const [i, { projectId }] of created.entries()) {
+          for (const [j, step] of steps.entries()) {
+            setCreating({
+              done: i * steps.length + j,
+              total: created.length * steps.length,
+              label: `Writing draft ${i + 1} of ${created.length}: ${step.label}…`,
             })
-            if (err instanceof ApiError && [400, 402, 429].includes(err.status)) break
+            try {
+              await api.post(`/api/projects/${projectId}/${step.path}`, step.body)
+            } catch (err) {
+              if (j > 0) partial++
+              toast.error(errorText(err), {
+                description: 'Finish this draft from its project page: each step has its own button there.',
+              })
+              // No key, no billing or the free limit: the next drafts would fail the same way.
+              if (err instanceof ApiError && [400, 402, 429].includes(err.status)) break drafts
+              continue drafts
+            }
           }
+          complete++
         }
         await client.invalidateQueries({ queryKey: keys.projects })
       }
       toast.success(`${plural(created.length, 'draft')} created`, {
-        description: writeScripts
-          ? `${plural(written, 'script')} written. Find them on the Projects page.`
+        description: writeDrafts
+          ? `${plural(complete, 'draft')} fully written${partial ? `, ${partial} partly` : ''}. Record the voice-over and add the pictures on the Projects page.`
           : 'Find them on the Projects page.',
       })
       setTab('used')
@@ -262,6 +275,7 @@ export function IdeasPage() {
                     tone="you"
                     className="max-w-64 flex-1"
                   />
+                  <span className="ml-auto text-[12.5px] text-paper/70">Keep this page open</span>
                 </div>
               ) : (
                 <>
@@ -269,11 +283,11 @@ export function IdeasPage() {
                   <label className="flex items-center gap-2 text-[14px]">
                     <input
                       type="checkbox"
-                      checked={writeScripts}
-                      onChange={(e) => setWriteScripts(e.target.checked)}
+                      checked={writeDrafts}
+                      onChange={(e) => setWriteDrafts(e.target.checked)}
                       className="size-4 accent-kodak"
                     />
-                    Write the scripts too
+                    Write each one with AI: script, scenes and post details
                   </label>
                   <Button
                     variant="go"

@@ -535,7 +535,7 @@ Return:
   const chapters = normalizeChapters(
     draft.chapterPicks
       .filter((c) => input.scenes[c.sceneIndex])
-      .map((c) => ({ start: input.scenes[c.sceneIndex].start, title: c.title })),
+      .map((c) => ({ start: input.scenes[c.sceneIndex].start, title: c.title, scene: c.sceneIndex })),
     input.duration,
   )
   const hashtags = draft.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`).replace(/\s+/g, ''))
