@@ -2,7 +2,7 @@ import { deleteFile } from '@cutroom/shared/storage'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '@/server/db'
 import { readJson, route } from '@/server/http'
-import { getProjectFull, getScene, renumberScenes, touchProject } from '@/server/projects'
+import { assertProjectFile, getProjectFull, getScene, renumberScenes, touchProject } from '@/server/projects'
 import { scenePatchSchema } from '@/server/validation'
 
 type Ctx = { params: Promise<{ id: string }> }
@@ -12,6 +12,7 @@ export const PATCH = route(async (request, { params }: Ctx) => {
   const patch = await readJson(request, scenePatchSchema)
   const scene = await getScene(id)
   if (patch.imageUrl !== undefined && patch.imageUrl !== scene.imageUrl) {
+    assertProjectFile(patch.imageUrl, scene.projectId, 'scenes')
     await deleteFile(scene.imageUrl)
     if (patch.imageUrl === null) {
       patch.imageWidth = null

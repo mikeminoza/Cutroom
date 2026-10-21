@@ -46,6 +46,9 @@ const cron = await import('../src/app/api/cron/route')
 const settingsModule = await import('../src/server/settings')
 const libraryRoute = await import('../src/app/api/library/characters/route')
 const libraryItemRoute = await import('../src/app/api/library/characters/[id]/route')
+const projectRoute = await import('../src/app/api/projects/[id]/route')
+const sceneRoute = await import('../src/app/api/scenes/[id]/route')
+const characterRoute = await import('../src/app/api/characters/[id]/route')
 const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -824,5 +827,46 @@ describe('channel niche', () => {
     await settingsModule.saveSettings(old as typeof DEFAULT_SETTINGS)
     expect((await settingsModule.getSettings()).niche).toEqual(DEFAULT_SETTINGS.niche)
     await settingsModule.saveSettings(DEFAULT_SETTINGS)
+  })
+})
+
+describe('files sent by the browser', () => {
+  const patch = (body: unknown) =>
+    new Request('http://localhost/api', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+
+  it("only accepts the project's own files, so replacing one never deletes another project's", async () => {
+    const id = await newProject()
+    const other = await newProject()
+    const theirs = await putFile(`projects/${other}/music/song.mp3`, Buffer.from('m'), 'audio/mpeg')
+    const mine = await putFile(`projects/${id}/music/song.mp3`, Buffer.from('m'), 'audio/mpeg')
+    expect((await projectRoute.PATCH(patch({ musicUrl: theirs.url }), ctx(id))).status).toBe(400)
+    // The thumbnail folder is not the music folder either.
+    const thumb = await putFile(`projects/${id}/thumbnail/t.png`, Buffer.from('t'), 'image/png')
+    expect((await projectRoute.PATCH(patch({ musicUrl: thumb.url }), ctx(id))).status).toBe(400)
+    expect((await projectRoute.PATCH(patch({ musicUrl: mine.url }), ctx(id))).status).toBe(200)
+    expect((await projectRoute.PATCH(patch({ musicUrl: null }), ctx(id))).status).toBe(200)
+    expect(stored(keyOfUrl(theirs.url))).toBe(true)
+
+    await projects.replaceScenes(id, [{ start: 0, end: 5, narration: 'Capybara wants to eat.' }])
+    const [scene] = await projects.getScenes(id)
+    const theirImage = await putFile(`projects/${other}/scenes/x.png`, Buffer.from('i'), 'image/png')
+    expect((await sceneRoute.PATCH(patch({ imageUrl: theirImage.url }), ctx(scene.id))).status).toBe(400)
+    const myImage = await putFile(`projects/${id}/scenes/x.png`, Buffer.from('i'), 'image/png')
+    expect((await sceneRoute.PATCH(patch({ imageUrl: myImage.url }), ctx(scene.id))).status).toBe(200)
+
+    const database = await db()
+    const characterId = crypto.randomUUID()
+    await database
+      .insert(schema.characters)
+      .values({ id: characterId, projectId: id, name: 'Cappy', images: [] })
+    expect((await characterRoute.PATCH(patch({ images: [theirImage] }), ctx(characterId))).status).toBe(400)
+    const avatar = await putFile(`projects/${id}/characters/cappy.png`, Buffer.from('c'), 'image/png')
+    expect((await characterRoute.PATCH(patch({ images: [avatar] }), ctx(characterId))).status).toBe(200)
+    expect(stored(keyOfUrl(theirImage.url))).toBe(true)
   })
 })

@@ -2,7 +2,7 @@ import { deleteFile } from '@cutroom/shared/storage'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '@/server/db'
 import { notFound, readJson, route } from '@/server/http'
-import { toCharacterDTO, touchProject } from '@/server/projects'
+import { assertProjectFile, toCharacterDTO, touchProject } from '@/server/projects'
 import { characterPatchSchema } from '@/server/validation'
 
 type Ctx = { params: Promise<{ id: string }> }
@@ -19,6 +19,10 @@ export const PATCH = route(async (request, { params }: Ctx) => {
   const patch = await readJson(request, characterPatchSchema)
   const current = await load(id)
   if (patch.images) {
+    const had = new Set(current.images.map((i) => i.url))
+    for (const image of patch.images) {
+      if (!had.has(image.url)) assertProjectFile(image.url, current.projectId, 'characters')
+    }
     const kept = new Set(patch.images.map((i) => i.url))
     await Promise.all(current.images.filter((i) => !kept.has(i.url)).map((i) => deleteFile(i.url)))
   }

@@ -21,6 +21,18 @@ function cleanName(name: string): string {
   )
 }
 
+/**
+ * A link that downloads the file. Blob files live on another domain, where browsers ignore the
+ * download attribute and play the video instead; `?download=1` makes Blob send an attachment.
+ * Local files (/api/files/...) are same-origin, where the attribute works.
+ */
+export function downloadHref(url: string): string {
+  if (!/^https:\/\/[^/]+\.blob\.vercel-storage\.com\//.test(url)) return url
+  const parsed = new URL(url)
+  parsed.searchParams.set('download', '1')
+  return parsed.toString()
+}
+
 export async function uploadFile(
   file: File,
   projectId: string,

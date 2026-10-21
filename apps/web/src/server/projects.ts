@@ -1,5 +1,5 @@
 import type { JobType } from '@cutroom/shared/protocol'
-import { copyStoredFile, deleteFile } from '@cutroom/shared/storage'
+import { copyStoredFile, deleteFile, isStoredUnder } from '@cutroom/shared/storage'
 import {
   type ChannelNiche,
   EMPTY_POST,
@@ -208,6 +208,20 @@ export async function copyImages(
     }
   }
   return copies
+}
+
+/**
+ * A file the browser says belongs to a project must be in that project's folder for its kind.
+ * Replacing or removing it later deletes it, so it must never point at someone else's file.
+ */
+export function assertProjectFile(
+  url: string | null | undefined,
+  projectId: string,
+  kind: 'scenes' | 'characters' | 'voiceover' | 'music' | 'thumbnail',
+) {
+  if (url == null) return
+  if (!isStoredUnder(url, `projects/${projectId}/${kind}`))
+    badRequest('Upload the file to this project first.')
 }
 
 /** Copies one stored file, or fails with a message saying which one. */

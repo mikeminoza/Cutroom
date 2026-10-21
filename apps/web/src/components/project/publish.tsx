@@ -42,6 +42,7 @@ import type { JobDTO, ProjectFull } from '@/lib/dto'
 import { formatWhen } from '@/lib/format'
 import { keys, usePlaylists, useProjectAction, useSaver, useSettings, useStatus } from '@/lib/hooks'
 import type { StepId, Tone } from '@/lib/stage'
+import { downloadHref } from '@/lib/upload'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import { JobSteps, Warnings } from './job-panel'
 import { type StepProps, stageOf } from './workspace'
@@ -934,13 +935,17 @@ function JobPanel({ data, job }: { data: ProjectFull; job: JobDTO }) {
                 </ButtonLink>
               )}
               {project.outputUrl && (
-                <ButtonLink href={project.outputUrl} download icon={<Download className="size-4" />}>
+                <ButtonLink
+                  href={downloadHref(project.outputUrl)}
+                  download
+                  icon={<Download className="size-4" />}
+                >
                   Download MP4
                 </ButtonLink>
               )}
               {project.srtUrl && (
                 <ButtonLink
-                  href={project.srtUrl}
+                  href={downloadHref(project.srtUrl)}
                   download
                   variant="ghost"
                   icon={<Download className="size-4" />}

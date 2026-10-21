@@ -2,7 +2,14 @@ import { deleteFile } from '@cutroom/shared/storage'
 import { getChannel } from '@/server/connections'
 import { badRequest, readJson, route } from '@/server/http'
 import { watchJob } from '@/server/jobs'
-import { deleteProject, getProjectFull, getProjectRow, latestJob, updateProject } from '@/server/projects'
+import {
+  assertProjectFile,
+  deleteProject,
+  getProjectFull,
+  getProjectRow,
+  latestJob,
+  updateProject,
+} from '@/server/projects'
 import { getSeries } from '@/server/series'
 import { projectPatchSchema } from '@/server/validation'
 
@@ -29,6 +36,14 @@ export const PATCH = route(async (request, { params }: Ctx) => {
   const update: Parameters<typeof updateProject>[1] = { ...patch }
   // The YouTube id lets the video find its channel again if it is disconnected and reconnected.
   if (patch.channelId !== undefined) update.channelYoutubeId = channel?.youtubeId ?? null
+  for (const [field, kind] of [
+    ['voiceoverUrl', 'voiceover'],
+    ['musicUrl', 'music'],
+    ['thumbnailUrl', 'thumbnail'],
+  ] as const) {
+    if (patch[field] !== undefined && patch[field] !== current[field])
+      assertProjectFile(patch[field], id, kind)
+  }
   if (patch.voiceoverUrl !== undefined && patch.voiceoverUrl !== current.voiceoverUrl) {
     await deleteFile(current.voiceoverUrl)
     update.transcript = null
