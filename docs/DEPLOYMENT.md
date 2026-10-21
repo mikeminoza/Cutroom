@@ -200,8 +200,16 @@ What they allow:
 
 While the app's status is **Testing**, Google expires your saved login after **7 days**, and automatic posting stops without warning.
 
-1. **Google Auth platform → Audience.**
-2. Under **Publishing status**, click **Publish app**, then **Confirm**.
+Google only lets you publish once the **Branding** page is complete. Do this after step 4.6, when you know your address (here `https://cutroom-abc123.vercel.app`):
+
+1. **Google Auth platform → Branding → App domain**, using the pages Cutroom serves for this:
+   - Application home page: `https://cutroom-abc123.vercel.app`
+   - Application privacy policy link: `https://cutroom-abc123.vercel.app/privacy`
+   - Application terms of service link: `https://cutroom-abc123.vercel.app/terms`
+2. **Authorized domains:** your address without `https://`, for example `cutroom-abc123.vercel.app`.
+3. **App logo:** leave it empty. Uploading one makes Google require a verification review.
+4. Click **Save**.
+5. **Google Auth platform → Audience.** Under **Publishing status**, click **Publish app**, then **Confirm**.
 
 You don't need Google's verification for personal use. When you connect your account, Google shows "Google hasn't verified this app". Click **Advanced → Go to Cutroom (unsafe)**. That screen appears because the app is yours and unreviewed, not because something is wrong.
 

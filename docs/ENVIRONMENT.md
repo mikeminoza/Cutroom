@@ -25,6 +25,7 @@ Locally both read a single `.env` file at the repository root. In production you
 | `APP_URL` | ✓ | ✓ | **Yes** on the worker, recommended on web | `https://cutroom.vercel.app` |
 | `APP_PASSWORD` | ✓ | – | **Yes** in production | a long password |
 | `SESSION_SECRET` | ✓ | – | No | 64 random hex characters |
+| `CONTACT_EMAIL` | ✓ | – | No | `you@example.com` |
 | `CRON_SECRET` | ✓ | – | **Yes** when `APP_PASSWORD` is set | 32 random hex characters |
 | `NOTIFY_DISCORD_WEBHOOK_URL` | ✓ | – | No | `https://discord.com/api/webhooks/…` |
 | `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID` | ✓ | – | No | `123456:ABC…`, `987654321` |
@@ -163,6 +164,10 @@ The password for the login page. When it's empty, anyone who knows the address c
 ### `SESSION_SECRET`
 
 Signs the login cookie. Optional: if it's empty, a key derived from `APP_PASSWORD` is used. Set it if you want to change the password without signing out existing sessions, or the other way round.
+
+### `CONTACT_EMAIL`
+
+Optional, web app only. The email shown on the public privacy policy (`/privacy`) and terms (`/terms`) pages, which Google's consent screen links to. Without it, those pages point to the support email on the Google sign-in screen. Redeploy after changing it.
 
 ### `CRON_SECRET`
 

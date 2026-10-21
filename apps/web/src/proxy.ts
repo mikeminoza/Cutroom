@@ -13,5 +13,6 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!api|login|_next/static|_next/image|icon.svg|favicon.ico).*)'],
+  // The privacy policy and terms are public: Google's consent screen links to them.
+  matcher: ['/((?!api|login|privacy|terms|_next/static|_next/image|icon.svg|favicon.ico).*)'],
 }
