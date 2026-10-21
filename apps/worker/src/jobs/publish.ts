@@ -215,8 +215,9 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
           ? 'Using the details you wrote'
           : 'Using your details, with chapter times updated',
       )
-    } else if (!hasGeminiKey()) {
-      // No AI available: post with what the project already knows rather than stopping.
+    } else if (!hasGeminiKey() || project.post.aiFill === false) {
+      // No AI (not set up, or turned off for this video): post with what the project already
+      // knows rather than stopping.
       const firstSentences = project.script
         .split(/(?<=[.!?])\s+/)
         .slice(0, 2)
@@ -236,7 +237,9 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       }
       await ctx.result({ post })
       await ctx.warn(
-        'Gemini is not set up, so a basic title and description were used. Edit them in YouTube Studio.',
+        project.post.aiFill === false
+          ? 'You left part of the post details empty with Gemini turned off, so a basic title or description was used. Edit them in YouTube Studio.'
+          : 'Gemini is not set up, so a basic title and description were used. Edit them in YouTube Studio.',
       )
       await ctx.step('details', 'done', post.title)
     } else {

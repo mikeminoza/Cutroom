@@ -50,6 +50,7 @@ const projectRoute = await import('../src/app/api/projects/[id]/route')
 const sceneRoute = await import('../src/app/api/scenes/[id]/route')
 const characterRoute = await import('../src/app/api/characters/[id]/route')
 const rescheduleRoute = await import('../src/app/api/worker/jobs/[id]/reschedule/route')
+const ownIdeaRoute = await import('../src/app/api/ideas/own/route')
 const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -919,5 +920,27 @@ describe('the free worker', () => {
     await jobs.startJob(id, 'voice')
     expect(stored(part.key)).toBe(false)
     expect((await jobRow(earlier.id)).result.voiceParts).toBeUndefined()
+  })
+})
+
+describe('ideas of your own', () => {
+  const post = (body: unknown) =>
+    ownIdeaRoute.POST(
+      new Request('http://localhost/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      undefined,
+    )
+
+  it('adds them to the backlog as new ideas, and checks the title and series', async () => {
+    const idea = await (await post({ title: '  Capybara meets a duck ', angle: 'They share a pond.' })).json()
+    expect(idea).toMatchObject({ title: 'Capybara meets a duck', angle: 'They share a pond.', status: 'new' })
+    const database = await db()
+    const [row] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, idea.id))
+    expect(row.status).toBe('new')
+    expect((await post({ title: '   ' })).status).toBe(400)
+    expect((await post({ title: 'X', seriesId: 'no-such-series' })).status).toBe(404)
   })
 })

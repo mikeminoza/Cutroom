@@ -5,7 +5,7 @@ import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
 import { explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
-import { chaptersToText, refreshChapters, sceneRange } from '../src/timing'
+import { chaptersToText, refreshChapters, sceneRange, splitByParagraphs } from '../src/timing'
 import { blackLevel, planTransitions } from '../src/transitions'
 import { normalizeTransition } from '../src/types'
 
@@ -719,5 +719,22 @@ Chapters
     )
     const older = { description, chapters: chapters.map(({ start, title }) => ({ start, title })) }
     expect(refreshChapters(older, starts, 200)).toBe(older)
+  })
+})
+
+describe('splitting a script yourself', () => {
+  it('makes one scene per paragraph, in order and back to back', () => {
+    const scenes = splitByParagraphs(
+      'Capybara wants to eat.\nCapybara looks in the fridge.\n\n\n  Capybara is happy.  \n\nThe end.',
+    )
+    expect(scenes.map((s) => s.narration)).toEqual([
+      'Capybara wants to eat. Capybara looks in the fridge.',
+      'Capybara is happy.',
+      'The end.',
+    ])
+    expect(scenes[0].start).toBe(0)
+    expect(scenes[1].start).toBe(scenes[0].end)
+    expect(scenes[2].start).toBe(scenes[1].end)
+    expect(splitByParagraphs('  \n\n ')).toEqual([])
   })
 })

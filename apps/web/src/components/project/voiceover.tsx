@@ -194,7 +194,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
         description={
           noScenes
             ? 'No script? Gemini can transcribe the voice-over and cut it into scenes for you.'
-            : 'Gemini transcribes the recording, then lines up each scene with the moment its narration starts. The pauses in the recording place every word.'
+            : 'Two ways: Gemini listens to your recording and lines up each scene with the moment its narration starts, or spread the scenes evenly and drag the cuts on the waveform yourself.'
         }
       >
         <div className="flex flex-col gap-4 px-5 py-4">
@@ -218,7 +218,7 @@ export function VoiceoverStep({ data, selectedSceneId, selectScene, goTo }: Step
             </Button>
             {!noScenes && (
               <Button
-                variant="ghost"
+                variant="plain"
                 onClick={fit}
                 disabled={Boolean(running) || recording}
                 icon={<Ruler className="size-4" />}

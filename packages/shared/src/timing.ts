@@ -52,6 +52,18 @@ export function layoutByEstimate<T extends { narration: string }>(
 }
 
 /**
+ * Splits a script into scenes without AI, one scene per paragraph: a blank line in the script
+ * starts a new picture, so you decide exactly where the cuts go.
+ */
+export function splitByParagraphs(script: string): { start: number; end: number; narration: string }[] {
+  const paragraphs = script
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+  return layoutByEstimate(paragraphs.map((narration) => ({ narration })))
+}
+
+/**
  * Splits a script into scenes without AI: sentences are grouped until a scene
  * reaches roughly `pace` seconds of narration.
  */

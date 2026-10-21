@@ -197,6 +197,8 @@ export interface PostDetails {
   madeForKids: boolean
   playlistId: string
   language: string
+  /** Gemini fills in an empty title, description and tags when publishing (on unless turned off). */
+  aiFill?: boolean
 }
 
 export const EMPTY_POST: PostDetails = {

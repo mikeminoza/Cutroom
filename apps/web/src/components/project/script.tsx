@@ -3,6 +3,7 @@
 import {
   countWords,
   formatTimecode,
+  splitByParagraphs,
   splitBySentences,
   totalDuration,
   WORDS_PER_SECOND,
@@ -48,8 +49,12 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const { data: status } = useStatus()
   const { confirm, element } = useConfirm()
   const [writing, setWriting] = useState(false)
-  const [busy, setBusy] = useState<'split' | 'write' | 'local' | null>(null)
+  const [busy, setBusy] = useState<'split' | 'write' | null>(null)
   const words = countWords(project.script)
+  const aiReady = status?.gemini.configured !== false
+  const [method, setMethod] = useSplitMethod()
+  // Without a Gemini key, AI splitting isn't on offer: fall back to your own paragraphs.
+  const how: SplitMethod = method === 'ai' && !aiReady ? 'paragraph' : method
 
   const confirmReplace = async () =>
     scenes.length === 0 ||
@@ -63,18 +68,21 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const split = async () => {
     if (!(await confirmReplace())) return
     setBusy('split')
-    const full = await action(`/api/projects/${project.id}/ai/scenes`, {}, undefined)
+    const full =
+      how === 'ai'
+        ? await action(`/api/projects/${project.id}/ai/scenes`, {}, undefined)
+        : await action(
+            `/api/projects/${project.id}/scenes`,
+            {
+              drafts:
+                how === 'paragraph'
+                  ? splitByParagraphs(project.script)
+                  : splitBySentences(project.script, project.pace),
+            },
+            undefined,
+          )
     setBusy(null)
     if (full) toast.success(`Split into ${full.scenes.length} scenes`)
-  }
-
-  const splitLocally = async () => {
-    if (!(await confirmReplace())) return
-    setBusy('local')
-    const drafts = splitBySentences(project.script, project.pace)
-    const full = await action(`/api/projects/${project.id}/scenes`, { drafts })
-    setBusy(null)
-    if (full) toast.success(`Split into ${full.scenes.length} scenes by sentence`)
   }
 
   return (
@@ -106,43 +114,35 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             <span className="tc text-[13px] text-ink-2">
               {words.toLocaleString()} words · about {formatLength(words / WORDS_PER_SECOND)} spoken
             </span>
-            <div className="ml-auto flex items-center gap-2">
-              {status?.gemini.configured === false ? (
-                <Button
-                  variant={scenes.length ? 'plain' : 'go'}
-                  busy={busy === 'local'}
-                  disabled={!project.script.trim()}
-                  onClick={splitLocally}
-                  icon={<Scissors className="size-4" />}
-                >
-                  Split into scenes
-                </Button>
-              ) : (
-                <>
-                  <Menu
-                    trigger={
-                      <Button
-                        variant="ghost"
-                        size="md"
-                        aria-label="More ways to split"
-                        icon={<ChevronDown className="size-4" />}
-                      />
-                    }
-                    items={[{ label: 'Split by sentence (no AI)', onSelect: splitLocally }]}
-                  />
-                  <Button
-                    variant={scenes.length ? 'plain' : 'go'}
-                    busy={busy === 'split'}
-                    disabled={!project.script.trim()}
-                    onClick={split}
-                    icon={<Scissors className="size-4" />}
-                  >
-                    {scenes.length ? 'Split again' : 'Split into scenes'}
-                  </Button>
-                </>
-              )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <Select
+                aria-label="How to split the script into scenes"
+                value={how}
+                onChange={(e) => setMethod(e.target.value as SplitMethod)}
+                className="h-[38px] w-auto"
+              >
+                <option value="paragraph">One scene per paragraph</option>
+                <option value="sentence">Group sentences</option>
+                {aiReady && <option value="ai">With AI (adds picture prompts)</option>}
+              </Select>
+              <Button
+                variant={scenes.length ? 'plain' : 'go'}
+                busy={busy === 'split'}
+                disabled={!project.script.trim()}
+                onClick={split}
+                icon={<Scissors className="size-4" />}
+              >
+                {scenes.length ? 'Split again' : 'Split into scenes'}
+              </Button>
             </div>
           </div>
+          <p className="mt-2 text-[12.5px] leading-snug text-ink-3">
+            {how === 'paragraph'
+              ? 'You decide the cuts: put a blank line wherever a new picture should start. Write each scene’s picture description yourself, or leave it and the narration is used.'
+              : how === 'sentence'
+                ? `Sentences are grouped into scenes of about ${project.pace} seconds.`
+                : 'Gemini picks the cuts and writes a picture description and image prompt for every scene. You can edit all of it.'}
+          </p>
           {busy === 'split' && (
             <p className="mt-3 text-[13px] text-ink-2">
               Gemini is storyboarding your script. Long scripts take up to a minute.
@@ -240,6 +240,15 @@ function ScenesPanel({ data, selectedSceneId, selectScene, goTo }: StepProps) {
             Scenes appear here once the script is split. Each one gets its narration, a timestamp, a
             description of the picture and a ready-to-copy image prompt.
           </p>
+          <Button
+            variant="plain"
+            size="sm"
+            className="mt-4"
+            onClick={() => void action(`/api/projects/${project.id}/scenes`, { afterIndex: null }, undefined)}
+            icon={<Plus className="size-3.5" />}
+          >
+            Add a scene by hand
+          </Button>
         </div>
       </Panel>
     )
@@ -465,4 +474,29 @@ function SceneCard({
       )}
     </li>
   )
+}
+
+type SplitMethod = 'paragraph' | 'sentence' | 'ai'
+const SPLIT_KEY = 'cutroom-split'
+
+/** The way you last split a script, remembered in this browser. */
+function useSplitMethod(): [SplitMethod, (method: SplitMethod) => void] {
+  const [method, setMethod] = useState<SplitMethod>('ai')
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SPLIT_KEY)
+      if (saved === 'paragraph' || saved === 'sentence' || saved === 'ai') setMethod(saved)
+    } catch {
+      // Storage blocked: keep the default.
+    }
+  }, [])
+  const choose = (next: SplitMethod) => {
+    setMethod(next)
+    try {
+      localStorage.setItem(SPLIT_KEY, next)
+    } catch {
+      // Storage blocked: the choice lasts until the page reloads.
+    }
+  }
+  return [method, choose]
 }

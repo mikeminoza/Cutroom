@@ -2,7 +2,7 @@
 
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, Lightbulb, RotateCcw, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowRight, Lightbulb, Plus, RotateCcw, Sparkles, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { ApiError, api, errorText } from '@/lib/api'
@@ -10,7 +10,18 @@ import { cn } from '@/lib/cn'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
-import { Button, ButtonLink, Field, Input, Panel, ProgressBar, Segmented, Select, Spinner } from './ui'
+import {
+  Button,
+  ButtonLink,
+  Field,
+  Input,
+  Panel,
+  ProgressBar,
+  Segmented,
+  Select,
+  Spinner,
+  Textarea,
+} from './ui'
 
 type Tab = 'new' | 'used' | 'dismissed'
 
@@ -22,6 +33,9 @@ export function IdeasPage() {
   const [tab, setTab] = useState<Tab>('new')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [niche, setNiche] = useState('')
+  const [ownTitle, setOwnTitle] = useState('')
+  const [ownAngle, setOwnAngle] = useState('')
+  const [adding, setAdding] = useState(false)
   // Left empty, ideas follow the channel niche from Settings.
   const channelNiche = useSettings().data?.niche.description.trim() ?? ''
   const [seriesId, setSeriesId] = useState('')
@@ -152,6 +166,29 @@ export function IdeasPage() {
     }
   }
 
+  /** An idea of your own, added to the backlog like Gemini's (in the series picked above, if any). */
+  const addOwn = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!ownTitle.trim()) return
+    setAdding(true)
+    try {
+      const idea = await api.post<IdeaDTO>('/api/ideas/own', {
+        title: ownTitle,
+        angle: ownAngle,
+        seriesId: seriesId || null,
+      })
+      client.setQueryData<IdeaDTO[]>(keys.ideas, (prev) => [idea, ...(prev ?? [])])
+      setOwnTitle('')
+      setOwnAngle('')
+      setTab('new')
+      toast.success('Idea added')
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
   const toggle = (id: string) =>
     setSelected((s) => {
       const next = new Set(s)
@@ -173,81 +210,120 @@ export function IdeasPage() {
       </header>
 
       <div className="grid items-start gap-6 lg:grid-cols-[340px_1fr]">
-        <Panel title="Suggest ideas" className="lg:sticky lg:top-4">
-          <div className="flex flex-col gap-4 px-5 py-5">
-            {(seriesList.data?.length ?? 0) > 0 && (
-              <Field label="For a series" aside="Optional">
-                <Select value={seriesId} onChange={(e) => setSeriesId(e.target.value)}>
-                  <option value="">No series</option>
-                  {seriesList.data?.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            )}
-            <Field
-              label={series ? 'Extra focus' : 'Channel niche'}
-              aside={series || channelNiche ? 'Optional' : undefined}
-              hint={
-                !series && channelNiche ? 'Leave empty to use your channel niche from Settings.' : undefined
-              }
-            >
-              <Input
-                value={niche}
-                maxLength={500}
-                onChange={(e) => setNiche(e.target.value)}
-                placeholder={
-                  series
-                    ? 'Deep-sea creatures only'
-                    : channelNiche || 'Strange animal facts for curious adults'
+        <div className="flex flex-col gap-6 lg:sticky lg:top-4">
+          <Panel title="Suggest ideas">
+            <div className="flex flex-col gap-4 px-5 py-5">
+              {(seriesList.data?.length ?? 0) > 0 && (
+                <Field label="For a series" aside="Optional">
+                  <Select value={seriesId} onChange={(e) => setSeriesId(e.target.value)}>
+                    <option value="">No series</option>
+                    {seriesList.data?.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
+              <Field
+                label={series ? 'Extra focus' : 'Channel niche'}
+                aside={series || channelNiche ? 'Optional' : undefined}
+                hint={
+                  !series && channelNiche ? 'Leave empty to use your channel niche from Settings.' : undefined
                 }
-              />
-            </Field>
-            {!series && (
-              <Field label="Format">
+              >
+                <Input
+                  value={niche}
+                  maxLength={500}
+                  onChange={(e) => setNiche(e.target.value)}
+                  placeholder={
+                    series
+                      ? 'Deep-sea creatures only'
+                      : channelNiche || 'Strange animal facts for curious adults'
+                  }
+                />
+              </Field>
+              {!series && (
+                <Field label="Format">
+                  <Segmented
+                    ariaLabel="Format"
+                    value={format}
+                    onChange={setFormat}
+                    options={[
+                      { value: 'landscape', label: 'Videos' },
+                      { value: 'portrait', label: 'Shorts' },
+                    ]}
+                    className="w-full"
+                  />
+                </Field>
+              )}
+              <Field label="How many">
                 <Segmented
-                  ariaLabel="Format"
-                  value={format}
-                  onChange={setFormat}
-                  options={[
-                    { value: 'landscape', label: 'Videos' },
-                    { value: 'portrait', label: 'Shorts' },
-                  ]}
+                  ariaLabel="How many ideas"
+                  value={count}
+                  onChange={setCount}
+                  options={['5', '8', '12', '20'].map((v) => ({ value: v, label: v }))}
                   className="w-full"
                 />
               </Field>
-            )}
-            <Field label="How many">
-              <Segmented
-                ariaLabel="How many ideas"
-                value={count}
-                onChange={setCount}
-                options={['5', '8', '12', '20'].map((v) => ({ value: v, label: v }))}
-                className="w-full"
-              />
-            </Field>
-            <Field label="Direction" aside="Optional">
-              <Input
-                value={direction}
-                maxLength={1000}
-                onChange={(e) => setDirection(e.target.value)}
-                placeholder="Myth-busting angles, Halloween themes…"
-              />
-            </Field>
-            <Button
-              variant="go"
-              busy={suggesting}
-              disabled={!canSuggest || (!niche.trim() && !series && !channelNiche)}
-              onClick={suggest}
-              icon={<Sparkles className="size-4" />}
-            >
-              Suggest ideas
-            </Button>
-            {!canSuggest && <p className="text-[13px] text-ink-2">Add GEMINI_API_KEY to get suggestions.</p>}
-          </div>
-        </Panel>
+              <Field label="Direction" aside="Optional">
+                <Input
+                  value={direction}
+                  maxLength={1000}
+                  onChange={(e) => setDirection(e.target.value)}
+                  placeholder="Myth-busting angles, Halloween themes…"
+                />
+              </Field>
+              <Button
+                variant="go"
+                busy={suggesting}
+                disabled={!canSuggest || (!niche.trim() && !series && !channelNiche)}
+                onClick={suggest}
+                icon={<Sparkles className="size-4" />}
+              >
+                Suggest ideas
+              </Button>
+              {!canSuggest && (
+                <p className="text-[13px] text-ink-2">Add GEMINI_API_KEY to get suggestions.</p>
+              )}
+            </div>
+          </Panel>
+          <Panel
+            title="Add your own"
+            description="Your idea goes in the list with Gemini's, ready to turn into a draft."
+          >
+            <form onSubmit={addOwn} className="flex flex-col gap-4 px-5 py-5">
+              <Field label="Title" htmlFor="own-idea-title">
+                <Input
+                  id="own-idea-title"
+                  value={ownTitle}
+                  maxLength={200}
+                  onChange={(e) => setOwnTitle(e.target.value)}
+                  placeholder="Capybara tries to catch a butterfly"
+                />
+              </Field>
+              <Field label="What happens" htmlFor="own-idea-angle" aside="Optional">
+                <Textarea
+                  id="own-idea-angle"
+                  value={ownAngle}
+                  maxLength={1000}
+                  onChange={(e) => setOwnAngle(e.target.value)}
+                  placeholder="Cappy chases it all over the garden and ends up asleep in a flower pot."
+                  className="min-h-20"
+                />
+              </Field>
+              <Button
+                type="submit"
+                variant="plain"
+                busy={adding}
+                disabled={!ownTitle.trim()}
+                icon={<Plus className="size-4" />}
+              >
+                Add idea
+              </Button>
+            </form>
+          </Panel>
+        </div>
 
         <div className="flex flex-col gap-4">
           <Segmented<Tab>

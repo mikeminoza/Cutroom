@@ -109,7 +109,11 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   return (
     <Panel
       title="Post details"
-      description="What YouTube shows. Leave it empty and Gemini writes it during Finish & schedule."
+      description={
+        post.aiFill === false
+          ? 'What YouTube shows, written by you. Anything left empty gets a basic title and description from the project.'
+          : 'What YouTube shows. Write it yourself, or leave it empty and Gemini writes it during Finish & schedule.'
+      }
       actions={
         <Button
           variant="plain"
@@ -280,6 +284,12 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
           onCheckedChange={(madeForKids) => setPost({ madeForKids }, 0)}
           label="Made for kids"
           description="Required by YouTube. Turns off comments and personalised ads for this video."
+        />
+        <Switch
+          checked={post.aiFill !== false}
+          onCheckedChange={(aiFill) => setPost({ aiFill }, 0)}
+          label="Let Gemini fill in what is empty"
+          description="When you publish, an empty title, description or tags are written by Gemini. Off: they stay yours, with a basic title and description from the project where you left a gap."
         />
       </div>
     </Panel>

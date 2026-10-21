@@ -30,6 +30,7 @@ export const postSchema = z.object({
   categoryId: z.string().max(4),
   privacy: z.enum(['private', 'unlisted', 'public']),
   madeForKids: z.boolean(),
+  aiFill: z.boolean().optional(),
   playlistId: z.string().max(100),
   language: z.string().max(20),
 })
