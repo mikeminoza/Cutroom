@@ -4,7 +4,8 @@ import { NextResponse } from 'next/server'
 import { isAuthorized } from '@/server/auth'
 import { toErrorResponse } from '@/server/http'
 
-const FOLDER = /^projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)\//
+const FOLDER =
+  /^(projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)|library\/characters\/[\w-]+)\//
 
 export async function POST(request: Request): Promise<Response> {
   try {

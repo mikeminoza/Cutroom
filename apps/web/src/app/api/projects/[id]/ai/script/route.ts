@@ -1,7 +1,7 @@
 import { writeScript } from '@cutroom/shared/ai'
 import { z } from 'zod'
 import { badRequest, readJson, route } from '@/server/http'
-import { getProjectFull, getProjectRow, updateProject } from '@/server/projects'
+import { getCharacters, getProjectFull, getProjectRow, updateProject } from '@/server/projects'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -18,6 +18,9 @@ export const POST = route(async (request, { params }: Ctx) => {
     minutes: project.targetMinutes,
     format: project.format,
     notes: notes || project.notes,
+    characters: (await getCharacters(id))
+      .filter((c) => c.name.trim())
+      .map((c) => ({ name: c.name.trim(), description: c.description })),
   })
   await updateProject(id, { script: result.script, title: project.title.trim() || result.title })
   return getProjectFull(id)

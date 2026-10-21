@@ -13,6 +13,7 @@ export async function getSettings(): Promise<AppSettings> {
     defaults: { ...DEFAULT_SETTINGS.defaults, ...row.data.defaults },
     voice: { ...DEFAULT_SETTINGS.voice, ...row.data.voice },
     notifications: { ...DEFAULT_SETTINGS.notifications, ...row.data.notifications },
+    niche: { ...DEFAULT_SETTINGS.niche, ...row.data.niche },
   }
 }
 

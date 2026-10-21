@@ -43,6 +43,10 @@ const analytics = await import('../src/server/analytics')
 const notify = await import('../src/server/notify')
 const { HttpError } = await import('../src/server/http')
 const cron = await import('../src/app/api/cron/route')
+const settingsModule = await import('../src/server/settings')
+const libraryRoute = await import('../src/app/api/library/characters/route')
+const libraryItemRoute = await import('../src/app/api/library/characters/[id]/route')
+const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -728,5 +732,97 @@ describe('daily cron and stats', () => {
     expect(result.updated).toBe(0)
     expect(result.notes.join(' ')).toMatch(/next refresh/)
     expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('channel niche', () => {
+  const json = (body: unknown, method = 'POST') =>
+    new Request('http://localhost/api', {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const patchCharacter = (id: string, body: unknown) =>
+    libraryItemRoute.PATCH(json(body, 'PATCH'), { params: Promise.resolve({ id }) })
+
+  it('creates a library character directly and only accepts images from its own folder', async () => {
+    const created = await (
+      await libraryRoute.POST(json({ name: 'Cappy', description: 'Brown capybara' }), undefined)
+    ).json()
+    expect(created).toMatchObject({ name: 'Cappy', images: [] })
+
+    const elsewhere = await putFile('projects/other/characters/x.png', Buffer.from('x'), 'image/png')
+    expect((await patchCharacter(created.id, { images: [elsewhere] })).status).toBe(400)
+
+    const own = await putFile(`library/characters/${created.id}/cappy.png`, Buffer.from('c'), 'image/png')
+    const saved = await (await patchCharacter(created.id, { images: [own] })).json()
+    expect(saved.images).toEqual([own])
+    // Removing an image deletes its file.
+    await patchCharacter(created.id, { images: [] })
+    expect(stored(keyOfUrl(own.url))).toBe(false)
+  })
+
+  it('starts new videos from the niche: brief, script notes and the main character with images', async () => {
+    const narrator = await (
+      await libraryRoute.POST(json({ name: 'Cappy', description: 'Chubby 2D capybara' }), undefined)
+    ).json()
+    const image = await putFile(`library/characters/${narrator.id}/cappy.png`, Buffer.from('c'), 'image/png')
+    await patchCharacter(narrator.id, { images: [image] })
+    await settingsModule.saveSettings({
+      ...DEFAULT_SETTINGS,
+      niche: {
+        description: 'Funny 2D cartoon about Cappy the capybara',
+        narration: 'Cappy narrates in third person: "Capybara wants to eat."',
+        audience: 'Kids and adults',
+        tone: 'Funny, warm',
+        artStyle: '2D cartoon, flat colors',
+        targetMinutes: 6,
+        pace: 8,
+        characterIds: [narrator.id, 'deleted-character'],
+      },
+    })
+    try {
+      const id = await newProject('landscape')
+      const project = await projects.getProjectRow(id)
+      expect(project).toMatchObject({
+        audience: 'Kids and adults',
+        tone: 'Funny, warm',
+        artStyle: '2D cartoon, flat colors',
+        targetMinutes: 6,
+        pace: 8,
+      })
+      expect(project.notes).toContain('Channel: Funny 2D cartoon about Cappy the capybara')
+      expect(project.notes).toContain('Narration: Cappy narrates in third person')
+      const [cast] = await projects.getCharacters(id)
+      expect(cast).toMatchObject({ name: 'Cappy', description: 'Chubby 2D capybara', position: 0 })
+      expect(cast.images).toHaveLength(1)
+      expect(cast.images[0].key.startsWith(`projects/${id}/characters/`)).toBe(true)
+      expect(stored(cast.images[0].key)).toBe(true)
+
+      // Shorts keep their short length and quick pace, but get the same narrator and notes.
+      const short = await projects.getProjectRow(await newProject('portrait'))
+      expect(short).toMatchObject({ targetMinutes: 1, pace: 3, audience: 'Kids and adults' })
+      expect(await projects.getCharacters(short.id)).toHaveLength(1)
+
+      // A series episode uses its series' setup instead.
+      const fromSeries = await series.createSeriesFromProject(id, 'Cappy specials', '')
+      const episode = await projects.createProject({
+        title: 'Episode',
+        topic: '',
+        format: 'landscape',
+        series: { id: fromSeries.id, template: fromSeries.template },
+      })
+      expect((await projects.getProjectRow(episode)).notes).toBe(project.notes)
+      expect(await projects.getCharacters(episode)).toHaveLength(1)
+    } finally {
+      await settingsModule.saveSettings(DEFAULT_SETTINGS)
+    }
+  })
+
+  it('fills the niche in for settings saved before it existed', async () => {
+    const { niche: _dropped, ...old } = DEFAULT_SETTINGS
+    await settingsModule.saveSettings(old as typeof DEFAULT_SETTINGS)
+    expect((await settingsModule.getSettings()).niche).toEqual(DEFAULT_SETTINGS.niche)
+    await settingsModule.saveSettings(DEFAULT_SETTINGS)
   })
 })

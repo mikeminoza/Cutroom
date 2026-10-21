@@ -112,4 +112,14 @@ export const settingsSchema = z.object({
   freeBlobAfterPosting: z.boolean(),
   voice: voiceSchema,
   notifications: z.object({ approval: z.boolean(), failed: z.boolean(), posted: z.boolean() }),
+  niche: z.object({
+    description: z.string().max(1000),
+    narration: z.string().max(1000),
+    audience: z.string().max(500),
+    tone: z.string().max(500),
+    artStyle: z.string().max(1000),
+    targetMinutes: z.number().min(0.25).max(60),
+    pace: z.number().min(2).max(30),
+    characterIds: z.array(z.string().max(100)).max(6),
+  }),
 })

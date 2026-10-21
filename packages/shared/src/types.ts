@@ -241,6 +241,40 @@ export interface AppSettings {
   voice: VoiceSettings
   /** Which events send a message to the channels set up in the environment. */
   notifications: NotificationPrefs
+  /** What the channel is about. New videos (outside a series) start from it. */
+  niche: ChannelNiche
+}
+
+/**
+ * The channel's niche: its subject, narrator, look and usual length, plus its main characters
+ * (from the Library). Every new video outside a series starts from it; each video can still
+ * change its own copy on the Brief step. Empty text fields change nothing.
+ */
+export interface ChannelNiche {
+  /** What the channel is about, e.g. "Funny 2D cartoon: Cappy the capybara's everyday adventures". */
+  description: string
+  /** How the narration sounds, e.g. "Cappy narrates in third person: 'Capybara wants to eat.'". */
+  narration: string
+  audience: string
+  tone: string
+  artStyle: string
+  /** Usual length of a regular video. Shorts stay at about a minute. */
+  targetMinutes: number
+  /** Seconds each picture stays on screen in a regular video. */
+  pace: number
+  /** Library characters added to every new video, the narrator first. */
+  characterIds: string[]
+}
+
+export const EMPTY_NICHE: ChannelNiche = {
+  description: '',
+  narration: '',
+  audience: '',
+  tone: '',
+  artStyle: '',
+  targetMinutes: 5,
+  pace: 6,
+  characterIds: [],
 }
 
 export interface NotificationPrefs {
@@ -271,6 +305,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   freeBlobAfterPosting: true,
   voice: DEFAULT_VOICE,
   notifications: { approval: true, failed: true, posted: true },
+  niche: EMPTY_NICHE,
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.

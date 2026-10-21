@@ -9,7 +9,7 @@ import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { keys, useIdeas, useSeriesList, useStatus } from '@/lib/hooks'
+import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
 import { Button, ButtonLink, Field, Input, Panel, ProgressBar, Segmented, Select } from './ui'
 
 type Tab = 'new' | 'used' | 'dismissed'
@@ -22,6 +22,8 @@ export function IdeasPage() {
   const [tab, setTab] = useState<Tab>('new')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [niche, setNiche] = useState('')
+  // Left empty, ideas follow the channel niche from Settings.
+  const channelNiche = useSettings().data?.niche.description.trim() ?? ''
   const [seriesId, setSeriesId] = useState('')
   const [format, setFormat] = useState<VideoFormat>('landscape')
   const [count, setCount] = useState('8')
@@ -172,12 +174,22 @@ export function IdeasPage() {
                 </Select>
               </Field>
             )}
-            <Field label={series ? 'Extra focus' : 'Channel niche'} aside={series ? 'Optional' : undefined}>
+            <Field
+              label={series ? 'Extra focus' : 'Channel niche'}
+              aside={series || channelNiche ? 'Optional' : undefined}
+              hint={
+                !series && channelNiche ? 'Leave empty to use your channel niche from Settings.' : undefined
+              }
+            >
               <Input
                 value={niche}
                 maxLength={500}
                 onChange={(e) => setNiche(e.target.value)}
-                placeholder={series ? 'Deep-sea creatures only' : 'Strange animal facts for curious adults'}
+                placeholder={
+                  series
+                    ? 'Deep-sea creatures only'
+                    : channelNiche || 'Strange animal facts for curious adults'
+                }
               />
             </Field>
             {!series && (
@@ -214,7 +226,7 @@ export function IdeasPage() {
             <Button
               variant="go"
               busy={suggesting}
-              disabled={!canSuggest || (!niche.trim() && !series)}
+              disabled={!canSuggest || (!niche.trim() && !series && !channelNiche)}
               onClick={suggest}
               icon={<Sparkles className="size-4" />}
             >

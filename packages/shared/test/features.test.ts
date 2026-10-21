@@ -537,6 +537,31 @@ describe('Gemini calls', () => {
     expect(pick).toEqual({ startIndex: 1, endIndex: 3, title: 'Hook', reason: 'Strong opener.' })
   })
 
+  it('writes the script with the channel’s narrator and characters', async () => {
+    const { writeScript } = await import('../src/ai')
+    generateContent.mockResolvedValueOnce({
+      text: JSON.stringify({
+        title: 'Capybara wants pizza',
+        script: 'Capybara wants to eat. Capybara is happy.',
+      }),
+    })
+    await writeScript({
+      topic: 'Cappy tries pizza',
+      audience: 'Kids and adults',
+      tone: 'Funny',
+      language: 'en',
+      minutes: 6,
+      format: 'landscape',
+      notes: 'Narration: Cappy narrates in third person.',
+      characters: [{ name: 'Cappy', description: 'Chubby 2D capybara' }],
+    })
+    const request = generateContent.mock.calls[0][0]
+    const prompt = String(request.contents)
+    expect(prompt).toContain('Narration: Cappy narrates in third person.')
+    expect(prompt).toContain('Recurring characters (use these exact names):\n- Cappy: Chubby 2D capybara')
+    expect(prompt).toContain('about 900 spoken words')
+  })
+
   it('shows Gemini the channel’s best titles when writing post details', async () => {
     const { writePostDetails } = await import('../src/ai')
     generateContent.mockResolvedValueOnce({

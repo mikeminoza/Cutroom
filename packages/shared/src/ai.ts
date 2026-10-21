@@ -153,6 +153,8 @@ export interface ScriptBrief {
   minutes: number
   format: VideoFormat
   notes?: string
+  /** Recurring characters; the notes may make one of them the narrator. */
+  characters?: { name: string; description: string }[]
 }
 
 export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
@@ -165,6 +167,10 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
     `Language: ${brief.language || 'English'}`,
     `Length: about ${words} spoken words (${brief.minutes} minutes at a natural pace).`,
     brief.notes && `Extra notes from the creator: ${brief.notes}`,
+    brief.characters?.length &&
+      `Recurring characters (use these exact names):\n${brief.characters
+        .map((c) => `- ${c.name}${c.description.trim() ? `: ${c.description.trim()}` : ''}`)
+        .join('\n')}`,
     'Open with a hook in the first sentence. Use short, spoken sentences. Plain text only: no headings, no stage directions, no emoji, no scene labels, no markdown. Separate paragraphs with a blank line.',
   ]
     .filter(Boolean)
@@ -173,7 +179,7 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
     prompt,
     { type: 'object', properties: { title: str, script: str }, required: ['title', 'script'] },
     z.object({ title: z.string(), script: z.string().min(20) }),
-    'You are a scriptwriter for faceless YouTube channels. You write narration that sounds natural when read aloud.',
+    'You are a scriptwriter for YouTube channels, faceless or narrated by a recurring character. You write narration that sounds natural when read aloud, in the narrator voice the creator asks for.',
   )
 }
 

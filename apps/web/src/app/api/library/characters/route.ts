@@ -14,18 +14,28 @@ export const GET = route(async (): Promise<LibraryCharacterDTO[]> => {
   return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }))
 })
 
-/** Saves a project's character to the library, with its own copies of the images. */
+/**
+ * Adds a character to the library: a project's character (with its own copies of the images),
+ * or a new one without images, which are uploaded to it afterwards.
+ */
 export const POST = route(async (request): Promise<LibraryCharacterDTO> => {
   // The browser sends the name and description as shown, which may be newer than the saved ones.
   const { characterId, ...shown } = await readJson(
     request,
     z.object({
-      characterId: z.string().max(100),
+      characterId: z.string().max(100).optional(),
       name: z.string().max(100).optional(),
       description: z.string().max(2000).optional(),
     }),
   )
   const database = await db()
+  if (!characterId) {
+    const [row] = await database
+      .insert(schema.libraryCharacters)
+      .values({ id: newId(), name: shown.name ?? '', description: shown.description ?? '', images: [] })
+      .returning()
+    return { ...row, createdAt: row.createdAt.toISOString() }
+  }
   const [character] = await database
     .select()
     .from(schema.characters)

@@ -28,7 +28,16 @@ export async function uploadFile(
   driver: 'local' | 'blob',
   onProgress?: (fraction: number) => void,
 ): Promise<Uploaded> {
-  const path = `projects/${projectId}/${folder}`
+  return uploadTo(file, `projects/${projectId}/${folder}`, driver, onProgress)
+}
+
+/** Uploads into a storage folder the server accepts (a project's, or a library character's). */
+export async function uploadTo(
+  file: File,
+  path: string,
+  driver: 'local' | 'blob',
+  onProgress?: (fraction: number) => void,
+): Promise<Uploaded> {
   if (driver === 'blob') {
     const blob = await blobUpload(`${path}/${cleanName(file.name)}`, file, {
       access: 'public',

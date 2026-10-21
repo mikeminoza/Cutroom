@@ -39,12 +39,18 @@ export const POST = route(async (request) => {
     getSettings(),
   ])
   const template = series?.template
+  // Without a series, ideas fit the channel's niche from Settings.
+  const channel = series ? null : settings.niche
   const generated = await generateIdeas({
-    niche: [body.niche, series ? `${series.name}${series.description ? `: ${series.description}` : ''}` : '']
+    niche: [
+      body.niche || channel?.description || '',
+      channel?.narration ? `Narration: ${channel.narration}` : '',
+      series ? `${series.name}${series.description ? `: ${series.description}` : ''}` : '',
+    ]
       .filter(Boolean)
       .join('. '),
-    audience: template?.audience ?? '',
-    tone: template?.tone ?? '',
+    audience: template?.audience ?? channel?.audience ?? '',
+    tone: template?.tone ?? channel?.tone ?? '',
     language: template?.language ?? settings.defaults.language,
     format: template?.format ?? body.format,
     count: body.count,

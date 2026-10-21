@@ -1,6 +1,7 @@
 import type { JobType } from '@cutroom/shared/protocol'
 import { copyStoredFile, deleteFile } from '@cutroom/shared/storage'
 import {
+  type ChannelNiche,
   EMPTY_POST,
   type Motion,
   normalizeTransition,
@@ -82,6 +83,8 @@ export async function createProject(input: {
   const settings = await getSettings()
   const id = newId()
   const t = input.series?.template ?? null
+  // A series brings its own setup; anything else starts from the channel's niche.
+  const niche = t ? null : settings.niche
   const format = t?.format ?? input.format
   const seriesChannel = t?.channelId ? await getChannel(t.channelId) : null
   await database.insert(schema.projects).values({
@@ -93,12 +96,12 @@ export async function createProject(input: {
     captionStyle: t?.captionStyle ?? settings.defaults.captionStyle,
     mode: t?.mode ?? settings.defaults.mode,
     language: t?.language ?? settings.defaults.language,
-    audience: t?.audience ?? '',
-    tone: t?.tone ?? '',
-    artStyle: t?.artStyle ?? '',
-    notes: [t?.notes, input.notes].filter((n) => n?.trim()).join('\n\n'),
-    targetMinutes: t?.targetMinutes ?? (format === 'portrait' ? 1 : 5),
-    pace: t?.pace ?? (format === 'portrait' ? 3 : 6),
+    audience: t?.audience ?? niche?.audience ?? '',
+    tone: t?.tone ?? niche?.tone ?? '',
+    artStyle: t?.artStyle ?? niche?.artStyle ?? '',
+    notes: [t?.notes, nicheNotes(niche), input.notes].filter((n) => n?.trim()).join('\n\n'),
+    targetMinutes: t?.targetMinutes ?? (format === 'portrait' ? 1 : (niche?.targetMinutes ?? 5)),
+    pace: t?.pace ?? (format === 'portrait' ? 3 : (niche?.pace ?? 6)),
     textOverlays: t?.textOverlays ?? true,
     voice: t?.voice ?? null,
     musicVolume: t?.musicVolume ?? 0.15,
@@ -116,7 +119,43 @@ export async function createProject(input: {
     },
   })
   if (t) await applyTemplateFiles(id, t)
+  else if (niche?.characterIds.length) await applyNicheCharacters(id, niche.characterIds)
   return id
+}
+
+/** The niche's description and narration style, as notes the script writer reads. */
+function nicheNotes(niche: ChannelNiche | null): string {
+  if (!niche) return ''
+  return [
+    niche.description.trim() && `Channel: ${niche.description.trim()}`,
+    niche.narration.trim() && `Narration: ${niche.narration.trim()}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** Gives a new project its own copies of the niche's main characters, in the niche's order. */
+async function applyNicheCharacters(projectId: string, characterIds: string[]) {
+  const database = await db()
+  const rows = await database
+    .select()
+    .from(schema.libraryCharacters)
+    .where(inArray(schema.libraryCharacters.id, characterIds))
+  const ordered = characterIds.flatMap((cid) => rows.filter((r) => r.id === cid))
+  for (const [position, character] of ordered.entries()) {
+    // A new video shouldn't fail over one missing image; it just goes without it.
+    const images = await copyImages(character.images, `projects/${projectId}/characters`, {
+      skipMissing: true,
+    })
+    await database.insert(schema.characters).values({
+      id: newId(),
+      projectId,
+      name: character.name,
+      description: character.description,
+      images,
+      position,
+    })
+  }
 }
 
 /** Gives a new project its own copies of the series' music and character images. */

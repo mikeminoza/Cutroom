@@ -1,17 +1,24 @@
 'use client'
 
 import { WEEKDAYS } from '@cutroom/shared/schedule'
-import { type AppSettings, GEMINI_VOICES, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
+import {
+  type AppSettings,
+  ART_STYLES,
+  type ChannelNiche,
+  GEMINI_VOICES,
+  YOUTUBE_CATEGORIES,
+} from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, X } from 'lucide-react'
+import { Plus, UserRound, X } from 'lucide-react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ChannelDTO } from '@/lib/dto'
 import { formatBytes } from '@/lib/format'
-import { keys, usePlaylists, useSettings, useStatus, useVoices } from '@/lib/hooks'
+import { keys, useLibrary, usePlaylists, useSettings, useStatus, useVoices } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
 import {
   Button,
@@ -557,6 +564,13 @@ function PreferencesForm() {
         </Panel>
       </div>
 
+      <div id="niche" className="scroll-mt-6">
+        <ChannelNichePanel
+          niche={settings.niche}
+          onChange={(patch) => update({ niche: { ...settings.niche, ...patch } })}
+        />
+      </div>
+
       <Panel
         title="Defaults for new videos"
         description="Every project starts with these. You can change them per video."
@@ -814,5 +828,203 @@ function PreferencesForm() {
         </div>
       </div>
     </>
+  )
+}
+
+const PACES = ['3', '4', '6', '8', '10']
+
+/** The channel's niche: subject, narrator, look, length and main characters for new videos. */
+function ChannelNichePanel({
+  niche,
+  onChange,
+}: {
+  niche: ChannelNiche
+  onChange: (patch: Partial<ChannelNiche>) => void
+}) {
+  const library = useLibrary()
+  const characters = library.data ?? []
+  const id = useId()
+  const toggle = (characterId: string) =>
+    onChange({
+      characterIds: niche.characterIds.includes(characterId)
+        ? niche.characterIds.filter((c) => c !== characterId)
+        : [...niche.characterIds, characterId].slice(0, 6),
+    })
+  const chosen = niche.characterIds.filter((c) => characters.some((x) => x.id === c))
+
+  return (
+    <Panel
+      title="Channel niche"
+      description="What your channel is about. Every new video starts from this (series episodes use their series instead), and you can still change anything per video on its Brief step."
+    >
+      <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+        <Field
+          label="Main characters"
+          className="sm:col-span-2"
+          hint={
+            chosen.length
+              ? 'Added to every new video with their reference images. The first one is the narrator.'
+              : 'Pick the character who narrates your videos. They are added to every new video with their images.'
+          }
+        >
+          {library.isLoading ? (
+            <div className="h-11 animate-pulse-soft rounded bg-line/50" />
+          ) : characters.length === 0 ? (
+            <p className="text-[13.5px] text-ink-2">
+              No characters yet.{' '}
+              <Link href="/library" className="font-medium text-ink underline underline-offset-4">
+                Create your character in the Library
+              </Link>
+              , then pick them here.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {characters.map((character) => {
+                const order = chosen.indexOf(character.id) + 1
+                return (
+                  <button
+                    key={character.id}
+                    type="button"
+                    aria-pressed={order > 0}
+                    onClick={() => toggle(character.id)}
+                    className={cn(
+                      'flex items-center gap-2.5 rounded-[var(--radius-control)] border py-1.5 pr-3 pl-1.5 text-[13.5px] transition-colors',
+                      order > 0
+                        ? 'border-ink bg-sunk font-medium text-ink'
+                        : 'border-line text-ink-2 hover:border-line-strong hover:text-ink',
+                    )}
+                  >
+                    {character.images[0] ? (
+                      // biome-ignore lint/performance/noImgElement: user uploads
+                      <img
+                        src={character.images[0].url}
+                        alt=""
+                        className="size-8 rounded-[5px] object-cover"
+                      />
+                    ) : (
+                      <span className="grid size-8 place-items-center rounded-[5px] bg-sunk">
+                        <UserRound className="size-4 text-ink-3" aria-hidden />
+                      </span>
+                    )}
+                    {character.name || 'Unnamed character'}
+                    {order > 0 && (
+                      <span className="tc grid size-5 place-items-center rounded-full bg-ink text-[11px] font-semibold text-paper">
+                        {order}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+              <ButtonLink href="/library" variant="ghost" size="sm" icon={<Plus className="size-3.5" />}>
+                New character
+              </ButtonLink>
+            </div>
+          )}
+        </Field>
+        <Field
+          label="What the channel is about"
+          htmlFor={`${id}-about`}
+          className="sm:col-span-2"
+          aside={`${niche.description.length} / 1000`}
+        >
+          <Textarea
+            id={`${id}-about`}
+            value={niche.description}
+            maxLength={1000}
+            onChange={(e) => onChange({ description: e.target.value })}
+            placeholder="Funny 2D cartoon videos about Cappy the capybara's everyday life: food, naps, friends and small disasters."
+            className="min-h-20"
+          />
+        </Field>
+        <Field
+          label="How the narration sounds"
+          htmlFor={`${id}-narration`}
+          className="sm:col-span-2"
+          aside={`${niche.narration.length} / 1000`}
+          hint="The script writer follows this for every video."
+        >
+          <Textarea
+            id={`${id}-narration`}
+            value={niche.narration}
+            maxLength={1000}
+            onChange={(e) => onChange({ narration: e.target.value })}
+            placeholder="Cappy narrates about himself in the third person, in short, silly sentences: “Capybara wants to eat.” “Capybara is happy.” Jokes kids get, with dry humor for the adults."
+            className="min-h-24"
+          />
+        </Field>
+        <Field label="Audience" htmlFor={`${id}-audience`}>
+          <Input
+            id={`${id}-audience`}
+            value={niche.audience}
+            maxLength={500}
+            onChange={(e) => onChange({ audience: e.target.value })}
+            placeholder="Kids and adults: families watching together"
+          />
+        </Field>
+        <Field label="Tone" htmlFor={`${id}-tone`}>
+          <Input
+            id={`${id}-tone`}
+            value={niche.tone}
+            maxLength={500}
+            onChange={(e) => onChange({ tone: e.target.value })}
+            placeholder="Funny, warm, silly"
+          />
+        </Field>
+        <Field label="Art style" htmlFor={`${id}-style`} className="sm:col-span-2">
+          <Input
+            id={`${id}-style`}
+            value={niche.artStyle}
+            maxLength={1000}
+            onChange={(e) => onChange({ artStyle: e.target.value })}
+            placeholder="2D cartoon, flat colors, thick clean outlines, soft pastel backgrounds"
+          />
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {ART_STYLES.map((style) => (
+              <button
+                key={style}
+                type="button"
+                onClick={() => onChange({ artStyle: style })}
+                className={cn(
+                  'rounded-full border px-2.5 py-1 text-[12.5px] transition-colors',
+                  niche.artStyle === style
+                    ? 'border-ink bg-ink text-paper'
+                    : 'border-line text-ink-2 hover:border-line-strong hover:text-ink',
+                )}
+              >
+                {style}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field
+          label="Video length"
+          aside={`${niche.targetMinutes} min · about ${Math.round(niche.targetMinutes * 150).toLocaleString()} words`}
+          hint="For regular videos; Shorts stay at about a minute. Your voice-over sets the real length."
+        >
+          <input
+            type="range"
+            min={1}
+            max={30}
+            step={1}
+            value={niche.targetMinutes}
+            onChange={(e) => onChange({ targetMinutes: Number(e.target.value) })}
+            className="w-full accent-[var(--color-ink)]"
+            aria-label="Video length in minutes"
+          />
+        </Field>
+        <Field
+          label="New image every"
+          hint={`About ${Math.max(1, Math.round((niche.targetMinutes * 60) / niche.pace))} images for a ${niche.targetMinutes}-minute video.`}
+        >
+          <Segmented
+            ariaLabel="Seconds per image"
+            value={PACES.includes(String(niche.pace)) ? String(niche.pace) : '6'}
+            onChange={(pace) => onChange({ pace: Number(pace) })}
+            options={PACES.map((v) => ({ value: v, label: `${v} s` }))}
+            className="w-full"
+          />
+        </Field>
+      </div>
+    </Panel>
   )
 }
