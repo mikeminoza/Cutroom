@@ -10,7 +10,7 @@ import { cn } from '@/lib/cn'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
-import { Button, ButtonLink, Field, Input, Panel, ProgressBar, Segmented, Select } from './ui'
+import { Button, ButtonLink, Field, Input, Panel, ProgressBar, Segmented, Select, Spinner } from './ui'
 
 type Tab = 'new' | 'used' | 'dismissed'
 
@@ -290,7 +290,25 @@ export function IdeasPage() {
 
           {error && <p className="text-[14px] text-bad">Could not load ideas: {errorText(error)}</p>}
           {isLoading && <div className="h-48 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />}
-          {ideas && list.length === 0 && (
+          {tab === 'new' && suggesting && (
+            <div
+              aria-live="polite"
+              className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel"
+            >
+              <p className="flex items-center gap-2 border-b border-line px-4 py-3 text-[13.5px] text-ink-2">
+                <Spinner className="text-ink-3" />
+                Gemini is thinking up {count} ideas. This can take up to half a minute.
+              </p>
+              {Array.from({ length: Math.min(Number(count), 4) }).map((_, i) => (
+                <div key={i} className="flex flex-col gap-2 border-b border-line px-4 py-4 last:border-b-0">
+                  <div className="h-4 w-2/3 animate-pulse-soft rounded bg-line" />
+                  <div className="h-3 w-full animate-pulse-soft rounded bg-line/60" />
+                  <div className="h-3 w-4/5 animate-pulse-soft rounded bg-line/60" />
+                </div>
+              ))}
+            </div>
+          )}
+          {ideas && list.length === 0 && !(tab === 'new' && suggesting) && (
             <div className="flex flex-col items-center gap-2 rounded-[var(--radius-panel)] border border-line bg-panel px-6 py-12 text-center">
               <Lightbulb className="size-6 text-ink-3" aria-hidden />
               <p className="max-w-[46ch] text-[14px] text-ink-2">

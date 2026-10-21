@@ -537,6 +537,67 @@ describe('Gemini calls', () => {
     expect(pick).toEqual({ startIndex: 1, endIndex: 3, title: 'Hook', reason: 'Strong opener.' })
   })
 
+  const askForIdeas = async () => {
+    const { generateIdeas } = await import('../src/ai')
+    return generateIdeas({
+      niche: 'Cappy the capybara',
+      audience: '',
+      tone: '',
+      language: 'en',
+      format: 'landscape',
+      count: 1,
+      direction: '',
+      avoid: [],
+      topTitles: [],
+    })
+  }
+  const oneIdea = { text: JSON.stringify({ ideas: [{ title: 'Capybara wants pizza', angle: 'A' }] }) }
+
+  it('asks for little thinking on structured answers, in the form each model takes', async () => {
+    generateContent.mockResolvedValueOnce(oneIdea)
+    await askForIdeas()
+    expect(generateContent.mock.calls[0][0].config.thinkingConfig).toEqual({ thinkingLevel: 'LOW' })
+
+    const before = process.env.GEMINI_MODEL
+    process.env.GEMINI_MODEL = 'gemini-2.5-flash'
+    try {
+      generateContent.mockResolvedValueOnce(oneIdea)
+      await askForIdeas()
+      expect(generateContent.mock.calls[1][0].config.thinkingConfig).toEqual({ thinkingBudget: 0 })
+    } finally {
+      if (before === undefined) delete process.env.GEMINI_MODEL
+      else process.env.GEMINI_MODEL = before
+    }
+  })
+
+  it('on Vercel, stops in time with a clear message instead of hitting the 60-second cut-off', async () => {
+    process.env.VERCEL = '1'
+    const start = Date.now()
+    const now = vi.spyOn(Date, 'now')
+    try {
+      // Gemini is overloaded and only a second of the budget is left: no time for another try.
+      now.mockReturnValueOnce(start).mockReturnValue(start + 49_000)
+      generateContent.mockRejectedValue(Object.assign(new Error('{"error":{"code":503}}'), { status: 503 }))
+      await expect(askForIdeas()).rejects.toMatchObject({ code: 'busy' })
+      expect(generateContent).toHaveBeenCalledTimes(1)
+
+      // The answer takes longer than the budget: the request is aborted at the deadline.
+      generateContent.mockReset()
+      now.mockReset()
+      now.mockReturnValueOnce(start).mockReturnValue(start + 49_500)
+      generateContent.mockImplementation(
+        ({ config }: { config: { abortSignal: AbortSignal } }) =>
+          new Promise((_, reject) =>
+            config.abortSignal.addEventListener('abort', () => reject(new Error('aborted'))),
+          ),
+      )
+      await expect(askForIdeas()).rejects.toMatchObject({ code: 'timeout' })
+    } finally {
+      now.mockRestore()
+      delete process.env.VERCEL
+    }
+  })
+
   it('writes the script with the channel’s narrator and characters', async () => {
     const { writeScript } = await import('../src/ai')
     generateContent.mockResolvedValueOnce({

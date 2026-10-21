@@ -30,7 +30,11 @@ export function toErrorResponse(error: unknown): NextResponse {
           ? 400
           : error.code === 'billing'
             ? 402
-            : 502
+            : error.code === 'busy'
+              ? 503
+              : error.code === 'timeout'
+                ? 504
+                : 502
     return NextResponse.json({ error: error.message, code: error.code }, { status })
   }
   if (error instanceof z.ZodError) {

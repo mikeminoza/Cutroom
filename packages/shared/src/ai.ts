@@ -1,6 +1,6 @@
 // Gemini calls (free tier text model). Used by the web app for quick calls
 // and by the worker for the voice-over transcription.
-import { createPartFromUri, GoogleGenAI } from '@google/genai'
+import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
 import { type Chapter, chaptersToText, countWords, normalizeChapters } from './timing'
 import {
@@ -16,7 +16,7 @@ import {
 export class AiError extends Error {
   constructor(
     message: string,
-    readonly code: 'missing_key' | 'rate_limited' | 'bad_output' | 'failed' | 'billing',
+    readonly code: 'missing_key' | 'rate_limited' | 'bad_output' | 'failed' | 'billing' | 'busy' | 'timeout',
   ) {
     super(message)
   }
@@ -64,21 +64,64 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 /** Rate limited, or a temporary server problem: worth asking again. */
 const RETRY_STATUSES = [429, 500, 502, 503, 504]
 
+const TOO_SLOW = 'Gemini is taking too long to answer right now. Try again in a minute.'
+
+/**
+ * When an AI request must be finished, retries included. Vercel cuts a request off at 60 seconds
+ * (the routes' maxDuration), so stop at 50 and answer with a clear message instead of a bare 504.
+ * The worker has no such limit.
+ */
+function requestDeadline(): number | undefined {
+  return process.env.VERCEL ? Date.now() + 50_000 : undefined
+}
+
+/** Aborts at the deadline, or when the caller aborts. */
+function attemptSignal(deadline?: number, signal?: AbortSignal): AbortSignal | undefined {
+  const signals = [signal, deadline ? AbortSignal.timeout(Math.max(1000, deadline - Date.now())) : undefined]
+  const live = signals.filter((s): s is AbortSignal => s !== undefined)
+  return live.length > 1 ? AbortSignal.any(live) : live[0]
+}
+
+/**
+ * As little thinking as the model allows. These are structured tasks, and thinking is most of the
+ * wait: a Flash model at its default can take longer than a web request may run.
+ */
+function quickThinking(model: string): ThinkingConfig | undefined {
+  const major = Number(/^gemini-(\d+)/.exec(model)?.[1] ?? 0)
+  if (major >= 3) return { thinkingLevel: 'LOW' as ThinkingLevel }
+  if (/^gemini-2\.5-(flash|flash-lite)\b/.test(model)) return { thinkingBudget: 0 }
+  if (/^gemini-2\.5-pro\b/.test(model)) return { thinkingBudget: 128 }
+  return undefined
+}
+
 /** The HTTP status of an API error from the SDK, or null for other errors (network, parsing). */
 function httpStatus(error: unknown): number | null {
   const status = (error as { status?: unknown } | null)?.status
   return typeof status === 'number' ? status : null
 }
 
-async function withRetry<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+/**
+ * Runs a Gemini request, asking again after temporary failures. `run` gets the signal to pass
+ * to the SDK: it aborts when the caller does, or at the deadline.
+ */
+async function withRetry<T>(
+  run: (signal?: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  deadline?: number,
+): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt++) {
     signal?.throwIfAborted()
+    if (deadline && Date.now() >= deadline) throw new AiError(TOO_SLOW, 'timeout')
+    const attemptAbort = attemptSignal(deadline, signal)
     try {
-      return await run()
+      return await run(attemptAbort)
     } catch (error) {
       // Stopped by the caller: not a failure to retry or explain.
       if (signal?.aborted) throw error
+      // The deadline ran out in the middle of the request.
+      if (deadline && (attemptAbort?.aborted || Date.now() >= deadline))
+        throw new AiError(TOO_SLOW, 'timeout')
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
       // A quota of 0 is not a rate limit: the model is not on the free tier. Waiting won't help.
@@ -96,12 +139,19 @@ async function withRetry<T>(run: () => Promise<T>, signal?: AbortSignal): Promis
           ? RETRY_STATUSES.includes(status)
           : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
       if (!retryable || attempt === 3) break
-      await sleep(1500 * 2 ** attempt + Math.random() * 500, signal)
+      const wait = 1500 * 2 ** attempt + Math.random() * 500
+      // No time left for another try (it needs a few seconds itself).
+      if (deadline && Date.now() + wait + 5000 > deadline) break
+      await sleep(wait, signal)
     }
   }
   const message = lastError instanceof Error ? lastError.message : String(lastError)
-  if (httpStatus(lastError) === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
+  const status = httpStatus(lastError)
+  if (status === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
     throw new AiError('Gemini free-tier limit reached. Wait a minute and try again.', 'rate_limited')
+  }
+  if (status !== null && status >= 500) {
+    throw new AiError('Gemini is busy right now. Try again in a minute.', 'busy')
   }
   if (lastError instanceof AiError) throw lastError
   throw new AiError(`Gemini request failed: ${message.slice(0, 300)}`, 'failed')
@@ -112,32 +162,41 @@ async function generateJson<T>(
   jsonSchema: Record<string, unknown>,
   parser: z.ZodType<T>,
   system: string,
+  /** 'default' leaves thinking to the model, for tasks where accuracy beats speed. */
+  options: { thinking?: 'quick' | 'default' } = {},
 ): Promise<T> {
   const ai = client()
-  return withRetry(async () => {
-    const response = await ai.models.generateContent({
-      model: geminiModel(),
-      contents,
-      config: {
-        systemInstruction: system,
-        responseMimeType: 'application/json',
-        responseJsonSchema: jsonSchema,
-        temperature: 0.7,
-      },
-    })
-    const text = response.text ?? ''
-    let data: unknown
-    try {
-      data = JSON.parse(text)
-    } catch {
-      throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
-    }
-    const parsed = parser.safeParse(data)
-    if (!parsed.success) {
-      throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
-    }
-    return parsed.data
-  })
+  const model = geminiModel()
+  return withRetry(
+    async (signal) => {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: system,
+          responseMimeType: 'application/json',
+          responseJsonSchema: jsonSchema,
+          temperature: 0.7,
+          thinkingConfig: options.thinking === 'default' ? undefined : quickThinking(model),
+          abortSignal: signal,
+        },
+      })
+      const text = response.text ?? ''
+      let data: unknown
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
+      }
+      const parsed = parser.safeParse(data)
+      if (!parsed.success) {
+        throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
+      }
+      return parsed.data
+    },
+    undefined,
+    requestDeadline(),
+  )
 }
 
 const str = { type: 'string' }
@@ -330,6 +389,8 @@ Timestamps must be accurate to the spoken words, increasing, and never overlap.`
     },
     z.object({ segments: z.array(z.object({ start: z.number(), end: z.number(), text: z.string() })) }),
     'You are a precise transcription engine that returns timestamps in seconds.',
+    // Timestamps need care, and this runs on the worker, where there is time for it.
+    { thinking: 'default' },
   )
   try {
     await ai.files.delete({ name: file.name! })
@@ -531,14 +592,14 @@ export async function synthesizeSpeech(
   // An empty answer happens now and then; asking again usually works.
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await withRetry(
-      () =>
+      (signal) =>
         ai.models.generateContent({
           model,
           contents: [{ role: 'user', parts: [part] }],
           config: {
             responseModalities: ['AUDIO'],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: options.voice } } },
-            abortSignal: options.signal,
+            abortSignal: signal,
           },
         }),
       options.signal,
@@ -581,15 +642,19 @@ export async function generateImage(input: {
       inlineData: { mimeType: r.mimeType, data: r.data.toString('base64') },
     })),
   ]
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: geminiImageModel(),
-      contents: [{ role: 'user', parts }],
-      config: {
-        responseModalities: ['TEXT', 'IMAGE'],
-        imageConfig: { aspectRatio: input.aspectRatio, ...(imageSize ? { imageSize } : {}) },
-      },
-    }),
+  const response = await withRetry(
+    (signal) =>
+      ai.models.generateContent({
+        model: geminiImageModel(),
+        contents: [{ role: 'user', parts }],
+        config: {
+          responseModalities: ['TEXT', 'IMAGE'],
+          imageConfig: { aspectRatio: input.aspectRatio, ...(imageSize ? { imageSize } : {}) },
+          abortSignal: signal,
+        },
+      }),
+    undefined,
+    requestDeadline(),
   )
   const candidate = response.candidates?.[0]
   const image = candidate?.content?.parts?.find(

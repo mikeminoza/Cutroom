@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { badRequest, readJson, route } from '@/server/http'
 import { getCharacters, getProjectFull, getProjectRow, updateProject } from '@/server/projects'
 
+// Gemini answers within 50 s or the request ends with a clear message (see requestDeadline).
+export const maxDuration = 60
+
 type Ctx = { params: Promise<{ id: string }> }
 
 export const POST = route(async (request, { params }: Ctx) => {
