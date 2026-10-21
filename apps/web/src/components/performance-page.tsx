@@ -51,8 +51,11 @@ export function PerformancePage() {
     }
   }
 
+  // A channel picked earlier and since disconnected falls back to all of them.
+  const selected = data?.channels.some((c) => c.id === channelId) ? channelId : 'all'
+
   const videos = useMemo(() => {
-    const list = (data?.videos ?? []).filter((v) => channelId === 'all' || v.channelId === channelId)
+    const list = (data?.videos ?? []).filter((v) => selected === 'all' || v.channelId === selected)
     const sorted = [...list]
     if (sort === 'views') sorted.sort((a, b) => (b.stats?.views ?? -1) - (a.stats?.views ?? -1))
     if (sort === 'newest')
@@ -64,7 +67,7 @@ export function PerformancePage() {
     if (sort === 'retention')
       sorted.sort((a, b) => (b.stats?.averageViewPercent ?? -1) - (a.stats?.averageViewPercent ?? -1))
     return sorted
-  }, [data, sort, channelId])
+  }, [data, sort, selected])
 
   const measured = videos.filter((v) => v.stats)
   const totals = {
@@ -88,7 +91,9 @@ export function PerformancePage() {
     .sort()
     .pop()
   const channels = data?.channels ?? []
-  const top = [...(data?.videos ?? [])]
+  const shownChannel = channels.find((c) => c.id === selected) ?? null
+  // Follows the channel picker, like the totals and the table.
+  const top = [...videos]
     .filter((v) => (v.stats?.views ?? 0) > 0)
     .sort((a, b) => (b.stats?.views ?? 0) - (a.stats?.views ?? 0))
     .slice(0, 5)
@@ -104,9 +109,26 @@ export function PerformancePage() {
             your channel.
           </p>
         </div>
-        <Button variant="plain" busy={refreshing} onClick={refresh} icon={<RefreshCw className="size-4" />}>
-          Refresh now
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {channels.length > 1 && (
+            <Select
+              aria-label="Channel"
+              value={selected}
+              onChange={(e) => setChannelId(e.target.value)}
+              className="w-52"
+            >
+              <option value="all">All channels</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}
+                </option>
+              ))}
+            </Select>
+          )}
+          <Button variant="plain" busy={refreshing} onClick={refresh} icon={<RefreshCw className="size-4" />}>
+            Refresh now
+          </Button>
+        </div>
       </header>
 
       {error && <p className="text-[14px] text-bad">Could not load stats: {errorText(error)}</p>}
@@ -140,7 +162,13 @@ export function PerformancePage() {
             <StatTile
               label="Watch time"
               value={totals.hasMinutes ? watchTime(totals.minutes) : '—'}
-              detail={totals.hasMinutes ? 'All posted videos' : 'Needs the analytics permission'}
+              detail={
+                totals.hasMinutes
+                  ? shownChannel
+                    ? `On ${shownChannel.title}`
+                    : 'All posted videos'
+                  : 'Needs the analytics permission'
+              }
             />
             <StatTile
               label="Average viewed"
@@ -157,33 +185,16 @@ export function PerformancePage() {
           <Panel
             title="Videos"
             actions={
-              <>
-                {channels.length > 1 && (
-                  <Select
-                    aria-label="Channel"
-                    value={channelId}
-                    onChange={(e) => setChannelId(e.target.value)}
-                    className="w-48"
-                  >
-                    <option value="all">All channels</option>
-                    {channels.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.title}
-                      </option>
-                    ))}
-                  </Select>
-                )}
-                <Segmented<Sort>
-                  ariaLabel="Sort videos"
-                  value={sort}
-                  onChange={setSort}
-                  options={[
-                    { value: 'views', label: 'Most viewed' },
-                    { value: 'newest', label: 'Newest' },
-                    { value: 'retention', label: 'Best kept' },
-                  ]}
-                />
-              </>
+              <Segmented<Sort>
+                ariaLabel="Sort videos"
+                value={sort}
+                onChange={setSort}
+                options={[
+                  { value: 'views', label: 'Most viewed' },
+                  { value: 'newest', label: 'Newest' },
+                  { value: 'retention', label: 'Best kept' },
+                ]}
+              />
             }
           >
             <div className="overflow-x-auto">
@@ -228,7 +239,7 @@ export function PerformancePage() {
           {top.length > 0 && (
             <Panel
               title="What works"
-              description="Your most-viewed titles. Gemini studies them when it writes new titles and suggests ideas."
+              description={`${shownChannel ? `The most-viewed titles on ${shownChannel.title}.` : 'Your most-viewed titles.'} Gemini studies them when it writes new titles and suggests ideas.`}
             >
               <ol className="divide-y divide-line">
                 {top.map((video, i) => (
