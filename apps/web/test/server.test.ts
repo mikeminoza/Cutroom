@@ -51,6 +51,7 @@ const sceneRoute = await import('../src/app/api/scenes/[id]/route')
 const characterRoute = await import('../src/app/api/characters/[id]/route')
 const rescheduleRoute = await import('../src/app/api/worker/jobs/[id]/reschedule/route')
 const ownIdeaRoute = await import('../src/app/api/ideas/own/route')
+const workerShortsRoute = await import('../src/app/api/worker/jobs/[id]/shorts/route')
 const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -942,5 +943,63 @@ describe('ideas of your own', () => {
     expect(row.status).toBe('new')
     expect((await post({ title: '   ' })).status).toBe(400)
     expect((await post({ title: 'X', seriesId: 'no-such-series' })).status).toBe(404)
+  })
+})
+
+describe('Shorts made after posting', () => {
+  it('lets the worker running the publish job make a 9:16 Short draft from its video', async () => {
+    process.env.WORKER_SECRET = 'test-secret'
+    try {
+      const id = await newProject('landscape')
+      const image = await putFile(`projects/${id}/scenes/cappy.png`, Buffer.from('i'), 'image/png')
+      await projects.replaceScenes(
+        id,
+        [0, 30, 60, 90].map((start) => ({ start, end: start + 30, narration: `Cappy at ${start}.` })),
+      )
+      const database = await db()
+      await database.update(schema.scenes).set({ imageUrl: image.url }).where(eq(schema.scenes.projectId, id))
+      await projects.updateProject(id, { voiceoverDuration: 120 })
+      const job = await jobs.startJob(id, 'publish')
+      await jobs.claimJob(job.id, 'worker-a')
+
+      const newId = crypto.randomUUID()
+      const voice = await putFile(
+        `projects/${newId}/voiceover/short-voiceover.mp3`,
+        Buffer.from('v'),
+        'audio/mpeg',
+      )
+      const ask = (headers: Record<string, string>, jobId = job.id) =>
+        workerShortsRoute.POST(
+          new Request('http://localhost/api', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...headers },
+            body: JSON.stringify({
+              newId,
+              from: 1,
+              to: 2,
+              title: 'Cappy in a minute',
+              voiceover: { url: voice.url, name: 'short-voiceover.mp3', duration: 60 },
+            }),
+          }),
+          { params: Promise.resolve({ id: jobId }) },
+        )
+      const auth = { authorization: 'Bearer test-secret', 'x-cutroom-runner': 'worker-a' }
+      expect((await ask({})).status).toBe(401)
+      expect((await ask(auth, 'no-such-job')).status).toBe(404)
+
+      const response = await ask(auth)
+      expect(response.status).toBe(200)
+      const { id: shortId } = await response.json()
+      expect(shortId).toBe(newId)
+      const short = await projects.getProjectRow(shortId)
+      expect(short).toMatchObject({ format: 'portrait', title: 'Cappy in a minute', voiceoverUrl: voice.url })
+      const shortScenes = await projects.getScenes(shortId)
+      expect(shortScenes).toHaveLength(2)
+      expect(
+        shortScenes.every((s) => s.fit === 'contain' && s.imageUrl?.includes(`projects/${shortId}/`)),
+      ).toBe(true)
+    } finally {
+      delete process.env.WORKER_SECRET
+    }
   })
 })

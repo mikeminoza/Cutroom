@@ -131,4 +131,8 @@ export const settingsSchema = z.object({
     pace: z.number().min(2).max(30),
     characterIds: z.array(z.string().max(100)).max(6),
   }),
+  shorts: z.object({
+    count: z.number().int().min(0).max(3),
+    maxSeconds: z.number().int().min(15).max(180),
+  }),
 })

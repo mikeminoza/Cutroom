@@ -19,7 +19,15 @@ export type JobType = 'retime' | 'publish' | 'voice'
 export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed'
 export type StepStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'waiting'
 
-export type PublishStepKey = 'render' | 'drive' | 'details' | 'approve' | 'youtube' | 'finish' | 'archive'
+export type PublishStepKey =
+  | 'render'
+  | 'drive'
+  | 'details'
+  | 'approve'
+  | 'youtube'
+  | 'finish'
+  | 'shorts'
+  | 'archive'
 export type RetimeStepKey = 'transcribe' | 'align'
 export type VoiceStepKey = 'synthesize' | 'align'
 export type StepKey = PublishStepKey | RetimeStepKey | VoiceStepKey
@@ -41,6 +49,7 @@ export const PUBLISH_STEPS: { key: PublishStepKey; label: string }[] = [
   { key: 'approve', label: 'Wait for your approval' },
   { key: 'youtube', label: 'Upload to YouTube' },
   { key: 'finish', label: 'Add thumbnail, captions, playlist' },
+  { key: 'shorts', label: 'Make Shorts from it' },
   { key: 'archive', label: 'Archive project files' },
 ]
 
@@ -84,6 +93,10 @@ export interface JobResult {
   /** AI voice-over timing kept so a resumed job can align without recording again. */
   voiceWords?: Word[]
   voiceSpans?: SpokenSpan[]
+  /** The moments picked for Shorts, kept so a retry makes the same ones. */
+  shortPicks?: { startIndex: number; endIndex: number; title: string }[]
+  /** The Short drafts made from this video so far. */
+  shortIds?: string[]
   /** AI voice-over parts recorded so far, kept so a retry carries on instead of starting over. */
   voiceParts?: { text: string; url: string; key: string; duration: number; words: Word[] }[]
 }

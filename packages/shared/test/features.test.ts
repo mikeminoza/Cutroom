@@ -618,6 +618,31 @@ describe('Gemini calls', () => {
     }
   })
 
+  it('picks several Short moments that fit and do not overlap', async () => {
+    const { pickShortMoments } = await import('../src/ai')
+    generateContent.mockResolvedValueOnce({
+      text: JSON.stringify({
+        shorts: [
+          { startIndex: 0, endIndex: 2, title: 'Capybara wants pizza' },
+          { startIndex: 1, endIndex: 3, title: 'Overlaps the first' },
+          { startIndex: 4, endIndex: 9, title: 'Too long, trimmed' },
+          { startIndex: 7, endIndex: 7, title: 'One too many' },
+        ],
+      }),
+    })
+    // Ten 20-second scenes.
+    const scenes = Array.from({ length: 10 }, (_, i) => ({
+      start: i * 20,
+      end: i * 20 + 20,
+      narration: `Scene ${i}`,
+    }))
+    const picks = await pickShortMoments({ title: 'Cappy', topic: 'Food', scenes, maxSeconds: 60, count: 2 })
+    expect(picks).toEqual([
+      { startIndex: 0, endIndex: 2, title: 'Capybara wants pizza' },
+      { startIndex: 4, endIndex: 6, title: 'Too long, trimmed' },
+    ])
+  })
+
   it('writes the script with the channel’s narrator and characters', async () => {
     const { writeScript } = await import('../src/ai')
     generateContent.mockResolvedValueOnce({

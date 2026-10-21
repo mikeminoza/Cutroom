@@ -325,6 +325,7 @@ const PUBLISH_PHASE: Record<PublishStepKey, 'rendering' | 'uploading'> = {
   approve: 'rendering',
   youtube: 'uploading',
   finish: 'uploading',
+  shorts: 'uploading',
   archive: 'uploading',
 }
 
@@ -518,6 +519,12 @@ async function applyResultToProject(projectId: string, patch: JobResult) {
   }
 }
 
+function shortsNote(made: number): string {
+  return made
+    ? `\n${made === 1 ? 'A Short draft is' : `${made} Short drafts are`} ready on the Projects page.`
+    : ''
+}
+
 async function finishPublish(projectId: string, jobId: string) {
   const project = await getProjectRow(projectId)
   const job = await getJob(jobId)
@@ -552,9 +559,9 @@ async function finishPublish(projectId: string, jobId: string) {
           : `Rendered: ${title}`,
     body:
       status === 'scheduled' && project.scheduledAt
-        ? `Goes live ${project.scheduledAt.toUTCString()}.`
+        ? `Goes live ${project.scheduledAt.toUTCString()}.${shortsNote(job.result.shortIds?.length ?? 0)}`
         : project.youtubeVideoId
-          ? `https://youtu.be/${project.youtubeVideoId}`
+          ? `https://youtu.be/${project.youtubeVideoId}${shortsNote(job.result.shortIds?.length ?? 0)}`
           : 'The video is rendered. YouTube is not connected, so it was not posted.',
     url: projectLink(projectId, 'publish'),
   })

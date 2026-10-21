@@ -15,7 +15,7 @@ Around the projects:
 - **Ideas**: Gemini suggests video ideas for your niche or series, avoiding what you've already made. Pick the good ones and turn them into drafts, with their scripts written, in one go.
 - **Channel niche** (Settings): describe your channel, how its narrator talks, its audience, tone, art style and usual length, and pick its main character from the Library. Every new video starts from it, with the character and their reference images already added; each video can still change its own copy.
 - **Series** and **Library**: save a video's setup (brief, look, voice, music, characters, post settings) as a series and start every new episode from it. Saved characters can be added to any project.
-- **Shorts from long videos**: pick a run of scenes (or let Gemini pick the best part) and get a 9:16 project with those pictures and that stretch of the voice-over and captions.
+- **Shorts from long videos**: pick a run of scenes (or let Gemini pick the best part) and get a 9:16 project with those pictures and that stretch of the voice-over and captions. Automatically too: right after a long video posts, Cutroom makes 1–3 Short drafts from its best moments (Settings → Shorts), ready for you to check and publish.
 - **Performance**: views, likes, watch time and retention for every posted video, refreshed daily.
 - **Several YouTube channels**: connect more than one, pick the channel per video, and each channel gets its own posting slots.
 

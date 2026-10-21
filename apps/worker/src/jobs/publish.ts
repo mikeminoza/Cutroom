@@ -34,6 +34,7 @@ import { runFfmpeg } from '../render/ffmpeg'
 import { renderVideo } from '../render/render'
 import { errorMessage, extensionOf, imageMime, probeSeconds } from '../util'
 import type { JobContext } from './context'
+import { makeShorts } from './shorts'
 
 const ROOT_FOLDER = 'Cutroom'
 
@@ -392,6 +393,10 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       await ctx.step('finish', 'done', done.length ? `Added ${done.join(', ')}` : 'Nothing extra to add')
     }
   }
+
+  // ---------------------------------------------------------------- shorts
+  // Before archiving: a Short copies this video's pictures, which archiving may delete.
+  if (!ctx.finished('shorts')) await makeShorts(payload, ctx, scenes, post.title || project.title)
 
   // ---------------------------------------------------------------- archive
   if (!ctx.finished('archive')) {

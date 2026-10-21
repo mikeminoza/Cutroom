@@ -628,6 +628,52 @@ function PreferencesForm() {
         />
       </div>
 
+      <div id="shorts" className="scroll-mt-6">
+        <Panel
+          title="Shorts"
+          description="Right after a long video posts, Cutroom cuts Short drafts from its best moments: Gemini picks them, the worker cuts your voice-over to match. You check each draft and publish it like any video."
+        >
+          <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+            <Field
+              label="Shorts from each video"
+              hint="Only for videos posted to YouTube, at least 90 seconds long."
+            >
+              <Segmented
+                ariaLabel="Shorts from each video"
+                value={String(settings.shorts.count)}
+                onChange={(count) => update({ shorts: { ...settings.shorts, count: Number(count) } })}
+                options={[
+                  { value: '0', label: 'Off' },
+                  { value: '1', label: '1' },
+                  { value: '2', label: '2' },
+                  { value: '3', label: '3' },
+                ]}
+                className="w-full"
+              />
+            </Field>
+            <Field
+              label="Longest Short"
+              hint="Short ones hold attention best; YouTube allows up to 3 minutes."
+            >
+              <Segmented
+                ariaLabel="Longest Short"
+                value={String(settings.shorts.maxSeconds)}
+                onChange={(maxSeconds) =>
+                  update({ shorts: { ...settings.shorts, maxSeconds: Number(maxSeconds) } })
+                }
+                options={[
+                  { value: '30', label: '30 s' },
+                  { value: '60', label: '60 s' },
+                  { value: '90', label: '90 s' },
+                  { value: '180', label: '3 min' },
+                ]}
+                className="w-full"
+              />
+            </Field>
+          </div>
+        </Panel>
+      </div>
+
       <Panel
         title="Defaults for new videos"
         description="Every project starts with these. You can change them per video."

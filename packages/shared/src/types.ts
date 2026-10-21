@@ -246,6 +246,15 @@ export interface AppSettings {
   notifications: NotificationPrefs
   /** What the channel is about. New videos (outside a series) start from it. */
   niche: ChannelNiche
+  /** Shorts made from each long video right after it posts. */
+  shorts: AutoShorts
+}
+
+export interface AutoShorts {
+  /** How many Short drafts to make from each long video; 0 turns it off. */
+  count: number
+  /** The longest a Short may be, in seconds (YouTube allows up to 180). */
+  maxSeconds: number
 }
 
 /**
@@ -309,6 +318,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voice: DEFAULT_VOICE,
   notifications: { approval: true, failed: true, posted: true },
   niche: EMPTY_NICHE,
+  shorts: { count: 2, maxSeconds: 60 },
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.

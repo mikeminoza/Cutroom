@@ -801,6 +801,59 @@ Pick ONE run of consecutive scenes that works on its own as a Short: it opens wi
   }
 }
 
+/**
+ * Picks up to `count` runs of consecutive scenes that each work on their own as a Short, without
+ * overlapping. Each is kept valid (see clampShortPick); overlapping or empty picks are dropped.
+ */
+export async function pickShortMoments(input: {
+  title: string
+  topic: string
+  scenes: { start: number; end: number; narration: string }[]
+  maxSeconds: number
+  count: number
+}): Promise<{ startIndex: number; endIndex: number; title: string }[]> {
+  const list = input.scenes
+    .map((s, i) => `[${i}] ${s.start.toFixed(1)}–${s.end.toFixed(1)}s: ${s.narration.slice(0, 220)}`)
+    .join('\n')
+  const prompt = `This long YouTube video is being cut into YouTube Shorts.
+Title: ${input.title || '(none)'}
+Topic: ${input.topic || '(none)'}
+
+Scenes (index, time, narration):
+${list}
+
+Pick up to ${input.count} runs of consecutive scenes that do not overlap. Each must work on its own as a Short: it opens with a hook, covers one complete idea or joke, and makes sense without the rest of the video. Each run must be at most ${input.maxSeconds} seconds long (end of its last scene minus start of its first). Best first. For each, write a Short title (max 70 characters, no emoji).`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        shorts: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { startIndex: { type: 'integer' }, endIndex: { type: 'integer' }, title: str },
+            required: ['startIndex', 'endIndex', 'title'],
+          },
+        },
+      },
+      required: ['shorts'],
+    },
+    z.object({
+      shorts: z.array(z.object({ startIndex: z.number(), endIndex: z.number(), title: z.string() })),
+    }),
+    'You are a video editor who turns long videos into Shorts that hold attention.',
+  )
+  const picks: { startIndex: number; endIndex: number; title: string }[] = []
+  for (const raw of result.shorts) {
+    if (picks.length >= input.count || input.scenes.length === 0) break
+    const pick = clampShortPick(input.scenes, raw.startIndex, raw.endIndex, input.maxSeconds)
+    const overlaps = picks.some((p) => pick.startIndex <= p.endIndex && p.startIndex <= pick.endIndex)
+    if (!overlaps) picks.push({ ...pick, title: raw.title.trim().slice(0, 100) })
+  }
+  return picks
+}
+
 /** Keeps a pick valid whatever came back: in range, in order, and within the length limit. */
 export function clampShortPick(
   scenes: { start: number; end: number }[],

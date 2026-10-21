@@ -71,6 +71,24 @@ export async function sendEvent(jobId: string, event: WorkerEvent): Promise<void
   await call(`/api/worker/jobs/${jobId}/events`, { method: 'POST', body: JSON.stringify(event) })
 }
 
+/** Makes a Short draft from the job's video; its voice-over is already uploaded. Returns its id. */
+export async function createShort(
+  jobId: string,
+  short: {
+    newId: string
+    from: number
+    to: number
+    title: string
+    voiceover: { url: string; name: string; duration: number } | null
+  },
+): Promise<string> {
+  const data = await call<{ id: string }>(`/api/worker/jobs/${jobId}/shorts`, {
+    method: 'POST',
+    body: JSON.stringify(short),
+  })
+  return data.id
+}
+
 /** The video missed its posting time: the next free slot (now reserved), or null to post now. */
 export async function nextSlot(jobId: string): Promise<string | null> {
   const data = await call<{ at: string | null }>(`/api/worker/jobs/${jobId}/reschedule`, { method: 'POST' })
