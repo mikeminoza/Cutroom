@@ -2,12 +2,14 @@ import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/pro
 import type {
   AppSettings,
   CaptionStyle,
+  CharacterPose,
   ImageFit,
   Motion,
   PostDetails,
   PostingMode,
   ProjectStatus,
   Resolution,
+  SceneLayer,
   SeriesTemplate,
   Transcript,
   VideoFormat,
@@ -109,6 +111,7 @@ export const scenes = pgTable('scenes', {
   fit: text('fit').$type<ImageFit>().notNull().default('cover'),
   focusX: real('focus_x').notNull().default(0.5),
   focusY: real('focus_y').notNull().default(0.5),
+  layer: jsonb('layer').$type<SceneLayer>(),
 })
 
 export const jobs = pgTable(
@@ -186,6 +189,17 @@ export const libraryCharacters = pgTable('library_characters', {
   name: text('name').notNull().default(''),
   description: text('description').notNull().default(''),
   images: jsonb('images').$type<{ url: string; key: string }[]>().notNull().default([]),
+  /** Cut-outs for layered scenes and thumbnails (see SceneLayer). */
+  poses: jsonb('poses').$type<CharacterPose[]>().notNull().default([]),
+  createdAt: created(),
+})
+
+/** Backgrounds for layered scenes and thumbnails, shared by every video. */
+export const libraryBackgrounds = pgTable('library_backgrounds', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().default(''),
+  url: text('url').notNull(),
+  key: text('key').notNull(),
   createdAt: created(),
 })
 
@@ -206,4 +220,5 @@ export type JobRow = typeof jobs.$inferSelect
 export type ChannelRow = typeof channels.$inferSelect
 export type SeriesRow = typeof series.$inferSelect
 export type LibraryCharacterRow = typeof libraryCharacters.$inferSelect
+export type LibraryBackgroundRow = typeof libraryBackgrounds.$inferSelect
 export type IdeaRow = typeof ideas.$inferSelect

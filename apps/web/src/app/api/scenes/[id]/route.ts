@@ -1,7 +1,7 @@
-import { deleteFile } from '@cutroom/shared/storage'
+import { deleteFile, isStoredUnder } from '@cutroom/shared/storage'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '@/server/db'
-import { readJson, route } from '@/server/http'
+import { badRequest, readJson, route } from '@/server/http'
 import { assertProjectFile, getProjectFull, getScene, renumberScenes, touchProject } from '@/server/projects'
 import { scenePatchSchema } from '@/server/validation'
 
@@ -11,6 +11,17 @@ export const PATCH = route(async (request, { params }: Ctx) => {
   const { id } = await params
   const patch = await readJson(request, scenePatchSchema)
   const scene = await getScene(id)
+  if (patch.layer) {
+    const { backgroundUrl, poseUrl, blinkUrl } = patch.layer
+    if (
+      [backgroundUrl, poseUrl, blinkUrl].some(
+        (url) =>
+          url && !isStoredUnder(url, 'library/backgrounds') && !isStoredUnder(url, 'library/characters'),
+      )
+    ) {
+      badRequest('Pick the background and pose from the Library.')
+    }
+  }
   if (patch.imageUrl !== undefined && patch.imageUrl !== scene.imageUrl) {
     assertProjectFile(patch.imageUrl, scene.projectId, 'scenes')
     await deleteFile(scene.imageUrl)

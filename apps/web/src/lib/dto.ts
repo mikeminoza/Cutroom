@@ -3,6 +3,7 @@ import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/pro
 import type {
   CaptionStyle,
   CharacterInput,
+  CharacterPose,
   PostDetails,
   PostingMode,
   ProjectStatus,
@@ -157,6 +158,15 @@ export interface LibraryCharacterDTO {
   name: string
   description: string
   images: { url: string; key: string }[]
+  poses: CharacterPose[]
+  createdAt: string
+}
+
+export interface LibraryBackgroundDTO {
+  id: string
+  name: string
+  url: string
+  key: string
   createdAt: string
 }
 

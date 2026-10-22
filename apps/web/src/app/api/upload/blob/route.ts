@@ -5,7 +5,7 @@ import { isAuthorized } from '@/server/auth'
 import { toErrorResponse } from '@/server/http'
 
 const FOLDER =
-  /^(projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)|library\/characters\/[\w-]+)\//
+  /^(projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)|library\/(characters|backgrounds)\/[\w-]+)\//
 
 export async function POST(request: Request): Promise<Response> {
   try {

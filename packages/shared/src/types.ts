@@ -153,6 +153,74 @@ export interface Transcript {
   words: Word[]
 }
 
+/** Where a character stands in a layered scene. */
+export type LayerSide = 'left' | 'center' | 'right'
+export const LAYER_SIDES: LayerSide[] = ['left', 'center', 'right']
+
+/**
+ * A scene picture built from layers: a background from the Library with a character's pose (a
+ * cut-out with a transparent background) in front. A scene with its own uploaded picture shows
+ * that instead. URLs point at the Library's files, shared by every video that uses them.
+ */
+export interface SceneLayer {
+  backgroundUrl: string | null
+  /** The background's name, as shown in the editor. */
+  background: string
+  poseUrl: string | null
+  /** The same pose with the eyes closed: the character blinks now and then. */
+  blinkUrl: string | null
+  character: string
+  pose: string
+  side: LayerSide
+}
+
+/** One pose of a Library character: a cut-out, optionally with an eyes-closed twin for blinking. */
+export interface CharacterPose {
+  id: string
+  name: string
+  url: string
+  key: string
+  blinkUrl: string | null
+  blinkKey: string | null
+}
+
+/** True when a scene shows a picture: its own upload, or a background and/or pose. */
+export function hasPicture(scene: { imageUrl: string | null; layer?: SceneLayer | null }): boolean {
+  return Boolean(scene.imageUrl || scene.layer?.backgroundUrl || scene.layer?.poseUrl)
+}
+
+/** The picture to show for a scene in a strip: its own, or its background, or its pose. */
+export function thumbnailOf(scene: { imageUrl: string | null; layer?: SceneLayer | null }): string | null {
+  return scene.imageUrl ?? scene.layer?.backgroundUrl ?? scene.layer?.poseUrl ?? null
+}
+
+/**
+ * Where a pose stands, as fractions of the frame, shared by the editor and the render so both
+ * agree: it fits in a box `width` × `height`, `margin` in from the side it stands on, its bottom
+ * `sink` of its own height below the frame edge (the room it bounces into without showing a gap).
+ */
+export function poseBox(format: VideoFormat): {
+  width: number
+  height: number
+  margin: number
+  sink: number
+} {
+  return format === 'portrait'
+    ? { width: 0.92, height: 0.56, margin: 0.04, sink: 0.035 }
+    : { width: 0.6, height: 0.8, margin: 0.06, sink: 0.035 }
+}
+
+/** An empty layer to start picking from. */
+export const EMPTY_LAYER: SceneLayer = {
+  backgroundUrl: null,
+  background: '',
+  poseUrl: null,
+  blinkUrl: null,
+  character: '',
+  pose: '',
+  side: 'center',
+}
+
 export interface SceneInput {
   id: string
   index: number
@@ -173,6 +241,8 @@ export interface SceneInput {
   fit: ImageFit
   focusX: number
   focusY: number
+  /** Background + pose, used when the scene has no uploaded picture. */
+  layer: SceneLayer | null
 }
 
 export interface CharacterInput {

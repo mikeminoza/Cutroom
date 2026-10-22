@@ -854,6 +854,78 @@ Pick up to ${input.count} runs of consecutive scenes that do not overlap. Each m
   return picks
 }
 
+/**
+ * For each scene, picks a Library background and a character pose that fit what is said: the
+ * scene picture is then built from those layers instead of drawn from scratch. Names that are not
+ * in the lists come back as ''.
+ */
+export async function pickSceneLayers(input: {
+  scenes: { narration: string; visual: string }[]
+  backgrounds: string[]
+  characters: { name: string; poses: string[] }[]
+}): Promise<{ background: string; character: string; pose: string; side: 'left' | 'center' | 'right' }[]> {
+  const list = input.scenes
+    .map(
+      (s, i) =>
+        `[${i}] ${s.narration.slice(0, 240)}${s.visual.trim() ? ` (picture: ${s.visual.slice(0, 160)})` : ''}`,
+    )
+    .join('\n')
+  const cast = input.characters.map((c) => `- ${c.name}: ${c.poses.join(', ') || '(no poses)'}`).join('\n')
+  const prompt = `Build the picture for every scene of a video from ready-made layers: a background, and one character's pose standing in front of it.
+
+Backgrounds: ${input.backgrounds.join(', ') || '(none)'}
+Characters and their poses:
+${cast || '(none)'}
+
+Scenes (index, narration):
+${list}
+
+For each scene, in order, pick the background that fits where it happens, and the character and pose that fit what is said or felt. Use the exact names from the lists, or "" when nothing fits. Keep the same background while the story stays in one place. side: where the character stands, "left", "center" or "right"; vary it now and then so the video does not feel static.`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        scenes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              sceneIndex: { type: 'integer' },
+              background: str,
+              character: str,
+              pose: str,
+              side: { type: 'string', enum: ['left', 'center', 'right'] },
+            },
+            required: ['sceneIndex', 'background', 'character', 'pose', 'side'],
+          },
+        },
+      },
+      required: ['scenes'],
+    },
+    z.object({
+      scenes: z.array(
+        z.object({
+          sceneIndex: z.number(),
+          background: z.string(),
+          character: z.string(),
+          pose: z.string(),
+          side: z.enum(['left', 'center', 'right']).catch('center'),
+        }),
+      ),
+    }),
+    'You are a storyboard artist for a 2D cartoon channel.',
+  )
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+  return input.scenes.map((_, i) => {
+    const pick = result.scenes.find((s) => s.sceneIndex === i)
+    const background = input.backgrounds.find((b) => pick && same(b, pick.background)) ?? ''
+    const character = input.characters.find((c) => pick && same(c.name, pick.character))
+    const pose = character?.poses.find((name) => pick && same(name, pick.pose)) ?? ''
+    return { background, character: pose ? (character?.name ?? '') : '', pose, side: pick?.side ?? 'center' }
+  })
+}
+
 /** Keeps a pick valid whatever came back: in range, in order, and within the length limit. */
 export function clampShortPick(
   scenes: { start: number; end: number }[],

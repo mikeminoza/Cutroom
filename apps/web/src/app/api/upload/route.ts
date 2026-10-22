@@ -5,7 +5,7 @@ import { badRequest, route } from '@/server/http'
 
 const ALLOWED = /^(image|audio)\//
 const FOLDER =
-  /^(projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)|library\/characters\/[\w-]+)$/
+  /^(projects\/[\w-]+\/(scenes|characters|voiceover|music|thumbnail)|library\/(characters|backgrounds)\/[\w-]+)$/
 
 export const POST = route(async (request) => {
   if (storageDriver() !== 'local') badRequest('Uploads go to Vercel Blob in this environment.')

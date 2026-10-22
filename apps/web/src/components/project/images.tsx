@@ -2,13 +2,25 @@
 
 import { buildImagePrompt, sceneCharacters } from '@cutroom/shared/prompts'
 import { formatTimecode } from '@cutroom/shared/timing'
-import { MOTIONS, type Motion, normalizeTransition, outputSize, TRANSITIONS } from '@cutroom/shared/types'
+import {
+  EMPTY_LAYER,
+  hasPicture,
+  LAYER_SIDES,
+  type LayerSide,
+  MOTIONS,
+  type Motion,
+  normalizeTransition,
+  outputSize,
+  type SceneLayer,
+  TRANSITIONS,
+} from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
   Download,
   ImagePlus,
   Images,
+  Layers,
   Replace,
   Sparkles,
   Square,
@@ -36,10 +48,11 @@ import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { keys, useSaver, useStatus } from '@/lib/hooks'
+import { keys, useBackgrounds, useLibrary, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { downloadScenePrompts, scenePrompts } from '@/lib/scene-prompts'
 import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
+import { LayeredPicture } from './layered-picture'
 import { MOTION_LABEL, TRANSITION_LABEL } from './script'
 import type { StepProps } from './workspace'
 
@@ -89,10 +102,15 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   useGeneration()
   const generating = generation.scenes
   const batch = generation.batches.get(project.id) ?? null
-  const done = scenes.filter((s) => s.imageUrl).length
+  const done = scenes.filter(hasPicture).length
   const scenesRef = useRef(scenes)
   scenesRef.current = scenes
   const canGenerate = status?.gemini.configured === true
+  const action = useProjectAction(project.id)
+  const { data: backgrounds } = useBackgrounds()
+  const { data: library } = useLibrary()
+  const hasLayers = (backgrounds?.length ?? 0) > 0 || (library ?? []).some((c) => c.poses.length > 0)
+  const [composing, setComposing] = useState(false)
 
   /** Gemini paints one scene. Returns 'stop' when nothing else will work either (billing, key). */
   const generateOne = useCallback(
@@ -141,7 +159,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
    */
   const generateMissing = async () => {
     if (generation.batches.has(project.id)) return
-    const targets = scenesRef.current.filter((s) => !s.imageUrl && !generation.scenes.has(s.id))
+    const targets = scenesRef.current.filter((s) => !hasPicture(s) && !generation.scenes.has(s.id))
     if (targets.length === 0) return
     const run = { done: 0, total: targets.length, stop: false }
     generation.batches.set(project.id, run)
@@ -204,8 +222,8 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
       if (!ok) return
       const list = scenesRef.current
       const next =
-        list.find((s) => s.index > scene.index && !s.imageUrl) ??
-        list.find((s) => !s.imageUrl && s.id !== scene.id)
+        list.find((s) => s.index > scene.index && !hasPicture(s)) ??
+        list.find((s) => !hasPicture(s) && s.id !== scene.id)
       if (next) selectScene(next.id)
     },
     [selectScene, uploadTo],
@@ -228,7 +246,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
       }
       for (const scene of list) {
         if (leftovers.length === 0) break
-        if (!scene.imageUrl && !plan.has(scene.id)) plan.set(scene.id, leftovers.shift()!)
+        if (!hasPicture(scene) && !plan.has(scene.id)) plan.set(scene.id, leftovers.shift()!)
       }
       if (plan.size === 0) {
         toast.error('No empty scenes left for these images. Drop an image on a scene to replace it.')
@@ -263,7 +281,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
       const file = Array.from(event.clipboardData?.files ?? []).find(isImage)
       if (!file) return
       const list = scenesRef.current
-      const scene = list.find((s) => s.id === selectedSceneId) ?? list.find((s) => !s.imageUrl)
+      const scene = list.find((s) => s.id === selectedSceneId) ?? list.find((s) => !hasPicture(s))
       if (!scene) return
       event.preventDefault()
       void uploadOne(scene, file)
@@ -271,6 +289,21 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
   }, [selectedSceneId, uploadOne])
+
+  /** Gemini picks a Library background and pose for each scene still without a picture. */
+  const compose = async () => {
+    setComposing(true)
+    const before = scenesRef.current.filter(hasPicture).length
+    const full = await action(`/api/projects/${project.id}/ai/compose`, {})
+    setComposing(false)
+    if (!full) return
+    const added = full.scenes.filter(hasPicture).length - before
+    if (added > 0) toast.success(`Built ${plural(added, 'scene')} from the Library`)
+    else
+      toast('Nothing in the Library fitted the remaining scenes', {
+        description: 'Name your backgrounds and poses so the AI can tell them apart.',
+      })
+  }
 
   const picker = useFilePicker('image/*', true, uploadMany)
   const downloadPrompts = () => downloadScenePrompts(project.title, scenePrompts(data))
@@ -290,7 +323,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     )
   }
 
-  const visible = missingOnly ? scenes.filter((s) => !s.imageUrl || progress[s.id] !== undefined) : scenes
+  const visible = missingOnly ? scenes.filter((s) => !hasPicture(s) || progress[s.id] !== undefined) : scenes
   const complete = done === scenes.length
 
   return (
@@ -302,7 +335,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
               <div className="min-w-56 flex-1">
                 <p className="text-[15px]">
                   <span className="tc text-[22px] font-semibold">{done}</span>
-                  <span className="text-ink-2"> of {plural(scenes.length, 'scene')} have an image</span>
+                  <span className="text-ink-2"> of {plural(scenes.length, 'scene')} have a picture</span>
                 </p>
                 <ProgressBar value={done / scenes.length} tone="you" className="mt-2 max-w-md" />
               </div>
@@ -324,12 +357,28 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                       <Tip
                         content={`Uses ${status?.gemini.imageModel}. Image models need billing on your Gemini key.`}
                       >
-                        <Button variant="go" onClick={generateMissing} icon={<Sparkles className="size-4" />}>
+                        <Button
+                          variant={hasLayers ? 'plain' : 'go'}
+                          onClick={generateMissing}
+                          icon={<Sparkles className="size-4" />}
+                        >
                           Generate {scenes.length - done} with AI
                         </Button>
                       </Tip>
                     )
                   ))}
+                {canGenerate && hasLayers && !complete && !batch && (
+                  <Tip content="Free: the AI reads each scene and picks a background and a character pose from your Library.">
+                    <Button
+                      variant="go"
+                      busy={composing}
+                      onClick={compose}
+                      icon={<Layers className="size-4" />}
+                    >
+                      Pick backgrounds and poses with AI
+                    </Button>
+                  </Tip>
+                )}
                 <Button variant="plain" onClick={downloadPrompts} icon={<Download className="size-4" />}>
                   All prompts (.txt)
                 </Button>
@@ -362,6 +411,9 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                       ? 'Generate the pictures with AI (character reference images are attached for you), or copy a prompt into your own image tool and drop the result on its scene.'
                       : 'Copy a prompt into your image tool with the reference images attached, then drop the result on its scene.'}{' '}
                     Or select a scene and press <Kbd>Ctrl</Kbd> <Kbd>V</Kbd> to paste a copied image.
+                    {hasLayers
+                      ? ' Scenes can also be built from your Library: a background with a character pose in front.'
+                      : ' Add backgrounds and character poses in the Library to build scenes from them.'}
                   </>
                 )}
               </p>
@@ -369,7 +421,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 <Switch
                   checked={missingOnly}
                   onCheckedChange={setMissingOnly}
-                  label="Only scenes without images"
+                  label="Only scenes without pictures"
                 />
               </div>
             </div>
@@ -395,7 +447,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
       </ol>
       {missingOnly && visible.length === 0 && (
         <p className="rounded-[var(--radius-panel)] border border-line bg-panel px-5 py-8 text-center text-[14px] text-ink-2">
-          Every scene has an image.
+          Every scene has a picture.
         </p>
       )}
       {confirmDialog}
@@ -441,6 +493,7 @@ function SceneImageRow({
       : false
   const [expanded, setExpanded] = useState(false)
   const set = (patch: Partial<SceneDTO>) => saver.scene(scene.id, patch, 0)
+  const layered = !scene.imageUrl && hasPicture(scene)
 
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
@@ -461,6 +514,7 @@ function SceneImageRow({
         {({ open, dragging }) => (
           <Frame
             scene={scene}
+            format={project.format}
             portrait={portrait}
             dragging={dragging}
             progress={progress}
@@ -526,10 +580,13 @@ function SceneImageRow({
             )}
           </div>
         </div>
+        {!scene.imageUrl && (
+          <LayerPicker scene={scene} characters={characters} onChange={(layer) => set({ layer })} />
+        )}
       </div>
 
       <div className="flex flex-col gap-3 sm:col-span-2 xl:col-span-1">
-        {scene.imageUrl ? (
+        {scene.imageUrl || layered ? (
           <>
             <Segmented
               ariaLabel="Image fit"
@@ -572,21 +629,21 @@ function SceneImageRow({
                 may look soft.
               </p>
             )}
-            {scene.fit === 'cover' && (
+            {scene.fit === 'cover' && !layered && (
               <p className="text-[12px] text-ink-3">Click the picture to choose what stays in frame.</p>
             )}
             <div className="mt-auto flex gap-1.5">
               <DropZone accept="image/*" onFiles={([file]) => onFile(file)}>
                 {({ open }) => (
                   <Button variant="plain" size="sm" onClick={open} icon={<Replace className="size-3.5" />}>
-                    Replace
+                    {layered ? 'Upload instead' : 'Replace'}
                   </Button>
                 )}
               </DropZone>
               <Button
                 variant="danger"
                 size="sm"
-                onClick={() => set({ imageUrl: null })}
+                onClick={() => set(layered ? { layer: null } : { imageUrl: null })}
                 icon={<Trash2 className="size-3.5" />}
               >
                 Remove
@@ -606,6 +663,7 @@ function SceneImageRow({
 
 function Frame({
   scene,
+  format,
   portrait,
   dragging,
   progress,
@@ -614,6 +672,7 @@ function Frame({
   onFocusPoint,
 }: {
   scene: SceneDTO
+  format: SceneFormat
   portrait: boolean
   dragging: boolean
   progress: number | undefined
@@ -633,6 +692,20 @@ function Frame({
         <Spinner />
         <span className="px-2 text-center leading-tight">Gemini is painting…</span>
       </div>
+    )
+  }
+  if (!scene.imageUrl && scene.layer && hasPicture(scene) && progress === undefined) {
+    return (
+      <LayeredPicture
+        layer={scene.layer}
+        fit={scene.fit}
+        format={format}
+        className={cn(
+          'shrink-0 rounded-[var(--radius-frame)]',
+          size,
+          dragging && 'shadow-[0_0_0_2px_var(--color-ink)]',
+        )}
+      />
     )
   }
   if (!scene.imageUrl || progress !== undefined) {
@@ -714,6 +787,101 @@ function Frame({
     </button>
   )
 }
+
+type SceneFormat = ProjectFull['project']['format']
+
+/**
+ * A scene picture built from the Library: a background, and a character's pose in front of it.
+ * The project's own characters come first; poses are grouped by character.
+ */
+function LayerPicker({
+  scene,
+  characters,
+  onChange,
+}: {
+  scene: SceneDTO
+  characters: CharacterDTO[]
+  onChange: (layer: SceneLayer | null) => void
+}) {
+  const { data: backgrounds = [] } = useBackgrounds()
+  const { data: library = [] } = useLibrary()
+  const named = (name: string) => name.trim().toLowerCase()
+  const inProject = new Set(characters.map((c) => named(c.name)))
+  const cast = library
+    .filter((c) => c.poses.length > 0)
+    .sort((a, b) => Number(inProject.has(named(b.name))) - Number(inProject.has(named(a.name))))
+  if (backgrounds.length === 0 && cast.length === 0) return null
+  const layer = scene.layer ?? EMPTY_LAYER
+  const update = (patch: Partial<SceneLayer>) => {
+    const next = { ...layer, ...patch }
+    onChange(next.backgroundUrl || next.poseUrl ? next : null)
+  }
+  const pickPose = (url: string) => {
+    for (const character of cast) {
+      const pose = character.poses.find((p) => p.url === url)
+      if (pose) {
+        update({ poseUrl: pose.url, blinkUrl: pose.blinkUrl, character: character.name, pose: pose.name })
+        return
+      }
+    }
+    update({ poseUrl: null, blinkUrl: null, character: '', pose: '' })
+  }
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <span className="flex items-center gap-1.5 text-[12.5px] text-ink-3">
+        <Layers className="size-3.5" aria-hidden />
+        Or build it
+      </span>
+      {backgrounds.length > 0 && (
+        <Select
+          aria-label="Background"
+          value={layer.backgroundUrl ?? ''}
+          onChange={(e) => {
+            const background = backgrounds.find((b) => b.url === e.target.value)
+            update({ backgroundUrl: background?.url ?? null, background: background?.name ?? '' })
+          }}
+          className="w-44"
+        >
+          <option value="">No background</option>
+          {backgrounds.map((b) => (
+            <option key={b.id} value={b.url}>
+              {b.name || 'Untitled background'}
+            </option>
+          ))}
+        </Select>
+      )}
+      {cast.length > 0 && (
+        <Select
+          aria-label="Character pose"
+          value={layer.poseUrl ?? ''}
+          onChange={(e) => pickPose(e.target.value)}
+          className="w-44"
+        >
+          <option value="">No character</option>
+          {cast.map((c) => (
+            <optgroup key={c.id} label={c.name || 'Character'}>
+              {c.poses.map((p) => (
+                <option key={p.id} value={p.url}>
+                  {p.name || 'Pose'}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </Select>
+      )}
+      {layer.poseUrl && (
+        <Segmented<LayerSide>
+          ariaLabel="Where the character stands"
+          value={layer.side}
+          onChange={(side) => update({ side })}
+          options={LAYER_SIDES.map((side) => ({ value: side, label: SIDE_LABEL[side] }))}
+        />
+      )}
+    </div>
+  )
+}
+
+const SIDE_LABEL: Record<LayerSide, string> = { left: 'Left', center: 'Middle', right: 'Right' }
 
 /** A character reference image you can copy to the clipboard and paste into your image tool. */
 function ReferenceThumb({ url, name }: { url: string; name: string }) {

@@ -89,6 +89,17 @@ export const scenePatchSchema = z
     fit: z.enum(['cover', 'contain']),
     focusX: z.number().min(0).max(1),
     focusY: z.number().min(0).max(1),
+    layer: z
+      .object({
+        backgroundUrl: nullableUrl,
+        background: z.string().max(100),
+        poseUrl: nullableUrl,
+        blinkUrl: nullableUrl,
+        character: z.string().max(100),
+        pose: z.string().max(100),
+        side: z.enum(['left', 'center', 'right']),
+      })
+      .nullable(),
   })
   .partial()
 

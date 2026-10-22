@@ -12,20 +12,25 @@
 //     in a final pass that only builds the audio (voice, music, ducking) — the video is encoded
 //     exactly once, which roughly halves the CPU time of a "re-encode to burn captions" pass.
 //  3. ffprobe reads the real duration back.
+//
+// A layered scene (a Library background with a character's pose in front) is built in its clip:
+// the background moves like any picture, the pose stands still in front of it, breathing, bouncing
+// while the narrator speaks, and blinking when it has an eyes-closed twin.
 import { rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { chunkCaptions, type Overlay, toSrt } from '@cutroom/shared/captions'
+import { chunkCaptions, type Overlay, speechSpans, toSrt } from '@cutroom/shared/captions'
 import { planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
 import type {
   CaptionStyle,
   ImageFit,
+  LayerSide,
   Motion,
   Resolution,
   Transition,
   VideoFormat,
   Word,
 } from '@cutroom/shared/types'
-import { outputSize } from '@cutroom/shared/types'
+import { outputSize, poseBox } from '@cutroom/shared/types'
 import { buildAss } from './ass'
 import { defaultThreads, probeDuration, probeImageSize, runFfmpeg, throwIfAborted } from './ffmpeg'
 
@@ -35,6 +40,8 @@ export interface RenderScene {
   end: number
   /** Local file path (png/jpg/webp); null = no image uploaded (the previous image holds). */
   imagePath: string | null
+  /** A picture built from Library layers, used when there's no imagePath. */
+  layer?: RenderLayer | null
   motion: Motion
   fit: ImageFit
   /** 0..1 focus point used when cropping for 'cover' (and as the zoom anchor). */
@@ -42,6 +49,16 @@ export interface RenderScene {
   focusY: number
   /** How this scene's picture comes in. Ignored for scenes without an image. */
   transition: Transition
+}
+
+export interface RenderLayer {
+  /** Local background file; null = the plain dark background behind the pose. */
+  backgroundPath: string | null
+  /** Local pose file: a cut-out with a transparent background. */
+  posePath: string | null
+  /** The same pose with the eyes closed, shown for a moment every few seconds. */
+  blinkPath: string | null
+  side: LayerSide
 }
 
 export interface RenderInput {
@@ -106,11 +123,20 @@ const VIDEO_CODEC = [
 ]
 
 interface Visual {
-  path: string
+  /** The picture, or the layer's background; null = the plain dark background (a pose alone). */
+  path: string | null
   fit: ImageFit
   focusX: number
   focusY: number
   motion: Motion
+  /** A character's pose standing in front of the picture. */
+  pose: { path: string; blinkPath: string | null; side: LayerSide } | null
+}
+
+/** Seconds on the final timeline. */
+interface Span {
+  start: number
+  end: number
 }
 
 export interface Segment {
@@ -154,20 +180,30 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
   // it; when its time rounds to no frames, the next segment shows its picture and needs it too.
   let lastTransition: Segment['transition'] = 'cut'
   sorted.forEach((scene, i) => {
-    if (scene.imagePath) {
+    const layer = scene.imagePath ? null : (scene.layer ?? null)
+    const background = scene.imagePath ?? layer?.backgroundPath ?? null
+    const drawn = Boolean(background || layer?.posePath)
+    if (drawn) {
       lastTransition = scene.transition ?? 'cut'
       lastVisual = {
-        path: resolve(scene.imagePath),
+        path: background ? resolve(background) : null,
         fit: scene.fit,
         focusX: clamp01(scene.focusX),
         focusY: clamp01(scene.focusY),
         motion: scene.motion,
+        pose: layer?.posePath
+          ? {
+              path: resolve(layer.posePath),
+              blinkPath: layer.blinkPath ? resolve(layer.blinkPath) : null,
+              side: layer.side,
+            }
+          : null,
       }
     }
     const frames = bounds[i + 1] - bounds[i]
     if (frames <= 0) return
     const previous = segments[segments.length - 1]
-    if (!scene.imagePath && previous && previous.visual === lastVisual) {
+    if (!drawn && previous && previous.visual === lastVisual) {
       previous.frames += frames
       return
     }
@@ -332,6 +368,99 @@ interface SegmentJob {
   args: string[]
 }
 
+/** Can this visual be drawn: its picture was read, or it's a pose on the plain background. */
+function drawable(visual: Visual, sizes: Map<string, ImageSize>): boolean {
+  return visual.path ? sizes.has(visual.path) : visual.pose !== null
+}
+
+/**
+ * The pose's y: standing on the frame's bottom edge with `sink` of its height hidden below, and
+ * rising into that room as it breathes (always, slowly) and bounces (while the narrator speaks).
+ * `t` is the clip's own time; `at` is the timeline second of its first frame, so breathing runs
+ * on smoothly across cuts. Only the speech within the `seconds` the clip lasts is included.
+ */
+export function poseY(at: number, seconds: number, speech: Span[], sink: number): string {
+  const breathe = `0.15*(1+sin(2*PI*(t+${num(at)})/3.4))`
+  const bounces = speech
+    .filter((span) => span.end > at && span.start < at + seconds)
+    .map((span) => {
+      const from = span.start - at
+      const length = span.end - span.start
+      // About one hop every 0.4 s, fitted so the span starts and ends on the ground.
+      const hops = Math.max(1, Math.round(length / 0.4))
+      return `between(t,${num(from)},${num(span.end - at)})*abs(sin(${num((Math.PI * hops) / length)}*(t-${num(from)})))`
+    })
+  const lift = bounces.length ? `(0.65*(${bounces.join('+')})+${breathe})` : breathe
+  return `H-h+h*${num(sink)}*(1-${lift})`
+}
+
+/** On for about an eighth of a second every 4.1 s: a blink. */
+const blinkAt = (at: number) => `lt(mod(t+${num(at + 1.3)},4.1),0.13)`
+
+/**
+ * Adds a visual's inputs and returns the start of its filter chain: one decoded frame, repeated,
+ * then the move; for a layered scene, the pose standing in front. Statements the pose needs go
+ * into `graph` first. `label` keeps pad names unique when two pictures share one graph; `move` is
+ * the whole move and how far into it this clip starts (the previous picture continuing its move
+ * while it crossfades out).
+ */
+function pictureChain(
+  visual: Visual | null,
+  size: { width: number; height: number },
+  sizes: Map<string, ImageSize>,
+  inputs: string[],
+  graph: string[],
+  label: string,
+  move: { frames: number; offset: number },
+  time: { at: number; seconds: number; speech: Span[] },
+): string {
+  const { width: W, height: H } = size
+  const nextInput = () => inputs.filter((arg) => arg === '-i').length
+  const image = visual?.path ? (sizes.get(visual.path) ?? null) : null
+  const index = nextInput()
+  let chain: string
+  let motion: string | null = null
+  if (visual?.path && image) {
+    const base = baseFrame(visual, size, image, label)
+    inputs.push('-i', visual.path)
+    chain = base.chain
+    motion = motionFilter(visual.motion, move.frames, W, H, base.anchorX, base.anchorY, move.offset)
+  } else {
+    inputs.push('-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`)
+    chain = `format=rgb24,${TO_YUV}`
+  }
+  const picture = [
+    `[${index}:v]${chain}`,
+    'loop=loop=-1:size=1:start=0',
+    `settb=1/${FPS}`,
+    'setpts=N',
+    ...(motion ? [motion] : []),
+  ].join(',')
+  const pose = visual?.pose
+  if (!pose) return picture
+
+  // The pose (and its blink) fitted into its box once, colour-converted with alpha, repeated.
+  const box = poseBox(H > W ? 'portrait' : 'landscape')
+  const even = (n: number) => Math.max(2, 2 * Math.round(n / 2))
+  const fit =
+    `scale=w=${even(W * box.width)}:h=${even(H * box.height)}:force_original_aspect_ratio=decrease:` +
+    'force_divisible_by=2:flags=lanczos:out_color_matrix=bt709:out_range=tv,format=yuva420p,' +
+    `loop=loop=-1:size=1:start=0,settb=1/${FPS},setpts=N`
+  const margin = num(box.margin)
+  const x = pose.side === 'left' ? `W*${margin}` : pose.side === 'right' ? `W-w-W*${margin}` : '(W-w)/2'
+  const y = poseY(time.at, time.seconds, time.speech, box.sink)
+  const place = `x=${x}:y='${y}':eval=frame:format=yuv420`
+  const poseInput = nextInput()
+  inputs.push('-i', pose.path)
+  graph.push(`${picture}[${label}scene]`, `[${poseInput}:v]${fit}[${label}pose]`)
+  const standing = `[${label}scene][${label}pose]overlay=${place}`
+  if (!pose.blinkPath) return standing
+  const blinkInput = nextInput()
+  inputs.push('-i', pose.blinkPath)
+  graph.push(`${standing}[${label}posed]`, `[${blinkInput}:v]${fit}[${label}blink]`)
+  return `[${label}posed][${label}blink]overlay=${place}:enable='${blinkAt(time.at)}'`
+}
+
 export function segmentArgs(
   segment: Segment,
   previous: Segment | null,
@@ -340,30 +469,25 @@ export function segmentArgs(
   sizes: Map<string, ImageSize>,
   burn: boolean,
   threads: number,
+  speech: Span[] = [],
 ): string[] {
-  const { width: W, height: H } = size
   const { plan } = segment
-  const image = segment.visual ? (sizes.get(segment.visual.path) ?? null) : null
   const inputs: string[] = []
-  let chain: string
-  let motion: string | null = null
-  if (segment.visual && image) {
-    const base = baseFrame(segment.visual, size, image, 'a')
-    inputs.push('-i', segment.visual.path)
-    chain = base.chain
-    // The move runs on through the next picture's crossfade (plan.tail), so it never stalls.
-    motion = motionFilter(segment.visual.motion, segment.frames + plan.tail, W, H, base.anchorX, base.anchorY)
-  } else {
-    inputs.push('-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`)
-    chain = `format=rgb24,${TO_YUV}`
-  }
-  // One decoded frame, repeated, then the move and any dip through black.
+  const graph: string[] = []
+  const at = segment.startFrame / FPS
+  // The picture, its move running on through the next picture's crossfade (plan.tail) so it
+  // never stalls, then any dip through black.
   const picture = [
-    `[0:v]${chain}`,
-    'loop=loop=-1:size=1:start=0',
-    `settb=1/${FPS}`,
-    'setpts=N',
-    ...(motion ? [motion] : []),
+    pictureChain(
+      segment.visual,
+      size,
+      sizes,
+      inputs,
+      graph,
+      'a',
+      { frames: segment.frames + plan.tail, offset: 0 },
+      { at, seconds: segment.frames / FPS, speech },
+    ),
     ...(plan.fadeIn > 0 ? [`fade=t=in:s=0:n=${plan.fadeIn}`] : []),
     ...(plan.fadeOut > 0 ? [`fade=t=out:s=${segment.frames - plan.fadeOut}:n=${plan.fadeOut}`] : []),
   ]
@@ -371,45 +495,37 @@ export function segmentArgs(
   const finish = [`setpts=N+${segment.startFrame}`, ...(burn ? [`ass=${ASS_NAME}`] : []), 'setpts=N[v]']
 
   const outgoing = previous?.visual ?? null
-  const outgoingImage = outgoing ? (sizes.get(outgoing.path) ?? null) : null
-  let graph: string
-  if (plan.crossfade > 0 && previous && outgoing && outgoingImage) {
+  if (plan.crossfade > 0 && previous && outgoing && drawable(outgoing, sizes)) {
     // The previous picture, continuing its move from where its own clip ended, fades out on top.
-    const base = baseFrame(outgoing, size, outgoingImage, 'b')
-    inputs.push('-i', outgoing.path)
-    const move = motionFilter(
-      outgoing.motion,
-      previous.frames + previous.plan.tail,
-      W,
-      H,
-      base.anchorX,
-      base.anchorY,
-      previous.frames,
-    )
     const old = [
-      `[1:v]${base.chain}`,
-      'loop=loop=-1:size=1:start=0',
-      `settb=1/${FPS}`,
-      'setpts=N',
-      ...(move ? [move] : []),
+      pictureChain(
+        outgoing,
+        size,
+        sizes,
+        inputs,
+        graph,
+        'b',
+        { frames: previous.frames + previous.plan.tail, offset: previous.frames },
+        { at, seconds: plan.crossfade / FPS, speech },
+      ),
       `trim=end_frame=${plan.crossfade}`,
       'format=yuva420p',
       `fade=t=out:s=0:n=${plan.crossfade}:alpha=1`,
     ]
-    graph = [
+    graph.push(
       `${picture.join(',')}[cur]`,
       `${old.join(',')}[old]`,
       `[cur][old]overlay=eof_action=pass:format=yuv420,${finish.join(',')}`,
-    ].join(';')
+    )
   } else {
-    graph = [...picture, ...finish].join(',')
+    graph.push([...picture, ...finish].join(','))
   }
   return [
     '-filter_complex_threads',
     String(threads),
     ...inputs,
     '-filter_complex',
-    graph,
+    graph.join(';'),
     '-map',
     '[v]',
     '-frames:v',
@@ -517,8 +633,13 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
   // Probe each distinct image once (also fails early with a clear message on a broken file).
   const segments = planSegments(input.scenes, totalFrames)
   const sizes = new Map<string, ImageSize>()
-  for (const segment of segments) {
-    const path = segment.visual?.path
+  const files = segments.flatMap((segment) =>
+    [segment.visual?.path, segment.visual?.pose?.path, segment.visual?.pose?.blinkPath].map((path) => ({
+      path,
+      segment,
+    })),
+  )
+  for (const { path, segment } of files) {
     if (!path || sizes.has(path)) continue
     try {
       sizes.set(path, await probeImageSize(path, signal))
@@ -531,10 +652,12 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
     }
   }
 
+  // A layered scene's character bounces while the narrator speaks.
+  const speech = speechSpans(input.words)
   const jobs: SegmentJob[] = segments.map((segment, i) => {
     const file = `scene-${String(i + 1).padStart(3, '0')}.mp4`
     const previous = segments[i - 1] ?? null
-    return { segment, file, args: segmentArgs(segment, previous, file, size, sizes, burn, threads) }
+    return { segment, file, args: segmentArgs(segment, previous, file, size, sizes, burn, threads, speech) }
   })
 
   const sceneCount = Math.max(1, input.scenes.length)

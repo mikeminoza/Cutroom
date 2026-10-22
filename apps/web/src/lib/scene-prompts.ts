@@ -2,6 +2,7 @@
 // shown as a list, copied all at once, or downloaded as a text file.
 import { buildImagePrompt, sceneCharacters } from '@cutroom/shared/prompts'
 import { formatTimecode } from '@cutroom/shared/timing'
+import { hasPicture } from '@cutroom/shared/types'
 import type { ProjectFull } from './dto'
 
 export interface ScenePrompt {
@@ -29,7 +30,7 @@ export function scenePrompts(data: ProjectFull): ScenePrompt[] {
     narration: scene.narration,
     prompt: buildImagePrompt(scene, { artStyle: project.artStyle, format: project.format, characters }),
     cast: sceneCharacters(scene, characters).map((c) => c.name),
-    hasImage: Boolean(scene.imageUrl),
+    hasImage: hasPicture(scene),
   }))
 }
 

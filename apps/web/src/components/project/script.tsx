@@ -14,6 +14,7 @@ import {
   normalizeTransition,
   TRANSITIONS,
   type Transition,
+  thumbnailOf,
 } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, ChevronDown, Plus, Scissors, Sparkles, Trash2 } from 'lucide-react'
@@ -337,9 +338,9 @@ function SceneCard({
           {formatTimecode(scene.start)} – {formatTimecode(scene.end)}
         </span>
         <span className="text-[12.5px] text-ink-3">{MOTION_LABEL[scene.motion]}</span>
-        {scene.imageUrl && (
+        {thumbnailOf(scene) && (
           // biome-ignore lint/performance/noImgElement: user uploads
-          <img src={scene.imageUrl} alt="" className="ml-auto h-7 w-12 rounded-[3px] object-cover" />
+          <img src={thumbnailOf(scene)!} alt="" className="ml-auto h-7 w-12 rounded-[3px] object-cover" />
         )}
         <Menu
           trigger={
@@ -348,7 +349,7 @@ function SceneCard({
               aria-label={`Scene ${scene.index + 1} actions`}
               className={cn(
                 'rounded-md px-1.5 py-0.5 text-ink-3 hover:bg-sunk hover:text-ink',
-                !scene.imageUrl && 'ml-auto',
+                !thumbnailOf(scene) && 'ml-auto',
               )}
             >
               •••

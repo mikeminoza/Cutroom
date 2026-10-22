@@ -43,6 +43,21 @@ const CLAUSE_END = /[,;:—–]["')\]]?$/
  * Groups words into on-screen captions. Shorts get short punchy chunks,
  * long-form gets a readable line. Breaks early at sentence ends and pauses.
  */
+/**
+ * Stretches of speech: words with less than `gap` seconds between them run together. A layered
+ * scene's character bounces through these and stays still (breathing) in the pauses.
+ */
+export function speechSpans(words: Word[], gap = 0.25): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = []
+  for (const word of [...words].sort((a, b) => a.start - b.start)) {
+    if (!(word.end > word.start)) continue
+    const last = spans[spans.length - 1]
+    if (last && word.start - last.end < gap) last.end = Math.max(last.end, word.end)
+    else spans.push({ start: word.start, end: word.end })
+  }
+  return spans
+}
+
 export function chunkCaptions(words: Word[], format: VideoFormat): CaptionChunk[] {
   const maxWords = format === 'portrait' ? 3 : 7
   const maxChars = format === 'portrait' ? 22 : 42

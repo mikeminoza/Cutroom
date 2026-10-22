@@ -45,4 +45,12 @@ export const migrations: { tag: string; statements: string[] }[] = [
       '-- Videos already on YouTube went to the one channel connected before multi-channel support. Pin\n-- them to it, so making another channel the default never moves them.\nUPDATE "projects" SET "channel_id" = \'migrated-youtube\'\nWHERE "channel_id" IS NULL AND "youtube_video_id" IS NOT NULL\n\tAND EXISTS (SELECT 1 FROM "channels" WHERE "id" = \'migrated-youtube\');',
     ],
   },
+  {
+    tag: '0003_layers',
+    statements: [
+      'CREATE TABLE "library_backgrounds" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"name" text DEFAULT \'\' NOT NULL,\n\t"url" text NOT NULL,\n\t"key" text NOT NULL,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'ALTER TABLE "library_characters" ADD COLUMN "poses" jsonb DEFAULT \'[]\'::jsonb NOT NULL;',
+      'ALTER TABLE "scenes" ADD COLUMN "layer" jsonb;',
+    ],
+  },
 ]

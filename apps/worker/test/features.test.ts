@@ -80,8 +80,8 @@ describe('transitions in the render plan', () => {
     ]
     const segments = planSegments(scenes, 180)
     const sizes = new Map([
-      [segments[0].visual!.path, { width: 1000, height: 1000 }],
-      [segments[1].visual!.path, { width: 1000, height: 1000 }],
+      [segments[0].visual!.path!, { width: 1000, height: 1000 }],
+      [segments[1].visual!.path!, { width: 1000, height: 1000 }],
     ])
     const args = segmentArgs(
       segments[1],
@@ -107,7 +107,7 @@ describe('transitions in the render plan', () => {
 
   it('fades a dip into black inside the clip itself', () => {
     const segments = planSegments([scene(0, 3, 'a.png', 'cut'), scene(3, 6, 'b.png', 'fade-black')], 180)
-    const sizes = new Map(segments.map((s) => [s.visual!.path, { width: 1280, height: 720 }]))
+    const sizes = new Map(segments.map((s) => [s.visual!.path!, { width: 1280, height: 720 }]))
     const first = segmentArgs(segments[0], null, 'a.mp4', { width: 1280, height: 720 }, sizes, false, 1)
     const second = segmentArgs(
       segments[1],

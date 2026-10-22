@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { refineTranscript, segmentsFromWords, sliceTranscript, speechParts, timeWords } from '../src/align'
-import { overlayEvents, overlayOpacity } from '../src/captions'
+import { overlayEvents, overlayOpacity, speechSpans } from '../src/captions'
 import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
 import { explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
 import { chaptersToText, refreshChapters, sceneRange, splitByParagraphs } from '../src/timing'
 import { blackLevel, planTransitions } from '../src/transitions'
-import { normalizeTransition } from '../src/types'
+import { hasPicture, normalizeTransition, thumbnailOf } from '../src/types'
 
 const generateContent = vi.hoisted(() => vi.fn())
 vi.mock('@google/genai', () => ({
@@ -761,5 +761,32 @@ describe('splitting a script yourself', () => {
     expect(scenes[1].start).toBe(scenes[0].end)
     expect(scenes[2].start).toBe(scenes[1].end)
     expect(splitByParagraphs('  \n\n ')).toEqual([])
+  })
+})
+
+describe('layered scenes', () => {
+  it('runs words with short gaps into one stretch of speech', () => {
+    const word = (start: number, end: number) => ({ text: 'w', start, end })
+    expect(speechSpans([word(1.3, 1.6), word(0, 0.5), word(0.6, 0.9), word(2, 2), word(3, 3.5)])).toEqual([
+      { start: 0, end: 0.9 },
+      { start: 1.3, end: 1.6 },
+      { start: 3, end: 3.5 },
+    ])
+  })
+
+  it('counts a background or a pose as the scene picture, its own image first', () => {
+    const layer = {
+      backgroundUrl: null,
+      background: '',
+      poseUrl: '/pose.png',
+      blinkUrl: null,
+      character: 'Cappy',
+      pose: 'Happy',
+      side: 'center' as const,
+    }
+    expect(hasPicture({ imageUrl: null, layer: null })).toBe(false)
+    expect(hasPicture({ imageUrl: null, layer })).toBe(true)
+    expect(thumbnailOf({ imageUrl: null, layer: { ...layer, backgroundUrl: '/bg.png' } })).toBe('/bg.png')
+    expect(thumbnailOf({ imageUrl: '/own.png', layer })).toBe('/own.png')
   })
 })

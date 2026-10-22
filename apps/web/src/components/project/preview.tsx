@@ -6,11 +6,19 @@ import {
   chunkCaptions,
   overlayEvents,
   overlayOpacity,
+  speechSpans,
   toSrt,
 } from '@cutroom/shared/captions'
 import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
 import { blackLevel, planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
-import { type CaptionStyle, type Motion, normalizeTransition, type Transition } from '@cutroom/shared/types'
+import {
+  type CaptionStyle,
+  hasPicture,
+  type Motion,
+  normalizeTransition,
+  type Transition,
+  type VideoFormat,
+} from '@cutroom/shared/types'
 import { ArrowRight, Download, Music, Pause, Play, SkipBack, SkipForward, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -20,6 +28,7 @@ import { cn } from '@/lib/cn'
 import type { SceneDTO } from '@/lib/dto'
 import { useSaver } from '@/lib/hooks'
 import { useUploader } from './fields'
+import { poseStyle } from './layered-picture'
 import type { StepProps } from './workspace'
 
 /**
@@ -99,12 +108,12 @@ export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSe
   const segments: (PictureSegment & { transition: Transition })[] = []
   let lastVisual: SceneDTO | null = null
   scenes.forEach((scene, i) => {
-    if (scene.imageUrl) lastVisual = scene
+    if (hasPicture(scene)) lastVisual = scene
     if (bounds[i + 1] - bounds[i] <= 0) return
     const start = bounds[i] / FPS
     const end = bounds[i + 1] / FPS
     const previous = segments[segments.length - 1]
-    if (!scene.imageUrl && previous && previous.scene === lastVisual) {
+    if (!hasPicture(scene) && previous && previous.scene === lastVisual) {
       previous.end = end
       return
     }
@@ -112,7 +121,7 @@ export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSe
       start,
       end,
       scene: lastVisual,
-      transition: scene.imageUrl ? normalizeTransition(scene.transition) : 'cut',
+      transition: hasPicture(scene) ? normalizeTransition(scene.transition) : 'cut',
       plan: { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 },
     })
   })
@@ -320,10 +329,9 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   const [overlayIndex, setOverlayIndex] = useState(-1)
   const portrait = project.format === 'portrait'
 
-  const chunks = useMemo(
-    () => chunkCaptions(captionWords(project.transcript, scenes), project.format),
-    [project.transcript, project.format, scenes],
-  )
+  const words = useMemo(() => captionWords(project.transcript, scenes), [project.transcript, scenes])
+  const chunks = useMemo(() => chunkCaptions(words, project.format), [words, project.format])
+  const speech = useMemo(() => speechSpans(words), [words])
   const segments = useMemo(() => pictureSegments(scenes, duration), [scenes, duration])
   const overlays = useMemo(
     () => (project.textOverlays ? overlayEvents(scenes, duration) : []),
@@ -462,6 +470,8 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   const previous = segment && segment.plan.crossfade > 0 ? (segments[segmentIndex - 1]?.scene ?? null) : null
   const chunk = project.captionStyle === 'off' ? null : activeChunk(chunks, time)
   const overlay = overlayIndex >= 0 ? overlays[overlayIndex] : null
+  // A layered scene's character bounces while the narrator speaks.
+  const talking = playing && speech.some((span) => time >= span.start && time < span.end)
 
   return (
     <Panel>
@@ -485,16 +495,28 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
             portrait ? 'aspect-[9/16] max-h-[70vh]' : 'aspect-video w-full',
           )}
         >
-          {shown?.imageUrl ? (
-            <Picture key={`cur-${segmentIndex}`} scene={shown} imageRef={current} />
+          {shown && hasPicture(shown) ? (
+            <Picture
+              key={`cur-${segmentIndex}`}
+              scene={shown}
+              imageRef={current}
+              format={project.format}
+              talking={talking}
+            />
           ) : (
             <div className="absolute inset-0 grid place-items-center text-[13px] text-film-ink/50">
-              Scene {(scene?.index ?? 0) + 1} has no image yet
+              Scene {(scene?.index ?? 0) + 1} has no picture yet
             </div>
           )}
-          {previous?.imageUrl && (
+          {previous && hasPicture(previous) && (
             <div ref={outgoing} className="absolute inset-0" style={{ opacity: 0 }}>
-              <Picture key={`old-${segmentIndex}`} scene={previous} imageRef={outgoingImage} />
+              <Picture
+                key={`old-${segmentIndex}`}
+                scene={previous}
+                imageRef={outgoingImage}
+                format={project.format}
+                talking={false}
+              />
             </div>
           )}
           <div
@@ -618,7 +640,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
             {scenes.map((s) => (
               <span
                 key={s.id}
-                className={cn('h-full border-r border-panel', s.imageUrl ? 'bg-ink/20' : 'bg-kodak/60')}
+                className={cn('h-full border-r border-panel', hasPicture(s) ? 'bg-ink/20' : 'bg-kodak/60')}
                 style={{ width: `${((s.end - s.start) / Math.max(duration, 0.1)) * 100}%` }}
               />
             ))}
@@ -639,36 +661,59 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   )
 }
 
-/** One picture on the stage: 'contain' sits on a blurred copy of itself, like the render. */
+/**
+ * One picture on the stage: 'contain' sits on a blurred copy of itself, like the render. A layered
+ * scene moves its background and stands the character's pose in front, breathing or talking.
+ */
 function Picture({
   scene,
   imageRef,
+  format,
+  talking,
 }: {
   scene: SceneDTO
   imageRef: React.RefObject<HTMLImageElement | null>
+  format: VideoFormat
+  talking: boolean
 }) {
+  const src = scene.imageUrl ?? scene.layer?.backgroundUrl ?? null
+  const layer = scene.imageUrl ? null : scene.layer
   return (
     <>
-      {scene.fit === 'contain' && (
+      {src && scene.fit === 'contain' && (
         // biome-ignore lint/performance/noImgElement: user uploads
         <img
-          src={scene.imageUrl ?? undefined}
+          src={src}
           alt=""
           aria-hidden
           className="absolute inset-0 size-full scale-110 object-cover opacity-55 blur-xl brightness-75"
         />
       )}
-      {/* biome-ignore lint/performance/noImgElement: user uploads */}
-      <img
-        ref={imageRef}
-        src={scene.imageUrl ?? undefined}
-        alt={`Scene ${scene.index + 1}`}
-        className={cn(
-          'absolute inset-0 size-full will-change-transform',
-          scene.fit === 'cover' ? 'object-cover' : 'object-contain',
-        )}
-        style={{ objectPosition: `${scene.focusX * 100}% ${scene.focusY * 100}%` }}
-      />
+      {src && (
+        // biome-ignore lint/performance/noImgElement: user uploads
+        <img
+          ref={imageRef}
+          src={src}
+          alt={`Scene ${scene.index + 1}`}
+          className={cn(
+            'absolute inset-0 size-full will-change-transform',
+            scene.fit === 'cover' ? 'object-cover' : 'object-contain',
+          )}
+          style={{ objectPosition: `${scene.focusX * 100}% ${scene.focusY * 100}%` }}
+        />
+      )}
+      {layer?.poseUrl && (
+        // biome-ignore lint/performance/noImgElement: user uploads
+        <img
+          src={layer.poseUrl}
+          alt={[layer.character, layer.pose].filter(Boolean).join(', ')}
+          className={cn(
+            'absolute object-contain object-bottom',
+            talking ? 'animate-talk' : 'animate-breathe',
+          )}
+          style={poseStyle(layer.side, format)}
+        />
+      )}
     </>
   )
 }

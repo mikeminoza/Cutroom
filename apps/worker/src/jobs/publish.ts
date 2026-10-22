@@ -28,10 +28,10 @@ import {
   storageDriver,
 } from '@cutroom/shared/storage'
 import { formatTimecode, refreshChapters, totalDuration } from '@cutroom/shared/timing'
-import { normalizeTransition } from '@cutroom/shared/types'
+import { hasPicture, normalizeTransition } from '@cutroom/shared/types'
 import { nextSlot } from '../api'
 import { runFfmpeg } from '../render/ffmpeg'
-import { renderVideo } from '../render/render'
+import { type RenderLayer, renderVideo } from '../render/render'
 import { errorMessage, extensionOf, imageMime, probeSeconds } from '../util'
 import type { JobContext } from './context'
 import { makeShorts } from './shorts'
@@ -67,8 +67,31 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
   const render = async () => {
     await ctx.step('render', 'running', 'Downloading your files')
     const images: (string | null)[] = scenes.map(() => null)
+    const layers: (RenderLayer | null)[] = scenes.map(() => null)
+    // Library backgrounds and poses are shared between scenes: each file is downloaded once.
+    const shared = new Map<string, Promise<string>>()
+    const layerFile = async (url: string | null) => {
+      if (!url) return null
+      let file = shared.get(url)
+      if (!file) {
+        const target = work(`layer-${String(shared.size + 1).padStart(3, '0')}${extensionOf(url, '.png')}`)
+        file = downloadTo(url, target, payload.appUrl).then(() => target)
+        shared.set(url, file)
+      }
+      return file
+    }
     await mapLimit(scenes, 4, async (scene, i) => {
-      if (!scene.imageUrl) return
+      if (!scene.imageUrl) {
+        const layer = scene.layer
+        if (!layer || !hasPicture(scene)) return
+        const [backgroundPath, posePath, blinkPath] = await Promise.all([
+          layerFile(layer.backgroundUrl),
+          layerFile(layer.poseUrl),
+          layer.poseUrl ? layerFile(layer.blinkUrl) : null,
+        ])
+        layers[i] = { backgroundPath, posePath, blinkPath, side: layer.side }
+        return
+      }
       const file = work(`scene-${String(i + 1).padStart(3, '0')}${extensionOf(scene.imageUrl, '.png')}`)
       await downloadTo(scene.imageUrl, file, payload.appUrl)
       images[i] = file
@@ -92,6 +115,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       start: i === 0 ? 0 : scene.start,
       end: i === scenes.length - 1 ? duration : scenes[i + 1].start,
       imagePath: images[i],
+      layer: layers[i],
       motion: scene.motion,
       fit: scene.fit,
       focusX: scene.focusX,

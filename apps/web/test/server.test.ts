@@ -6,6 +6,13 @@ import { localPath, putFile } from '@cutroom/shared/storage'
 import { eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+// Gemini's picks for layered scenes are stubbed; everything else is the real module.
+const pickSceneLayers = vi.hoisted(() => vi.fn())
+vi.mock('@cutroom/shared/ai', async (original) => ({
+  ...(await original<typeof import('@cutroom/shared/ai')>()),
+  pickSceneLayers,
+}))
+
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cutroom-test-'))
 process.env.PGLITE_DIR = path.join(temp, 'pglite')
 process.env.STORAGE_DIR = path.join(temp, 'storage')
@@ -53,6 +60,9 @@ const rescheduleRoute = await import('../src/app/api/worker/jobs/[id]/reschedule
 const ownIdeaRoute = await import('../src/app/api/ideas/own/route')
 const workerShortsRoute = await import('../src/app/api/worker/jobs/[id]/shorts/route')
 const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
+const backgroundsRoute = await import('../src/app/api/library/backgrounds/route')
+const backgroundRoute = await import('../src/app/api/library/backgrounds/[id]/route')
+const composeRoute = await import('../src/app/api/projects/[id]/ai/compose/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1001,5 +1011,100 @@ describe('Shorts made after posting', () => {
     } finally {
       delete process.env.WORKER_SECRET
     }
+  })
+})
+
+describe('layered scenes', () => {
+  const json = (body: unknown, method = 'POST') =>
+    new Request('http://localhost/api', {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+
+  it('builds scenes from Library backgrounds and poses, keeps them while in use, and lets the AI pick', async () => {
+    const cappy = await (await libraryRoute.POST(json({ name: 'Cappy', description: '' }), undefined)).json()
+    const happy = await putFile(`library/characters/${cappy.id}/happy.png`, Buffer.from('h'), 'image/png')
+    const pose = { id: 'p1', name: 'Happy', ...happy, blinkUrl: null, blinkKey: null }
+    expect((await libraryItemRoute.PATCH(json({ poses: [pose] }, 'PATCH'), ctx(cappy.id))).status).toBe(200)
+
+    const backgroundId = crypto.randomUUID()
+    const file = await putFile(
+      `library/backgrounds/${backgroundId}/kitchen.png`,
+      Buffer.from('k'),
+      'image/png',
+    )
+    // A background must be uploaded to its own folder.
+    const wrong = await backgroundsRoute.POST(
+      json({ id: crypto.randomUUID(), name: 'Kitchen', ...file }),
+      undefined,
+    )
+    expect(wrong.status).toBe(400)
+    const kitchen = await (
+      await backgroundsRoute.POST(json({ id: backgroundId, name: 'Kitchen', ...file }), undefined)
+    ).json()
+
+    const id = await newProject()
+    await projects.replaceScenes(id, [
+      { start: 0, end: 4, narration: 'Cappy wakes up hungry.' },
+      { start: 4, end: 8, narration: 'Cappy finds a watermelon.' },
+      { start: 8, end: 12, narration: 'Cappy shares it.' },
+    ])
+    const [first, second, third] = await projects.getScenes(id)
+    const layer = {
+      backgroundUrl: kitchen.url,
+      background: 'Kitchen',
+      poseUrl: happy.url,
+      blinkUrl: null,
+      character: 'Cappy',
+      pose: 'Happy',
+      side: 'left',
+    }
+    // Only the Library's files can be layers.
+    const other = await putFile(`projects/${id}/scenes/x.png`, Buffer.from('x'), 'image/png')
+    expect(
+      (await sceneRoute.PATCH(json({ layer: { ...layer, poseUrl: other.url } }, 'PATCH'), ctx(first.id)))
+        .status,
+    ).toBe(400)
+    expect((await sceneRoute.PATCH(json({ layer }, 'PATCH'), ctx(first.id))).status).toBe(200)
+
+    // In use by a video not posted yet: neither the pose nor the background can go.
+    expect((await libraryItemRoute.PATCH(json({ poses: [] }, 'PATCH'), ctx(cappy.id))).status).toBe(400)
+    expect((await backgroundRoute.DELETE(json({}, 'DELETE'), ctx(kitchen.id))).status).toBe(400)
+    expect(stored(keyOfUrl(happy.url))).toBe(true)
+
+    // An eyes-closed version added later reaches the scenes using the pose.
+    const blink = await putFile(
+      `library/characters/${cappy.id}/happy-blink.png`,
+      Buffer.from('b'),
+      'image/png',
+    )
+    await libraryItemRoute.PATCH(
+      json({ poses: [{ ...pose, blinkUrl: blink.url, blinkKey: blink.key }] }, 'PATCH'),
+      ctx(cappy.id),
+    )
+    expect((await projects.getScenes(id))[0].layer?.blinkUrl).toBe(blink.url)
+
+    // The AI fills the scenes still without a picture; a scene with its own image is left alone.
+    const image = await putFile(`projects/${id}/scenes/third.png`, Buffer.from('i'), 'image/png')
+    await sceneRoute.PATCH(json({ imageUrl: image.url }, 'PATCH'), ctx(third.id))
+    pickSceneLayers.mockResolvedValueOnce([
+      { background: 'kitchen', character: 'Cappy', pose: 'happy', side: 'right' },
+    ])
+    const response = await composeRoute.POST(json({}), ctx(id))
+    expect(response.status).toBe(200)
+    const asked = pickSceneLayers.mock.calls[0][0]
+    expect(asked.scenes).toEqual([{ narration: 'Cappy finds a watermelon.', visual: '' }])
+    expect(asked.backgrounds).toEqual(['Kitchen'])
+    expect(asked.characters).toEqual([{ name: 'Cappy', poses: ['Happy'] }])
+    const after = await projects.getScenes(id)
+    expect(after.find((s) => s.id === second.id)?.layer).toMatchObject({
+      backgroundUrl: kitchen.url,
+      poseUrl: happy.url,
+      blinkUrl: blink.url,
+      side: 'right',
+    })
+    expect(after.find((s) => s.id === third.id)?.layer).toBeNull()
   })
 })

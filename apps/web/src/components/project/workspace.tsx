@@ -1,6 +1,7 @@
 'use client'
 
 import { totalDuration } from '@cutroom/shared/timing'
+import { hasPicture, thumbnailOf } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronLeft, Layers, MoreHorizontal, Smartphone, Trash2 } from 'lucide-react'
 import Link from 'next/link'
@@ -48,7 +49,7 @@ export function stageOf(data: ProjectFull) {
     scheduledAt: project.scheduledAt,
     hasScript: Boolean(project.script.trim()),
     sceneCount: scenes.length,
-    imagesDone: scenes.filter((s) => s.imageUrl).length,
+    imagesDone: scenes.filter(hasPicture).length,
     hasVoiceover: Boolean(project.voiceoverUrl),
     timed:
       Boolean(project.transcript) ||
@@ -299,7 +300,7 @@ function Loaded({ data }: { data: ProjectFull }) {
               index: s.index,
               start: s.start,
               end: s.end,
-              imageUrl: s.imageUrl,
+              imageUrl: thumbnailOf(s),
             }))}
             duration={duration}
             selectedId={selectedSceneId}

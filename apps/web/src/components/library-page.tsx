@@ -1,5 +1,6 @@
 'use client'
 
+import type { CharacterPose } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { ImagePlus, Layers, Pencil, Plus, Trash2, UserRound, X } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -8,9 +9,9 @@ import { toast } from 'sonner'
 import { SyncedInput, SyncedTextarea } from '@/components/project/fields'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { LibraryCharacterDTO, SeriesDTO, StatusDTO } from '@/lib/dto'
+import type { LibraryBackgroundDTO, LibraryCharacterDTO, SeriesDTO, StatusDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { keys, useLibrary, useSeriesList, useStatus } from '@/lib/hooks'
+import { keys, useBackgrounds, useLibrary, useSeriesList, useStatus } from '@/lib/hooks'
 import { uploadTo } from '@/lib/upload'
 import { Button, Dialog, DropZone, Field, Input, Panel, Spinner, Textarea, useConfirm } from './ui'
 
@@ -27,6 +28,7 @@ export function LibraryPage() {
       <div className="flex flex-col gap-6">
         <SeriesSection />
         <CharactersSection />
+        <BackgroundsSection />
       </div>
     </div>
   )
@@ -435,6 +437,7 @@ function LibraryCharacterCard({
           className="min-h-20"
         />
       </Field>
+      <PosesEditor character={character} />
       <div>
         <Button variant="danger" size="sm" onClick={remove} icon={<Trash2 className="size-3.5" />}>
           Remove
@@ -442,5 +445,311 @@ function LibraryCharacterCard({
       </div>
       {element}
     </li>
+  )
+}
+
+/** A light checkerboard behind cut-outs, so their transparent parts show. */
+const CHECKER =
+  'bg-sunk [background-image:conic-gradient(var(--color-line)_25%,transparent_0_50%,var(--color-line)_0_75%,transparent_0)] [background-size:14px_14px]'
+
+const fileName = (file: File) =>
+  file.name
+    .replace(/\.[^.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .slice(0, 60)
+
+/**
+ * A character's poses: cut-outs with transparent backgrounds (PNG or WebP), each named (happy,
+ * hungry…). Layered scenes put them in front of a background; an eyes-closed version makes the
+ * character blink in the video.
+ */
+function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
+  const client = useQueryClient()
+  const { data: status } = useStatus()
+  const [uploading, setUploading] = useState(0)
+  const [timer] = useState(() => new Map<string, ReturnType<typeof setTimeout>>())
+  const folder = `library/characters/${character.id}`
+  const latest = () =>
+    client.getQueryData<LibraryCharacterDTO[]>(keys.library)?.find((c) => c.id === character.id)?.poses ??
+    character.poses
+
+  const show = (poses: CharacterPose[]) =>
+    client.setQueryData<LibraryCharacterDTO[]>(keys.library, (prev) =>
+      prev?.map((c) => (c.id === character.id ? { ...c, poses } : c)),
+    )
+  const save = async (poses: CharacterPose[]) => {
+    const before = latest()
+    show(poses)
+    try {
+      await api.patch(`/api/library/characters/${character.id}`, { poses })
+    } catch (error) {
+      toast.error(errorText(error))
+      show(before)
+    }
+  }
+  const driver = async () => status?.storage ?? (await api.get<StatusDTO>('/api/status')).storage
+
+  const addPoses = async (files: File[]) => {
+    setUploading(files.length)
+    try {
+      const where = await driver()
+      const added = await Promise.all(
+        files.map(async (file) => {
+          const stored = await uploadTo(file, folder, where)
+          return {
+            id: crypto.randomUUID(),
+            name: fileName(file) || 'Pose',
+            url: stored.url,
+            key: stored.key,
+            blinkUrl: null,
+            blinkKey: null,
+          }
+        }),
+      )
+      await save([...latest(), ...added])
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setUploading(0)
+    }
+  }
+
+  const addBlink = async (poseId: string, file: File) => {
+    try {
+      const stored = await uploadTo(file, folder, await driver())
+      await save(
+        latest().map((p) => (p.id === poseId ? { ...p, blinkUrl: stored.url, blinkKey: stored.key } : p)),
+      )
+    } catch (error) {
+      toast.error(errorText(error))
+    }
+  }
+
+  const rename = (poseId: string, name: string) => {
+    const next = latest().map((p) => (p.id === poseId ? { ...p, name } : p))
+    show(next)
+    clearTimeout(timer.get(poseId))
+    timer.set(
+      poseId,
+      setTimeout(() => void save(latest()), 700),
+    )
+  }
+
+  return (
+    <Field
+      label="Poses"
+      hint="Cut-outs with a transparent background (PNG). Scenes put them in front of a background; add an eyes-closed version and the character blinks."
+    >
+      <DropZone
+        accept="image/png,image/webp"
+        multiple
+        onFiles={addPoses}
+        className="rounded-[var(--radius-control)]"
+      >
+        {({ open, dragging }) => (
+          <div className="flex flex-wrap gap-2">
+            {character.poses.map((pose) => (
+              <div key={pose.id} className="flex w-28 flex-col gap-1">
+                <div
+                  className={cn(
+                    'group relative aspect-square overflow-hidden rounded-[var(--radius-control)]',
+                    CHECKER,
+                  )}
+                >
+                  {/* biome-ignore lint/performance/noImgElement: user uploads */}
+                  <img src={pose.url} alt={pose.name} className="size-full object-contain" />
+                  <button
+                    type="button"
+                    onClick={() => void save(latest().filter((p) => p.id !== pose.id))}
+                    aria-label={`Remove ${pose.name || 'pose'}`}
+                    className="absolute top-1 right-1 grid size-6 place-items-center rounded-full bg-film/80 text-film-ink opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+                <Input
+                  value={pose.name}
+                  maxLength={60}
+                  onChange={(e) => rename(pose.id, e.target.value)}
+                  aria-label="Pose name"
+                  className="h-8 px-2 text-[12.5px]"
+                />
+                {pose.blinkUrl ? (
+                  <span className="text-[11.5px] text-ok">Blinks</span>
+                ) : (
+                  <DropZone
+                    accept="image/png,image/webp"
+                    onFiles={([file]) => file && void addBlink(pose.id, file)}
+                  >
+                    {({ open: pick }) => (
+                      <button
+                        type="button"
+                        onClick={pick}
+                        className="text-left text-[11.5px] text-ink-3 hover:text-ink"
+                      >
+                        + Eyes closed
+                      </button>
+                    )}
+                  </DropZone>
+                )}
+              </div>
+            ))}
+            {Array.from({ length: uploading }).map((_, i) => (
+              <div
+                key={`u${i}`}
+                className="grid size-28 place-items-center rounded-[var(--radius-control)] bg-sunk"
+              >
+                <Spinner className="text-ink-3" />
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={open}
+              className={cn(
+                'flex size-28 flex-col items-center justify-center gap-1 rounded-[var(--radius-control)] border border-dashed text-[12px] transition-colors',
+                dragging
+                  ? 'border-ink bg-kodak-wash text-ink'
+                  : 'border-line-strong text-ink-2 hover:border-ink hover:text-ink',
+              )}
+            >
+              <ImagePlus className="size-5" aria-hidden />
+              Add poses
+            </button>
+          </div>
+        )}
+      </DropZone>
+    </Field>
+  )
+}
+
+/** Backgrounds shared by every video: scenes and thumbnails put characters in front of them. */
+function BackgroundsSection() {
+  const client = useQueryClient()
+  const { data: status } = useStatus()
+  const { data: backgrounds, isLoading } = useBackgrounds()
+  const { confirm, element } = useConfirm()
+  const [uploading, setUploading] = useState(0)
+  const [timer] = useState(() => new Map<string, ReturnType<typeof setTimeout>>())
+
+  const add = async (files: File[]) => {
+    setUploading(files.length)
+    try {
+      const driver = status?.storage ?? (await api.get<StatusDTO>('/api/status')).storage
+      for (const file of files) {
+        const id = crypto.randomUUID()
+        const stored = await uploadTo(file, `library/backgrounds/${id}`, driver)
+        const row = await api.post<LibraryBackgroundDTO>('/api/library/backgrounds', {
+          id,
+          name: fileName(file),
+          url: stored.url,
+          key: stored.key,
+        })
+        client.setQueryData<LibraryBackgroundDTO[]>(keys.backgrounds, (prev) => [...(prev ?? []), row])
+        setUploading((n) => Math.max(0, n - 1))
+      }
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setUploading(0)
+    }
+  }
+
+  const rename = (id: string, name: string) => {
+    client.setQueryData<LibraryBackgroundDTO[]>(keys.backgrounds, (prev) =>
+      prev?.map((b) => (b.id === id ? { ...b, name } : b)),
+    )
+    clearTimeout(timer.get(id))
+    timer.set(
+      id,
+      setTimeout(async () => {
+        try {
+          await api.patch(`/api/library/backgrounds/${id}`, { name })
+        } catch (error) {
+          toast.error(errorText(error))
+        }
+      }, 700),
+    )
+  }
+
+  const remove = async (background: LibraryBackgroundDTO) => {
+    const ok = await confirm({
+      title: `Delete ${background.name || 'this background'}?`,
+      body: 'Videos already posted are not affected.',
+      action: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await api.del(`/api/library/backgrounds/${background.id}`)
+      client.setQueryData<LibraryBackgroundDTO[]>(keys.backgrounds, (prev) =>
+        prev?.filter((b) => b.id !== background.id),
+      )
+    } catch (error) {
+      toast.error(errorText(error))
+    }
+  }
+
+  return (
+    <Panel
+      title="Backgrounds"
+      description="Places your characters appear in (kitchen, garden, bedroom…). A scene can be a background with a character's pose in front, picked by you or by the AI."
+    >
+      <DropZone accept="image/*" multiple onFiles={add} className="rounded-b-[var(--radius-panel)]">
+        {({ open, dragging }) => (
+          <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+            {isLoading && (
+              <div className="aspect-video animate-pulse-soft rounded-[var(--radius-control)] bg-line/50" />
+            )}
+            {backgrounds?.map((background) => (
+              <div key={background.id} className="flex flex-col gap-1.5">
+                <div className="group relative aspect-video overflow-hidden rounded-[var(--radius-control)] bg-sunk">
+                  {/* biome-ignore lint/performance/noImgElement: user uploads */}
+                  <img src={background.url} alt={background.name} className="size-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => void remove(background)}
+                    aria-label={`Delete ${background.name || 'background'}`}
+                    className="absolute top-1.5 right-1.5 grid size-7 place-items-center rounded-full bg-film/80 text-film-ink opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+                <Input
+                  value={background.name}
+                  maxLength={100}
+                  onChange={(e) => rename(background.id, e.target.value)}
+                  aria-label="Background name"
+                  placeholder="Kitchen"
+                  className="h-8 px-2 text-[13px]"
+                />
+              </div>
+            ))}
+            {Array.from({ length: uploading }).map((_, i) => (
+              <div
+                key={`u${i}`}
+                className="grid aspect-video place-items-center rounded-[var(--radius-control)] bg-sunk"
+              >
+                <Spinner className="text-ink-3" />
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={open}
+              className={cn(
+                'flex aspect-video flex-col items-center justify-center gap-1.5 rounded-[var(--radius-control)] border border-dashed text-[13px] transition-colors',
+                dragging
+                  ? 'border-ink bg-kodak-wash text-ink'
+                  : 'border-line-strong text-ink-2 hover:border-ink hover:text-ink',
+              )}
+            >
+              <ImagePlus className="size-5" aria-hidden />
+              Add backgrounds
+            </button>
+          </div>
+        )}
+      </DropZone>
+      {element}
+    </Panel>
   )
 }

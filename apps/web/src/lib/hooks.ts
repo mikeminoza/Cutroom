@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { api, errorText } from './api'
 import type {
   IdeaDTO,
+  LibraryBackgroundDTO,
   LibraryCharacterDTO,
   PerformanceDTO,
   ProjectDTO,
@@ -25,6 +26,7 @@ export const keys = {
   schedule: ['schedule'] as const,
   series: ['series'] as const,
   library: ['library'] as const,
+  backgrounds: ['backgrounds'] as const,
   ideas: ['ideas'] as const,
   performance: ['performance'] as const,
   voices: ['voices'] as const,
@@ -39,6 +41,13 @@ export function useLibrary() {
   return useQuery({
     queryKey: keys.library,
     queryFn: () => api.get<LibraryCharacterDTO[]>('/api/library/characters'),
+  })
+}
+
+export function useBackgrounds() {
+  return useQuery({
+    queryKey: keys.backgrounds,
+    queryFn: () => api.get<LibraryBackgroundDTO[]>('/api/library/backgrounds'),
   })
 }
 

@@ -3,10 +3,12 @@ import { copyStoredFile, deleteFile, isStoredUnder } from '@cutroom/shared/stora
 import {
   type ChannelNiche,
   EMPTY_POST,
+  hasPicture,
   type Motion,
   normalizeTransition,
   type ProjectStatus,
   type SeriesTemplate,
+  thumbnailOf,
 } from '@cutroom/shared/types'
 import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import type { CharacterDTO, JobDTO, ProjectDTO, ProjectFull, ProjectSummary, SceneDTO } from '@/lib/dto'
@@ -285,7 +287,7 @@ export async function getProjectFull(id: string): Promise<ProjectFull> {
     scheduledAt: dto.scheduledAt,
     hasScript: Boolean(project.script.trim()),
     sceneCount: scenes.length,
-    imagesDone: scenes.filter((s) => s.imageUrl).length,
+    imagesDone: scenes.filter(hasPicture).length,
     hasVoiceover: Boolean(project.voiceoverUrl),
     timed: isTimed(project, scenes),
   })
@@ -314,6 +316,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         start: schema.scenes.start,
         end: schema.scenes.end,
         imageUrl: schema.scenes.imageUrl,
+        layer: schema.scenes.layer,
       })
       .from(schema.scenes)
       .where(inArray(schema.scenes.projectId, ids))
@@ -344,7 +347,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         scheduledAt,
         hasScript: Boolean(row.script.trim()),
         sceneCount: frames.length,
-        imagesDone: frames.filter((f) => f.imageUrl).length,
+        imagesDone: frames.filter(hasPicture).length,
         hasVoiceover: Boolean(row.voiceoverUrl),
         timed: isTimed(row, frames),
       }),
@@ -355,7 +358,8 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       seriesId: row.seriesId,
       channelId: row.channelId,
       stats: row.stats ?? null,
-      frames: frames.map((f) => ({ start: f.start, end: f.end, imageUrl: f.imageUrl })),
+      // A layered scene shows its background (or the pose) as its thumbnail.
+      frames: frames.map((f) => ({ start: f.start, end: f.end, imageUrl: thumbnailOf(f) })),
       hasScript: Boolean(row.script.trim()),
       hasVoiceover: Boolean(row.voiceoverUrl),
       timed: isTimed(row, frames),

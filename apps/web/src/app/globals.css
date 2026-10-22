@@ -46,6 +46,9 @@
   --radius-frame: 3px;
 
   --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+  /* A layered scene's character: breathing when quiet, bouncing while the narrator speaks. */
+  --animate-breathe: breathe 3.4s ease-in-out infinite;
+  --animate-talk: talk 0.42s ease-in-out infinite;
 }
 
 /*
@@ -84,6 +87,33 @@
   --color-film: #252b37;
   --color-film-2: #2f3643;
   --color-film-line: #404858;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1%);
+  }
+}
+
+@keyframes talk {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2.3%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe,
+  .animate-talk {
+    animation: none;
+  }
 }
 
 @keyframes pulse-soft {
