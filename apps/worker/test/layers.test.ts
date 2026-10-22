@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runFfmpeg } from '../src/render/ffmpeg'
-import { planSegments, poseY, type RenderScene, renderVideo } from '../src/render/render'
+import { planSegments, poseY, type RenderScene, renderVideo, segmentArgs } from '../src/render/render'
 
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cutroom-layers-'))
 const file = (name: string) => path.join(temp, name)
@@ -156,4 +156,41 @@ describe('rendering layered scenes', () => {
     const dark = await pixel(output.videoPath, 3.5, 100, 100)
     expect(Math.max(...dark)).toBeLessThan(60)
   }, 120_000)
+})
+
+describe('quick cuts on one background', () => {
+  it('keeps one camera move across scenes on the same background, so only the pose changes', () => {
+    const layer = (pose: string) => ({
+      backgroundPath: file('kitchen.png'),
+      posePath: file(pose),
+      blinkPath: null,
+      side: 'center' as const,
+    })
+    const segments = planSegments(
+      [
+        scene(0, 2, { motion: 'zoom-in', focusX: 0.3, layer: layer('happy.png') }),
+        scene(2, 3, { motion: 'pan-left', layer: layer('happy-blink.png') }),
+        scene(3, 5, { motion: 'zoom-out', layer: layer('happy.png') }),
+        scene(5, 7, { imagePath: file('kitchen.png'), motion: 'zoom-out' }),
+      ],
+      210,
+    )
+    expect(segments.map((s) => s.move)).toEqual([
+      { frames: 150, offset: 0 },
+      { frames: 150, offset: 60 },
+      { frames: 150, offset: 90 },
+      { frames: 60, offset: 0 },
+    ])
+    // The shot keeps its first scene's framing and move.
+    expect(segments.slice(0, 3).map((s) => [s.visual?.motion, s.visual?.focusX])).toEqual([
+      ['zoom-in', 0.3],
+      ['zoom-in', 0.3],
+      ['zoom-in', 0.3],
+    ])
+    // An uploaded picture of the same file is its own shot.
+    expect(segments[3].visual?.motion).toBe('zoom-out')
+    const sizes = new Map([[segments[0].visual!.path!, { width: 640, height: 360 }]])
+    const args = segmentArgs(segments[2], segments[1], 'c.mp4', { width: 1280, height: 720 }, sizes, false, 1)
+    expect(args[args.indexOf('-filter_complex') + 1]).toContain('((in+90)/149)')
+  })
 })

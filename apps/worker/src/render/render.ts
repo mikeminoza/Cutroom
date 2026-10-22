@@ -131,6 +131,8 @@ interface Visual {
   motion: Motion
   /** A character's pose standing in front of the picture. */
   pose: { path: string; blinkPath: string | null; side: LayerSide } | null
+  /** Built from Library layers rather than an uploaded picture. */
+  layered: boolean
 }
 
 /** Seconds on the final timeline. */
@@ -151,6 +153,12 @@ export interface Segment {
   transition: Transition
   /** Fades in frames, filled in once all segments are known. */
   plan: TransitionPlan
+  /**
+   * The camera move this clip is part of: its whole length in frames, and how far into it the
+   * clip starts. Usually the clip alone (plus the tail into the next crossfade); back-to-back
+   * layered scenes on the same background share one move, so only the pose changes at the cut.
+   */
+  move: { frames: number; offset: number }
 }
 
 const NO_FADES: TransitionPlan = { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 }
@@ -191,6 +199,7 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
         focusX: clamp01(scene.focusX),
         focusY: clamp01(scene.focusY),
         motion: scene.motion,
+        layered: layer !== null,
         pose: layer?.posePath
           ? {
               path: resolve(layer.posePath),
@@ -214,6 +223,7 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
       sceneIndex: i,
       transition: lastTransition,
       plan: NO_FADES,
+      move: { frames: 0, offset: 0 },
     })
   })
   if (segments.length === 0)
@@ -224,6 +234,7 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
       sceneIndex: 0,
       transition: 'cut',
       plan: NO_FADES,
+      move: { frames: 0, offset: 0 },
     })
   const plans = planTransitions(
     segments.map((s) => ({ length: s.frames, hasVisual: s.visual !== null, transition: s.transition })),
@@ -232,8 +243,45 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
   )
   segments.forEach((segment, i) => {
     segment.plan = plans[i]
+    segment.move = { frames: segment.frames + plans[i].tail, offset: 0 }
   })
+  joinShots(segments)
   return segments
+}
+
+/** Two layered scenes on the same background, with a pose on at least one: same place, new pose. */
+function sameShot(a: Visual | null, b: Visual | null): boolean {
+  return Boolean(a?.layered && b?.layered && a.path !== null && a.path === b.path && (a.pose || b.pose))
+}
+
+/**
+ * Back-to-back layered scenes on the same background become one continuous shot: they take the
+ * first scene's framing and move, and the camera keeps going across the cuts instead of
+ * starting over, so a quick cut reads as the character changing pose, not a new slide.
+ */
+function joinShots(segments: Segment[]) {
+  let first = 0
+  for (let i = 1; i <= segments.length; i++) {
+    if (i < segments.length && sameShot(segments[i - 1].visual, segments[i].visual)) continue
+    const run = segments.slice(first, i)
+    if (run.length > 1) {
+      const lead = run[0].visual as Visual
+      const frames = run.reduce((n, s) => n + s.frames, 0) + run[run.length - 1].plan.tail
+      let offset = 0
+      for (const segment of run) {
+        segment.visual = {
+          ...(segment.visual as Visual),
+          fit: lead.fit,
+          focusX: lead.focusX,
+          focusY: lead.focusY,
+          motion: lead.motion,
+        }
+        segment.move = { frames, offset }
+        offset += segment.frames
+      }
+    }
+    first = i
+  }
 }
 
 /** Plain decimal for filter args / expressions (never exponent notation). */
@@ -478,16 +526,11 @@ export function segmentArgs(
   // The picture, its move running on through the next picture's crossfade (plan.tail) so it
   // never stalls, then any dip through black.
   const picture = [
-    pictureChain(
-      segment.visual,
-      size,
-      sizes,
-      inputs,
-      graph,
-      'a',
-      { frames: segment.frames + plan.tail, offset: 0 },
-      { at, seconds: segment.frames / FPS, speech },
-    ),
+    pictureChain(segment.visual, size, sizes, inputs, graph, 'a', segment.move, {
+      at,
+      seconds: segment.frames / FPS,
+      speech,
+    }),
     ...(plan.fadeIn > 0 ? [`fade=t=in:s=0:n=${plan.fadeIn}`] : []),
     ...(plan.fadeOut > 0 ? [`fade=t=out:s=${segment.frames - plan.fadeOut}:n=${plan.fadeOut}`] : []),
   ]
@@ -505,7 +548,7 @@ export function segmentArgs(
         inputs,
         graph,
         'b',
-        { frames: previous.frames + previous.plan.tail, offset: previous.frames },
+        { frames: previous.move.frames, offset: previous.move.offset + previous.frames },
         { at, seconds: plan.crossfade / FPS, speech },
       ),
       `trim=end_frame=${plan.crossfade}`,

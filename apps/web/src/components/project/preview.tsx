@@ -88,6 +88,24 @@ export interface PictureSegment {
   /** The scene whose image is shown; null = the dark frame before the first image. */
   scene: SceneDTO | null
   plan: TransitionPlan
+  /**
+   * The camera move it is part of (seconds): back-to-back layered scenes on the same background
+   * share one move, like the render, so only the pose changes at the cut.
+   */
+  move: { start: number; length: number }
+}
+
+/** Same Library background, and a pose on at least one side: the same place, a new pose. */
+function sameShot(a: SceneDTO | null, b: SceneDTO | null): boolean {
+  const background = a?.imageUrl ? null : a?.layer?.backgroundUrl
+  return Boolean(
+    a &&
+      b &&
+      background &&
+      !b.imageUrl &&
+      b.layer?.backgroundUrl === background &&
+      (a.layer?.poseUrl || b.layer?.poseUrl),
+  )
 }
 
 /**
@@ -105,7 +123,7 @@ export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSe
   })
   bounds.push(totalFrames)
 
-  const segments: (PictureSegment & { transition: Transition })[] = []
+  const segments: (Omit<PictureSegment, 'move'> & { transition: Transition })[] = []
   let lastVisual: SceneDTO | null = null
   scenes.forEach((scene, i) => {
     if (hasPicture(scene)) lastVisual = scene
@@ -134,7 +152,38 @@ export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSe
     1,
     false,
   )
-  return segments.map(({ transition: _t, ...s }, i) => ({ ...s, plan: plans[i] }))
+  const placed: PictureSegment[] = segments.map(({ transition: _t, ...s }, i) => ({
+    ...s,
+    plan: plans[i],
+    move: { start: s.start, length: Math.max(0.1, s.end - s.start + plans[i].tail) },
+  }))
+  // One shot across same-background scenes, with the first scene's framing and move.
+  let first = 0
+  for (let i = 1; i <= placed.length; i++) {
+    if (i < placed.length && sameShot(placed[i - 1].scene, placed[i].scene)) continue
+    if (i - first > 1) {
+      const lead = placed[first].scene as SceneDTO
+      const last = placed[i - 1]
+      const move = {
+        start: placed[first].start,
+        length: Math.max(0.1, last.end - placed[first].start + last.plan.tail),
+      }
+      for (const segment of placed.slice(first, i)) {
+        segment.move = move
+        if (segment.scene && segment.scene !== lead) {
+          segment.scene = {
+            ...segment.scene,
+            fit: lead.fit,
+            focusX: lead.focusX,
+            focusY: lead.focusY,
+            motion: lead.motion,
+          }
+        }
+      }
+    }
+    first = i
+  }
+  return placed
 }
 
 export function PreviewStep({ data, goTo }: StepProps) {
@@ -353,13 +402,14 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       const segment = segments[s]
       if (!segment) return
       const elapsed = t - segment.start
-      // A picture keeps moving through the next picture's crossfade (plan.tail), as rendered.
-      const moveLength = Math.max(0.1, segment.end - segment.start + segment.plan.tail)
+      // A picture keeps moving through the next picture's crossfade (plan.tail), as rendered, and
+      // on across the scenes of one shot.
+      const { move } = segment
       if (segment.scene && current.current) {
         const style = motionStyle(
           segment.scene.motion,
-          elapsed / moveLength,
-          moveLength,
+          (t - move.start) / move.length,
+          move.length,
           segment.scene.focusY,
           segment.scene.focusX,
         )
@@ -371,11 +421,10 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       if (outgoing.current)
         outgoing.current.style.opacity = fading ? String(1 - elapsed / segment.plan.crossfade) : '0'
       if (fading && previous?.scene && outgoingImage.current) {
-        const length = Math.max(0.1, previous.end - previous.start + previous.plan.tail)
         const style = motionStyle(
           previous.scene.motion,
-          (t - previous.start) / length,
-          length,
+          (t - previous.move.start) / previous.move.length,
+          previous.move.length,
           previous.scene.focusY,
           previous.scene.focusX,
         )
