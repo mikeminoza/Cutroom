@@ -53,4 +53,11 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "scenes" ADD COLUMN "layer" jsonb;',
     ],
   },
+  {
+    tag: '0004_comment_insights',
+    statements: [
+      'CREATE TABLE "comment_insights" (\n\t"channel_id" text PRIMARY KEY NOT NULL,\n\t"insights" jsonb NOT NULL,\n\t"videos" integer DEFAULT 0 NOT NULL,\n\t"comments" integer DEFAULT 0 NOT NULL,\n\t"updated_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'ALTER TABLE "comment_insights" ADD CONSTRAINT "comment_insights_channel_id_channels_id_fk" FOREIGN KEY ("channel_id") REFERENCES "public"."channels"("id") ON DELETE cascade ON UPDATE no action;',
+    ],
+  },
 ]

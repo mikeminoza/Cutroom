@@ -6,6 +6,7 @@ import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from './api'
 import type {
+  CommentInsightsDTO,
   IdeaDTO,
   LibraryBackgroundDTO,
   LibraryCharacterDTO,
@@ -29,6 +30,7 @@ export const keys = {
   backgrounds: ['backgrounds'] as const,
   ideas: ['ideas'] as const,
   performance: ['performance'] as const,
+  comments: ['comments'] as const,
   voices: ['voices'] as const,
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
 }
@@ -53,6 +55,13 @@ export function useBackgrounds() {
 
 export function useIdeas() {
   return useQuery({ queryKey: keys.ideas, queryFn: () => api.get<IdeaDTO[]>('/api/ideas') })
+}
+
+export function useCommentInsights() {
+  return useQuery({
+    queryKey: keys.comments,
+    queryFn: () => api.get<CommentInsightsDTO[]>('/api/performance/comments'),
+  })
 }
 
 export function usePerformance() {

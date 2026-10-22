@@ -184,6 +184,18 @@ export interface CharacterPose {
   blinkKey: string | null
 }
 
+/** What viewers say in the comments on a channel's recent videos, summed up by Gemini. */
+export interface CommentInsights {
+  /** How viewers feel overall, in two or three sentences. */
+  summary: string
+  liked: string[]
+  /** Videos viewers asked for, ready to become ideas. */
+  requests: { title: string; angle: string }[]
+  improve: string[]
+  /** Questions worth answering in a pinned comment or a next video. */
+  questions: string[]
+}
+
 /** True when a scene shows a picture: its own upload, or a background and/or pose. */
 export function hasPicture(scene: { imageUrl: string | null; layer?: SceneLayer | null }): boolean {
   return Boolean(scene.imageUrl || scene.layer?.backgroundUrl || scene.layer?.poseUrl)

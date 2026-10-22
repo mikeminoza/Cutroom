@@ -10,6 +10,7 @@ import { cn } from '@/lib/cn'
 import type { PerformanceDTO, PerformanceVideo } from '@/lib/dto'
 import { formatWhen, timeAgo } from '@/lib/format'
 import { keys, usePerformance, useSeriesList, useStatus } from '@/lib/hooks'
+import { CommentInsightsPanels } from './comment-insights'
 import { Button, Panel, Segmented, Select } from './ui'
 
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
@@ -238,6 +239,8 @@ export function PerformancePage() {
               </table>
             </div>
           </Panel>
+
+          <CommentInsightsPanels channels={shownChannel ? [shownChannel] : channels} />
 
           {top.length > 0 && (
             <Panel

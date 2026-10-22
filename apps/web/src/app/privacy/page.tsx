@@ -17,7 +17,8 @@ export default function PrivacyPage() {
         <li>
           <strong>YouTube:</strong> uploading and scheduling videos you finish in Cutroom, adding their
           thumbnails, captions and playlists, and reading the views, likes, comments, watch time and retention
-          of those videos for the Performance page.
+          of those videos for the Performance page. That includes the text of viewers’ comments on your newest
+          videos, so they can be summed up for you.
         </li>
         <li>
           <strong>Google Drive:</strong> only the folders and files Cutroom creates (a Cutroom folder with
@@ -47,8 +48,10 @@ export default function PrivacyPage() {
         If AI features are turned on, what you use them on (scripts, scene descriptions, your voice-over
         recording when scenes are matched to it, and character pictures for AI images) is sent to Google’s
         Gemini API to produce the result. To suggest titles and video ideas in your channel’s style, the
-        titles and view counts of your most-viewed videos are sent with it. On Gemini’s free tier, Google may
-        use what is sent to improve its products. Nothing else from your Google account is sent.
+        titles and view counts of your most-viewed videos are sent with it. To sum up what viewers say, the
+        titles of your newest videos and the text of their comments (with their like counts, without the
+        commenters’ names) are sent. On Gemini’s free tier, Google may use what is sent to improve its
+        products. Nothing else from your Google account is sent.
       </p>
 
       <h2>Removing access and data</h2>

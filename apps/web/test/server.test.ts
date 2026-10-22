@@ -8,9 +8,17 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
+const summarizeComments = vi.hoisted(() => vi.fn())
 vi.mock('@cutroom/shared/ai', async (original) => ({
   ...(await original<typeof import('@cutroom/shared/ai')>()),
   pickSceneLayers,
+  summarizeComments,
+}))
+// Reading comments from YouTube is stubbed too.
+const videoComments = vi.hoisted(() => vi.fn())
+vi.mock('@cutroom/shared/google', async (original) => ({
+  ...(await original<typeof import('@cutroom/shared/google')>()),
+  videoComments,
 }))
 
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cutroom-test-'))
@@ -64,6 +72,8 @@ const backgroundsRoute = await import('../src/app/api/library/backgrounds/route'
 const backgroundRoute = await import('../src/app/api/library/backgrounds/[id]/route')
 const composeRoute = await import('../src/app/api/projects/[id]/ai/compose/route')
 const pictureRoute = await import('../src/app/api/picture/route')
+const commentsRoute = await import('../src/app/api/performance/comments/route')
+const comments = await import('../src/server/comments')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1124,5 +1134,102 @@ describe('pictures for the thumbnail maker', () => {
     expect((await get('/api/files/../secrets.png')).status).toBe(400)
     const audio = await putFile('projects/p9/music/song.mp3', Buffer.from('m'), 'audio/mpeg')
     expect((await get(audio.url)).status).toBe(400)
+  })
+})
+
+describe('comment insights', () => {
+  it('reads the newest videos of a channel, sums them up, and reads again weekly from the cron', async () => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    vi.stubEnv('GEMINI_API_KEY', 'key')
+    try {
+      const database = await db()
+      const channelId = 'comments-channel'
+      await database
+        .insert(schema.channels)
+        .values({ id: channelId, youtubeId: 'UC-comments', title: 'Cappy Tales', refreshToken: 'r' })
+      const quiet = await newProject()
+      const loud = await newProject()
+      await database
+        .update(schema.projects)
+        .set({
+          youtubeVideoId: 'quiet',
+          channelId,
+          scheduledAt: new Date('2026-01-01'),
+          stats: {
+            views: 10,
+            likes: 0,
+            comments: 0,
+            watchMinutes: null,
+            averageViewSeconds: null,
+            averageViewPercent: null,
+            subscribersGained: null,
+            publishedAt: null,
+            fetchedAt: new Date().toISOString(),
+          },
+        })
+        .where(eq(schema.projects.id, quiet))
+      await database
+        .update(schema.projects)
+        .set({
+          youtubeVideoId: 'loud',
+          channelId,
+          scheduledAt: new Date('2026-02-01'),
+          title: 'Cappy wants pizza',
+        })
+        .where(eq(schema.projects.id, loud))
+
+      videoComments.mockResolvedValue([{ text: 'Make one about Cappy at the beach!', likes: 12 }])
+      summarizeComments.mockResolvedValueOnce({
+        summary: 'Viewers love Cappy.',
+        liked: ['The voice'],
+        requests: [{ title: 'Cappy at the beach', angle: 'Sand everywhere.' }],
+        improve: [],
+        questions: [],
+      })
+      const request = new Request('http://localhost/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channelId }),
+      })
+      const response = await commentsRoute.POST(request, undefined)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({
+        channelId,
+        videos: 1,
+        comments: 1,
+        insights: { summary: 'Viewers love Cappy.' },
+      })
+      // The video known to have no comments isn't read.
+      expect(videoComments.mock.calls.map((call) => call[1])).toEqual(['loud'])
+      expect(summarizeComments.mock.calls[0][0]).toMatchObject({
+        channel: 'Cappy Tales',
+        videos: [{ title: 'Cappy wants pizza' }],
+      })
+
+      // The cron reads one channel a day, each once a week: other channels first, not this one.
+      videoComments.mockResolvedValue([])
+      const drain = async () => {
+        const notes: (string | null)[] = []
+        for (let i = 0; i < 10; i++) {
+          const note = await comments.readDueComments()
+          if (!note) break
+          notes.push(note)
+        }
+        return notes
+      }
+      expect(await drain()).not.toContain('Read the comments on Cappy Tales.')
+      await database
+        .update(schema.commentInsights)
+        .set({ updatedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+        .where(eq(schema.commentInsights.channelId, channelId))
+      expect(await drain()).toEqual(['Read the comments on Cappy Tales.'])
+      const latest = (await comments.listInsights()).find((i) => i.channelId === channelId)
+      // No comments this time: nothing for Gemini to read.
+      expect(latest?.insights.summary).toBe('No comments on the newest videos yet.')
+      expect(summarizeComments).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

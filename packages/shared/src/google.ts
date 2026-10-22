@@ -267,6 +267,41 @@ export async function videoStatistics(
   return result
 }
 
+export interface VideoComment {
+  text: string
+  likes: number
+}
+
+/**
+ * A video's top-level comments, most relevant first (1 quota unit per call, up to 100). A video
+ * with comments turned off, or gone, has none.
+ */
+export async function videoComments(client: OAuthClient, videoId: string, max = 50): Promise<VideoComment[]> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  try {
+    const res = await yt.commentThreads.list({
+      part: ['snippet'],
+      videoId,
+      maxResults: Math.min(100, Math.max(1, max)),
+      order: 'relevance',
+      textFormat: 'plainText',
+    })
+    return (res.data.items ?? []).flatMap((thread) => {
+      const top = thread.snippet?.topLevelComment?.snippet
+      const text = top?.textDisplay?.trim()
+      return text ? [{ text, likes: Number(top?.likeCount ?? 0) }] : []
+    })
+  } catch (error) {
+    const e = error as {
+      errors?: { reason?: string }[]
+      response?: { data?: { error?: { errors?: { reason?: string }[] } } }
+    }
+    const reason = e.errors?.[0]?.reason ?? e.response?.data?.error?.errors?.[0]?.reason
+    if (reason === 'commentsDisabled' || reason === 'videoNotFound') return []
+    throw error
+  }
+}
+
 export interface VideoAnalytics {
   watchMinutes: number
   averageViewSeconds: number

@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CaptionStyle,
   CharacterPose,
+  CommentInsights,
   ImageFit,
   Motion,
   PostDetails,
@@ -201,6 +202,17 @@ export const libraryBackgrounds = pgTable('library_backgrounds', {
   url: text('url').notNull(),
   key: text('key').notNull(),
   createdAt: created(),
+})
+
+/** The latest read of each channel's comments (server/comments.ts). */
+export const commentInsights = pgTable('comment_insights', {
+  channelId: text('channel_id')
+    .primaryKey()
+    .references(() => channels.id, { onDelete: 'cascade' }),
+  insights: jsonb('insights').$type<CommentInsights>().notNull(),
+  videos: integer('videos').notNull().default(0),
+  comments: integer('comments').notNull().default(0),
+  updatedAt: updated(),
 })
 
 export const ideas = pgTable('ideas', {

@@ -1,16 +1,20 @@
 // Daily Vercel cron: wakes the worker, nudges any job that stalled while nobody was watching,
-// tells you about jobs that have been stuck for an hour, and refreshes YouTube stats.
+// tells you about jobs that have been stuck for an hour, refreshes YouTube stats, and once a week
+// per channel has Gemini read what viewers say in the comments.
 
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { refreshStats } from '@/server/analytics'
 import { authEnabled, safeEqual } from '@/server/auth'
+import { readDueComments } from '@/server/comments'
 import { db, schema } from '@/server/db'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
 import { appUrl } from '@/server/settings'
 
-export const maxDuration = 60
+// Stats take up to 45 s; reading a channel's comments with Gemini can take longer. The Hobby plan
+// allows 300 s with Fluid compute (on by default).
+export const maxDuration = 300
 
 const STUCK_MS = 60 * 60 * 1000
 
@@ -51,5 +55,8 @@ export async function GET(request: Request): Promise<Response> {
   } catch (error) {
     stats.notes.push(error instanceof Error ? error.message : String(error))
   }
-  return NextResponse.json({ worker, nudged: active.length, stuck: stuck.length, stats })
+  const comments = await readDueComments().catch((error) =>
+    error instanceof Error ? error.message : String(error),
+  )
+  return NextResponse.json({ worker, nudged: active.length, stuck: stuck.length, stats, comments })
 }

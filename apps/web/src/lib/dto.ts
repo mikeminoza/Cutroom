@@ -4,6 +4,7 @@ import type {
   CaptionStyle,
   CharacterInput,
   CharacterPose,
+  CommentInsights,
   PostDetails,
   PostingMode,
   ProjectStatus,
@@ -189,6 +190,15 @@ export interface PerformanceVideo {
   seriesId: string | null
   scheduledAt: string | null
   stats: VideoStats | null
+}
+
+export interface CommentInsightsDTO {
+  channelId: string
+  insights: CommentInsights
+  /** How many videos and comments were read. */
+  videos: number
+  comments: number
+  updatedAt: string
 }
 
 export interface PerformanceDTO {
