@@ -71,6 +71,8 @@ export const projects = pgTable('projects', {
    */
   channelYoutubeId: text('channel_youtube_id'),
   stats: jsonb('stats').$type<VideoStats>(),
+  /** The comment posted for viewers (post.comment); '' when it could not be posted. */
+  commentId: text('comment_id'),
   /** The long video a Short was cut from. */
   sourceProjectId: text('source_project_id'),
   createdAt: created(),

@@ -2,6 +2,7 @@ import { desc, isNotNull } from 'drizzle-orm'
 import { resolveChannel } from '@/lib/channels'
 import type { PerformanceDTO } from '@/lib/dto'
 import { refreshStats } from '@/server/analytics'
+import { postDueComments } from '@/server/comments'
 import { connectionSummaries } from '@/server/connections'
 import { db, schema } from '@/server/db'
 import { route } from '@/server/http'
@@ -37,5 +38,6 @@ export const GET = route(async () => performance())
 /** Fetches fresh numbers from YouTube. */
 export const POST = route(async () => {
   const summary = await refreshStats({ force: true })
-  return performance(summary.notes)
+  const posted = await postDueComments().catch((error) => [String(error)])
+  return performance([...summary.notes, ...posted])
 })

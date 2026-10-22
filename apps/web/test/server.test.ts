@@ -9,17 +9,21 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
 const summarizeComments = vi.hoisted(() => vi.fn())
+const suggestPoses = vi.hoisted(() => vi.fn())
 vi.mock('@cutroom/shared/ai', async (original) => ({
   ...(await original<typeof import('@cutroom/shared/ai')>()),
   pickSceneLayers,
   summarizeComments,
+  suggestPoses,
 }))
 // Reading comments from YouTube is stubbed too.
 const videoComments = vi.hoisted(() => vi.fn())
-vi.mock('@cutroom/shared/google', async (original) => ({
-  ...(await original<typeof import('@cutroom/shared/google')>()),
-  videoComments,
-}))
+const postComment = vi.hoisted(() => vi.fn())
+vi.mock('@cutroom/shared/google', async (original) => {
+  const actual = await original<typeof import('@cutroom/shared/google')>()
+  // Video statistics stay real unless a test says otherwise.
+  return { ...actual, videoComments, postComment, videoStatistics: vi.fn(actual.videoStatistics) }
+})
 
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cutroom-test-'))
 process.env.PGLITE_DIR = path.join(temp, 'pglite')
@@ -74,6 +78,8 @@ const composeRoute = await import('../src/app/api/projects/[id]/ai/compose/route
 const pictureRoute = await import('../src/app/api/picture/route')
 const commentsRoute = await import('../src/app/api/performance/comments/route')
 const comments = await import('../src/server/comments')
+const google = await import('@cutroom/shared/google')
+const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1231,5 +1237,110 @@ describe('comment insights', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+describe('a comment for viewers', () => {
+  it('posts it once the video is out, skips videos made for kids, and never tries twice', async () => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    try {
+      const database = await db()
+      const channelId = 'comment-post-channel'
+      await database
+        .insert(schema.channels)
+        .values({ id: channelId, youtubeId: 'UC-post', title: 'Cappy Daily', refreshToken: 'r' })
+      const video = async (youtubeVideoId: string, post: Record<string, unknown>) => {
+        const id = await newProject()
+        const [row] = await database.select().from(schema.projects).where(eq(schema.projects.id, id))
+        await database
+          .update(schema.projects)
+          .set({ youtubeVideoId, channelId, scheduledAt: new Date(), post: { ...row.post, ...post } })
+          .where(eq(schema.projects.id, id))
+        return id
+      }
+      const live = await video('live', { comment: 'What should Cappy eat next? 🍉' })
+      const later = await video('later', { comment: 'Guess the snack!' })
+      const kids = await video('kids', { comment: 'Hi!', madeForKids: true })
+      const closed = await video('closed', { comment: 'Hello?' })
+      await video('silent', { comment: '' })
+
+      const counters = (privacy: string) => ({ views: 0, likes: 0, comments: 0, publishedAt: null, privacy })
+      vi.mocked(google.videoStatistics).mockResolvedValue(
+        new Map([
+          ['live', counters('public')],
+          ['later', counters('private')],
+          ['closed', counters('public')],
+        ]),
+      )
+      postComment.mockImplementation(async (_client, videoId: string) => {
+        if (videoId === 'closed') throw new Error('Comments are turned off.')
+        return `c-${videoId}`
+      })
+      const notes = await comments.postDueComments([live, later, kids, closed])
+      expect(postComment.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+        ['live', 'What should Cappy eat next? 🍉'],
+        ['closed', 'Hello?'],
+      ])
+      expect(notes.join(' ')).toContain('Comments are turned off.')
+      const commentOf = async (id: string) =>
+        (await database.select().from(schema.projects).where(eq(schema.projects.id, id)))[0].commentId
+      expect(await commentOf(live)).toBe('c-live')
+      // Still private (scheduled): waits for the next check.
+      expect(await commentOf(later)).toBeNull()
+      expect(await commentOf(kids)).toBeNull()
+      // Refused: not tried again.
+      expect(await commentOf(closed)).toBe('')
+
+      postComment.mockClear()
+      await comments.postDueComments([live, closed])
+      expect(postComment).not.toHaveBeenCalled()
+    } finally {
+      vi.mocked(google.videoStatistics).mockReset()
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+describe('pose shopping list', () => {
+  it('asks Gemini about the poses a character lacks, from the scripts that feature it', async () => {
+    const created = await (
+      await libraryRoute.POST(
+        new Request('http://localhost/api', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Pip', description: 'A tiny hamster' }),
+        }),
+        undefined,
+      )
+    ).json()
+    const happy = await putFile(`library/characters/${created.id}/happy.png`, Buffer.from('h'), 'image/png')
+    await libraryItemRoute.PATCH(
+      new Request('http://localhost/api', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          poses: [{ id: 'p', name: 'Happy', ...happy, blinkUrl: null, blinkKey: null }],
+        }),
+      }),
+      { params: Promise.resolve({ id: created.id }) },
+    )
+    const featuring = await newProject()
+    await projects.updateProject(featuring, { script: 'Pip runs to the wheel. Pip is shocked!' })
+    const other = await newProject()
+    await projects.updateProject(other, { script: 'A video about octopuses.' })
+    suggestPoses.mockResolvedValueOnce([{ name: 'shocked', why: 'Pip is shocked.', prompt: 'Pip, shocked.' }])
+
+    const response = await suggestPosesRoute.POST(new Request('http://localhost/api', { method: 'POST' }), {
+      params: Promise.resolve({ id: created.id }),
+    })
+    expect(response.status).toBe(200)
+    expect((await response.json()).suggestions).toEqual([
+      { name: 'shocked', why: 'Pip is shocked.', prompt: 'Pip, shocked.' },
+    ])
+    const asked = suggestPoses.mock.calls[0][0]
+    expect(asked.character).toEqual({ name: 'Pip', description: 'A tiny hamster' })
+    expect(asked.have).toEqual(['Happy'])
+    expect(asked.scripts).toEqual(['Pip runs to the wheel. Pip is shocked!'])
   })
 })

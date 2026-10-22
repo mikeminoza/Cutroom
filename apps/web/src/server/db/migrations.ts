@@ -60,4 +60,8 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "comment_insights" ADD CONSTRAINT "comment_insights_channel_id_channels_id_fk" FOREIGN KEY ("channel_id") REFERENCES "public"."channels"("id") ON DELETE cascade ON UPDATE no action;',
     ],
   },
+  {
+    tag: '0005_comment_id',
+    statements: ['ALTER TABLE "projects" ADD COLUMN "comment_id" text;'],
+  },
 ]

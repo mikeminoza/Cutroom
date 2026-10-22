@@ -6,7 +6,7 @@ import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { refreshStats } from '@/server/analytics'
 import { authEnabled, safeEqual } from '@/server/auth'
-import { readDueComments } from '@/server/comments'
+import { postDueComments, readDueComments } from '@/server/comments'
 import { db, schema } from '@/server/db'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
@@ -55,6 +55,8 @@ export async function GET(request: Request): Promise<Response> {
   } catch (error) {
     stats.notes.push(error instanceof Error ? error.message : String(error))
   }
+  // Comments for viewers on videos that went public since yesterday.
+  stats.notes.push(...(await postDueComments().catch((error) => [String(error)])))
   const comments = await readDueComments().catch((error) =>
     error instanceof Error ? error.message : String(error),
   )

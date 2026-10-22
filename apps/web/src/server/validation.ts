@@ -33,6 +33,7 @@ export const postSchema = z.object({
   aiFill: z.boolean().optional(),
   playlistId: z.string().max(100),
   language: z.string().max(20),
+  comment: z.string().max(500).optional(),
 })
 
 export const projectPatchSchema = z

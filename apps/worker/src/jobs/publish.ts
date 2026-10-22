@@ -292,6 +292,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         hashtags: draft.hashtags,
         chapters: draft.chapters,
         thumbnailIdeas: draft.thumbnailIdeas,
+        comment: project.post.comment?.trim() || draft.comment,
       }
       await ctx.result({ post })
       await ctx.step('details', 'done', post.title)

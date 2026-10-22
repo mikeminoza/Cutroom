@@ -46,6 +46,8 @@ export interface ProjectDTO {
   scheduledAt: string | null
   youtubeVideoId: string | null
   driveFolderId: string | null
+  /** The comment posted for viewers; '' when it could not be posted. */
+  commentId: string | null
   driveFolderUrl: string | null
   driveFileId: string | null
   outputUrl: string | null

@@ -18,6 +18,7 @@ import { deleteFile, storageDriver } from '@cutroom/shared/storage'
 import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 import { topTitles } from './analytics'
+import { postDueComments } from './comments'
 import { channelFor, getDrive } from './connections'
 import { db, schema } from './db'
 import type { JobRow } from './db/schema'
@@ -532,6 +533,8 @@ async function finishPublish(projectId: string, jobId: string) {
   const status = project.youtubeVideoId ? (scheduled ? 'scheduled' : 'published') : 'rendered'
   // Not uploaded (YouTube not connected): free the posting slot for another video.
   await updateProject(projectId, project.youtubeVideoId ? { status } : { status, scheduledAt: null })
+  // Posted straight away: its comment for viewers goes up now (scheduled ones once they're out).
+  if (project.youtubeVideoId && !scheduled) await postDueComments([projectId]).catch(() => [])
 
   const settings = await getSettings()
   const archived = job.result.archivedKeys ?? []
@@ -656,7 +659,7 @@ export async function resetPublish(projectId: string) {
     .orderBy(desc(schema.jobs.createdAt))
     .limit(1)
   if (job && ACTIVE.includes(job.status)) await cancelJob(job.id)
-  await updateProject(projectId, { status: 'draft', youtubeVideoId: null, stats: null })
+  await updateProject(projectId, { status: 'draft', youtubeVideoId: null, stats: null, commentId: null })
 }
 
 export async function pendingJobIds(): Promise<string[]> {

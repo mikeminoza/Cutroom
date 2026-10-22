@@ -281,6 +281,11 @@ export interface PostDetails {
   language: string
   /** Gemini fills in an empty title, description and tags when publishing (on unless turned off). */
   aiFill?: boolean
+  /**
+   * Posted from the channel as a comment once the video is public: a question viewers want to
+   * answer. '' = none.
+   */
+  comment?: string
 }
 
 export const EMPTY_POST: PostDetails = {
@@ -297,6 +302,7 @@ export const EMPTY_POST: PostDetails = {
   madeForKids: false,
   playlistId: '',
   language: 'en',
+  comment: '',
 }
 
 export interface PostingSlot {

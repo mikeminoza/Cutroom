@@ -3,9 +3,15 @@
 // Performance page, and once a week per channel by the daily cron. Reading comments uses the
 // youtube.force-ssl permission the channel already granted, and 1 quota unit per video.
 import { hasGeminiKey, summarizeComments } from '@cutroom/shared/ai'
-import { clientFromRefresh, explainGoogleError, videoComments } from '@cutroom/shared/google'
+import {
+  clientFromRefresh,
+  explainGoogleError,
+  postComment,
+  videoComments,
+  videoStatistics,
+} from '@cutroom/shared/google'
 import type { CommentInsights } from '@cutroom/shared/types'
-import { desc, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { resolveChannel } from '@/lib/channels'
 import type { CommentInsightsDTO } from '@/lib/dto'
 import { listChannels } from './connections'
@@ -121,4 +127,80 @@ export async function readDueComments(): Promise<string | null> {
   } catch (error) {
     return `${due.channel.title}: comments not read (${error instanceof Error ? error.message : String(error)}).`
   }
+}
+
+/** Only videos posted this recently get their comment: never a surprise on an old video. */
+const COMMENT_WITHIN_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * Posts each new video's comment for viewers (post.comment) from its channel, once YouTube shows
+ * the video: scheduled videos stay private until their time, and comments can't go on a private
+ * video. Called when a publish job finishes, by the daily cron and by Refresh on Performance.
+ * Videos made for kids have comments turned off, so theirs is skipped. Returns notes.
+ */
+export async function postDueComments(projectIds?: string[]): Promise<string[]> {
+  const database = await db()
+  const rows = await database
+    .select()
+    .from(schema.projects)
+    .where(
+      and(
+        isNotNull(schema.projects.youtubeVideoId),
+        isNull(schema.projects.commentId),
+        projectIds ? inArray(schema.projects.id, projectIds) : undefined,
+      ),
+    )
+  const since = Date.now() - COMMENT_WITHIN_MS
+  const due = rows.filter(
+    (p) =>
+      p.post?.comment?.trim() &&
+      !p.post.madeForKids &&
+      p.post.privacy !== 'private' &&
+      (p.scheduledAt ?? p.updatedAt).getTime() > since,
+  )
+  if (due.length === 0) return []
+  const channels = await listChannels()
+  const notes: string[] = []
+  const groups = new Map<string, { channel: ChannelRow; projects: ProjectRow[] }>()
+  for (const project of due) {
+    const channel = resolveChannel(channels, project.channelId, project.channelYoutubeId)
+    if (!channel) continue
+    groups.set(channel.id, {
+      channel,
+      projects: [...(groups.get(channel.id)?.projects ?? []), project],
+    })
+  }
+  for (const { channel, projects } of groups.values()) {
+    const client = clientFromRefresh(channel.refreshToken)
+    try {
+      const status = await videoStatistics(
+        client,
+        projects.map((p) => p.youtubeVideoId as string),
+      )
+      for (const project of projects) {
+        const video = status.get(project.youtubeVideoId as string)
+        // Not out yet (scheduled), or gone: try again later.
+        if (!video || video.privacy === 'private') continue
+        let commentId = ''
+        try {
+          commentId = await postComment(
+            client,
+            project.youtubeVideoId as string,
+            (project.post.comment ?? '').trim(),
+          )
+        } catch (error) {
+          // Comments turned off, or not allowed on this video: don't try again every day.
+          notes.push(
+            `${project.post.title || project.title}: the comment was not posted (${explainGoogleError(error) ?? (error instanceof Error ? error.message : String(error))}).`,
+          )
+        }
+        await database.update(schema.projects).set({ commentId }).where(eq(schema.projects.id, project.id))
+      }
+    } catch (error) {
+      notes.push(
+        `${channel.title}: ${explainGoogleError(error) ?? (error instanceof Error ? error.message : String(error))}`,
+      )
+    }
+  }
+  return notes
 }

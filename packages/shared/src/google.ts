@@ -267,6 +267,16 @@ export async function videoStatistics(
   return result
 }
 
+/** Posts a top-level comment on a video from the channel (50 quota units). Returns its id. */
+export async function postComment(client: OAuthClient, videoId: string, text: string): Promise<string> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.commentThreads.insert({
+    part: ['snippet'],
+    requestBody: { snippet: { videoId, topLevelComment: { snippet: { textOriginal: text } } } },
+  })
+  return res.data.snippet?.topLevelComment?.id ?? res.data.id ?? ''
+}
+
 export interface VideoComment {
   text: string
   likes: number

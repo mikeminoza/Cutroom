@@ -1,19 +1,32 @@
 'use client'
 
+import type { PoseSuggestion } from '@cutroom/shared/ai'
 import type { CharacterPose } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ImagePlus, Layers, Pencil, Plus, Trash2, UserRound, X } from 'lucide-react'
+import { ImagePlus, Layers, Pencil, Plus, Sparkles, Trash2, UserRound, X } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { SyncedInput, SyncedTextarea } from '@/components/project/fields'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { cutOut } from '@/lib/cutout'
 import type { LibraryBackgroundDTO, LibraryCharacterDTO, SeriesDTO, StatusDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useSeriesList, useStatus } from '@/lib/hooks'
 import { uploadTo } from '@/lib/upload'
-import { Button, Dialog, DropZone, Field, Input, Panel, Spinner, Textarea, useConfirm } from './ui'
+import {
+  Button,
+  CopyButton,
+  Dialog,
+  DropZone,
+  Field,
+  Input,
+  Panel,
+  Spinner,
+  Textarea,
+  useConfirm,
+} from './ui'
 
 export function LibraryPage() {
   return (
@@ -469,6 +482,8 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
   const { data: status } = useStatus()
   const [uploading, setUploading] = useState(0)
   const [timer] = useState(() => new Map<string, ReturnType<typeof setTimeout>>())
+  const [suggestions, setSuggestions] = useState<PoseSuggestion[] | null>(null)
+  const [asking, setAsking] = useState(false)
   const folder = `library/characters/${character.id}`
   const latest = () =>
     client.getQueryData<LibraryCharacterDTO[]>(keys.library)?.find((c) => c.id === character.id)?.poses ??
@@ -496,7 +511,8 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
       const where = await driver()
       const added = await Promise.all(
         files.map(async (file) => {
-          const stored = await uploadTo(file, folder, where)
+          // A plain background is removed and empty margins trimmed, in the browser.
+          const stored = await uploadTo(await cutOut(file), folder, where)
           return {
             id: crypto.randomUUID(),
             name: fileName(file) || 'Pose',
@@ -517,7 +533,7 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
 
   const addBlink = async (poseId: string, file: File) => {
     try {
-      const stored = await uploadTo(file, folder, await driver())
+      const stored = await uploadTo(await cutOut(file), folder, await driver())
       await save(
         latest().map((p) => (p.id === poseId ? { ...p, blinkUrl: stored.url, blinkKey: stored.key } : p)),
       )
@@ -536,13 +552,48 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
     )
   }
 
+  const suggest = async () => {
+    setAsking(true)
+    try {
+      const { suggestions: next } = await api.post<{ suggestions: PoseSuggestion[] }>(
+        `/api/library/characters/${character.id}/suggest-poses`,
+      )
+      setSuggestions(next)
+      if (next.length === 0) toast('No missing poses found', { description: 'The scripts are covered.' })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setAsking(false)
+    }
+  }
+
   return (
     <Field
       label="Poses"
-      hint="Cut-outs with a transparent background (PNG). Scenes put them in front of a background; add an eyes-closed version and the character blinks."
+      hint="Pictures of the character on a plain background (the background is removed for you) or with a transparent one. Scenes put them in front of a background; add an eyes-closed version and the character blinks."
+      aside={
+        status?.gemini.configured ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            busy={asking}
+            onClick={suggest}
+            icon={<Sparkles className="size-3.5" />}
+          >
+            What poses do I need?
+          </Button>
+        ) : undefined
+      }
     >
+      {suggestions && suggestions.length > 0 && (
+        <PoseSuggestions
+          name={character.name}
+          suggestions={suggestions}
+          onClose={() => setSuggestions(null)}
+        />
+      )}
       <DropZone
-        accept="image/png,image/webp"
+        accept="image/png,image/webp,image/jpeg"
         multiple
         onFiles={addPoses}
         className="rounded-[var(--radius-control)]"
@@ -579,7 +630,7 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
                   <span className="text-[11.5px] text-ok">Blinks</span>
                 ) : (
                   <DropZone
-                    accept="image/png,image/webp"
+                    accept="image/png,image/webp,image/jpeg"
                     onFiles={([file]) => file && void addBlink(pose.id, file)}
                   >
                     {({ open: pick }) => (
@@ -620,6 +671,58 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
         )}
       </DropZone>
     </Field>
+  )
+}
+
+/**
+ * The poses the scripts call for that the character doesn't have yet, each with a prompt to make
+ * it in any image tool, on a plain background so it cuts out cleanly.
+ */
+function PoseSuggestions({
+  name,
+  suggestions,
+  onClose,
+}: {
+  name: string
+  suggestions: PoseSuggestion[]
+  onClose: () => void
+}) {
+  return (
+    <div className="mb-3 rounded-[var(--radius-control)] border border-line bg-sunk">
+      <div className="flex items-start justify-between gap-3 border-b border-line px-3 py-2.5">
+        <p className="text-[13px] leading-snug text-ink-2">
+          Poses your scripts need. Make each one from its prompt in your image tool (attach{' '}
+          {name || 'the character'}’s reference picture), then add it here with that name.
+        </p>
+        <div className="flex shrink-0 items-center gap-1">
+          <CopyButton
+            text={suggestions.map((s) => `${s.name}\n${s.prompt}`).join('\n\n')}
+            label="Copy all"
+            done="Copied"
+          />
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close the suggestions"
+            className="grid size-7 place-items-center rounded-md text-ink-3 hover:bg-panel hover:text-ink"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      </div>
+      <ol className="divide-y divide-line">
+        {suggestions.map((s) => (
+          <li key={s.name} className="flex flex-col gap-1.5 px-3 py-2.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className="text-[13.5px] font-semibold">{s.name}</p>
+              <CopyButton text={s.prompt} label="Copy prompt" />
+            </div>
+            <p className="text-[12.5px] text-ink-3">{s.why}</p>
+            <p className="text-[13px] leading-relaxed">{s.prompt}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
   )
 }
 

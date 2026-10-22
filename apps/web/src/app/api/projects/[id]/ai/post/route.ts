@@ -43,6 +43,8 @@ export const POST = route(async (_request, { params }: Ctx) => {
     hashtags: draft.hashtags,
     chapters: draft.chapters,
     thumbnailIdeas: draft.thumbnailIdeas,
+    // A comment you wrote yourself stays.
+    comment: current.comment?.trim() || draft.comment,
     thumbnailPrompt: buildThumbnailPrompt(draft.thumbnailIdeas[0] ?? project.topic, {
       artStyle: project.artStyle,
       characters,

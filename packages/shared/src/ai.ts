@@ -517,6 +517,8 @@ export interface PostDraft {
   chapters: Chapter[]
   thumbnailIdeas: string[]
   thumbnailText: string
+  /** A comment to post from the channel, asking viewers something. */
+  comment: string
 }
 
 export async function writePostDetails(input: PostDraftInput): Promise<PostDraft> {
@@ -541,7 +543,8 @@ Return:
 - hashtags: 3 hashtags including "#"${isShort ? ', one of them #Shorts' : ''}.
 - chapterPicks: ${isShort ? 'an empty list (Shorts have no chapters)' : '4–8 chapters as {sceneIndex, title}; the first must be sceneIndex 0; titles max 40 characters'}.
 - thumbnailIdeas: 3 thumbnail concepts, one sentence each, describing a single striking image.
-- thumbnailText: 2–4 punchy words to print on the thumbnail.`
+- thumbnailText: 2–4 punchy words to print on the thumbnail.
+- comment: a short, friendly comment the channel posts under the video, asking viewers a fun question about it they will want to answer (in the narrator's voice if the script has one). Max 200 characters, at most one emoji.`
   const draft = await generateJson(
     prompt,
     {
@@ -561,6 +564,7 @@ Return:
         },
         thumbnailIdeas: { type: 'array', items: str },
         thumbnailText: str,
+        comment: str,
       },
       required: [
         'titleOptions',
@@ -580,6 +584,7 @@ Return:
       chapterPicks: z.array(z.object({ sceneIndex: z.number(), title: z.string() })),
       thumbnailIdeas: z.array(z.string()),
       thumbnailText: z.string(),
+      comment: z.string().default(''),
     }),
     'You are a YouTube growth strategist who writes clear, honest, search-friendly metadata.',
   )
@@ -601,6 +606,7 @@ Return:
     chapters,
     thumbnailIdeas: draft.thumbnailIdeas,
     thumbnailText: draft.thumbnailText,
+    comment: draft.comment.trim().slice(0, 500),
   }
 }
 
@@ -903,6 +909,67 @@ Pick up to ${input.count} runs of consecutive scenes that do not overlap. Each m
     if (!overlaps) picks.push({ ...pick, title: raw.title.trim().slice(0, 100) })
   }
   return picks
+}
+
+export interface PoseSuggestion {
+  /** 1–3 words, e.g. "shocked", "eating watermelon". */
+  name: string
+  /** Why the scripts need it. */
+  why: string
+  /** A ready prompt for an image tool. */
+  prompt: string
+}
+
+/**
+ * The poses a character is missing, from what the channel's scripts make them do: a shopping list
+ * for the Library, each with a prompt to draw or generate it. Every prompt asks for the same
+ * framing on a plain background, so the poses line up and cut out cleanly.
+ */
+export async function suggestPoses(input: {
+  character: { name: string; description: string }
+  artStyle: string
+  niche: string
+  have: string[]
+  scripts: string[]
+}): Promise<PoseSuggestion[]> {
+  const scripts = input.scripts.map((s, i) => `Script ${i + 1}:\n${s.trim().slice(0, 4000)}`).join('\n\n')
+  const prompt = `${input.character.name} is the recurring 2D character of a YouTube channel. Each scene of a video shows a background with one of ${input.character.name}'s poses (a cut-out) in front, so the channel needs a small library of poses and expressions that covers what the scripts make the character do and feel.
+
+Character: ${input.character.name}${input.character.description.trim() ? `: ${input.character.description.trim()}` : ''}
+Channel: ${input.niche.trim() || '(not described)'}
+Art style: ${input.artStyle.trim() || '(not set)'}
+Poses it already has: ${input.have.length ? input.have.join(', ') : '(none yet)'}
+
+${scripts || '(no scripts yet: go by the channel description)'}
+
+List up to 8 poses or expressions the character is missing, most needed first: ones the scripts call for again and again come before one-offs. Don't repeat poses it already has, under any name.
+- name: 1–3 words, as you'd label the pose (e.g. "shocked", "eating watermelon", "sleeping").
+- why: one short sentence on where the scripts need it.
+- prompt: a ready prompt for an image generator: ${input.character.name} as described, in that pose or expression, full body, centered, facing slightly toward the viewer, on a plain flat white background with nothing else in the picture, in the art style. Keep the same framing and size in every prompt, so the poses line up.`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        poses: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { name: str, why: str, prompt: str },
+            required: ['name', 'why', 'prompt'],
+          },
+        },
+      },
+      required: ['poses'],
+    },
+    z.object({ poses: z.array(z.object({ name: z.string(), why: z.string(), prompt: z.string() })) }),
+    'You are the art director of a 2D cartoon YouTube channel.',
+  )
+  const had = new Set(input.have.map((h) => h.trim().toLowerCase()))
+  return result.poses
+    .map((p) => ({ name: p.name.trim().slice(0, 60), why: p.why.trim(), prompt: p.prompt.trim() }))
+    .filter((p) => p.name && p.prompt && !had.has(p.name.toLowerCase()))
+    .slice(0, 8)
 }
 
 /**

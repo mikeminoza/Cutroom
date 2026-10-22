@@ -203,6 +203,39 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
         >
           <TagInput tags={post.tags} onChange={(tags) => setPost({ tags }, 0)} />
         </Field>
+        <Field
+          label="Comment for viewers"
+          aside={`${(post.comment ?? '').length} / 500`}
+          hint={
+            project.commentId ? (
+              <a
+                href={`https://www.youtube.com/watch?v=${project.youtubeVideoId}&lc=${project.commentId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-ok underline-offset-2 hover:underline"
+              >
+                <Check className="size-3.5" aria-hidden />
+                Posted. Open it on YouTube to pin it (⋮ → Pin)
+                <ExternalLink className="size-3" aria-hidden />
+              </a>
+            ) : project.commentId === '' ? (
+              'YouTube did not accept this comment, so it was not posted.'
+            ) : post.madeForKids ? (
+              'Videos made for kids have comments turned off, so this one is not posted.'
+            ) : (
+              'A question viewers want to answer, posted from your channel once the video is public. Apps can’t pin comments, so pin it on YouTube with one click. Leave empty for none.'
+            )
+          }
+        >
+          <SyncedTextarea
+            value={post.comment ?? ''}
+            onValue={(comment) => setPost({ comment })}
+            maxLength={500}
+            disabled={Boolean(project.commentId)}
+            placeholder="What should Cappy eat next? 🍉"
+            className="min-h-20 text-[14px]"
+          />
+        </Field>
         <div className="grid gap-5 sm:grid-cols-2">
           {(channels.length > 1 || disconnected) && (
             <Field
