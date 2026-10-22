@@ -63,35 +63,91 @@ export function splitByParagraphs(script: string): { start: number; end: number;
   return layoutByEstimate(paragraphs.map((narration) => ({ narration })))
 }
 
-/**
- * Splits a script into scenes without AI: sentences are grouped until a scene
- * reaches roughly `pace` seconds of narration.
- */
-export function splitBySentences(
-  script: string,
-  pace: number,
-): { start: number; end: number; narration: string }[] {
-  const sentences = script
+/** Seconds a stretch of narration takes to say, without the floor estimateSeconds puts on it. */
+const spoken = (text: string) => countWords(text) / WORDS_PER_SECOND
+
+/** The script's sentences, in order. */
+export function sentencesOf(script: string): string[] {
+  return script
     .replace(/\s+/g, ' ')
     .trim()
     .split(/(?<=[.!?…])\s+(?=["'“(A-Z0-9¿¡])/u)
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+/** Runs of about equal length, none longer than `max` seconds. */
+function evenRuns(text: string, max: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean)
+  const runs = Math.max(1, Math.ceil(words.length / Math.max(1, max * WORDS_PER_SECOND)))
+  const size = Math.ceil(words.length / runs)
+  return Array.from({ length: runs }, (_, i) => words.slice(i * size, (i + 1) * size).join(' ')).filter(
+    Boolean,
+  )
+}
+
+/**
+ * Cuts a sentence that is too long for one picture where a narrator pauses: after commas,
+ * semicolons, colons and dashes, then before joining words (and, but, then…). Only a stretch
+ * still longer than `hard` seconds is cut evenly, into runs of about `soft`.
+ */
+function phrasesOf(sentence: string, soft: number, hard: number): string[] {
+  if (spoken(sentence) <= soft) return [sentence]
+  return sentence
+    .split(/(?<=[,;:—–])\s+/)
+    .flatMap((part) =>
+      spoken(part) <= soft
+        ? [part]
+        : part
+            .split(/\s+(?=(?:and|but|then|so|because|when|while|until|or)\b)/i)
+            .flatMap((piece) => (spoken(piece) <= hard ? [piece] : evenRuns(piece, soft))),
+    )
+    .filter(Boolean)
+}
+
+/** A short exclamation or question ("Nothing!", "Wait… what?"): a beat that gets its own picture. */
+const isBeat = (sentence: string) => countWords(sentence) <= 4 && /[!?…]["'”’)]*$/u.test(sentence)
+
+/**
+ * Splits a script into scenes without AI, a new picture about every `pace` seconds, following
+ * the script: sentences and phrases are grouped up to about the pace, long sentences are cut at
+ * their natural pauses, and a short punchline or reaction gets a quick picture of its own.
+ */
+export function splitBySentences(
+  script: string,
+  pace: number,
+): { start: number; end: number; narration: string }[] {
   const groups: string[] = []
   let current: string[] = []
   let seconds = 0
-  for (const sentence of sentences) {
-    const length = estimateSeconds(sentence)
-    if (current.length > 0 && seconds + length > pace * 1.25) {
-      groups.push(current.join(' '))
-      current = []
-      seconds = 0
-    }
-    current.push(sentence)
-    seconds += length
+  const flush = () => {
+    if (current.length) groups.push(current.join(' '))
+    current = []
+    seconds = 0
   }
-  if (current.length) groups.push(current.join(' '))
-  return layoutByEstimate(groups.map((narration) => ({ narration })))
+  for (const sentence of sentencesOf(script)) {
+    if (isBeat(sentence)) {
+      flush()
+      groups.push(sentence)
+      continue
+    }
+    for (const phrase of phrasesOf(sentence, pace * 1.3, pace * 1.8)) {
+      const length = spoken(phrase)
+      if (current.length > 0 && seconds + length > pace * 1.25) flush()
+      current.push(phrase)
+      seconds += length
+    }
+  }
+  flush()
+  // A scrap of a word or two after a cut joins the picture before it (a beat stays on its own).
+  const merged: string[] = []
+  for (const group of groups) {
+    const previous = merged[merged.length - 1]
+    if (previous !== undefined && countWords(group) <= 2 && !isBeat(group) && !isBeat(previous)) {
+      merged[merged.length - 1] = `${previous} ${group}`
+    } else merged.push(group)
+  }
+  return layoutByEstimate(merged.map((narration) => ({ narration })))
 }
 
 export interface Chapter {

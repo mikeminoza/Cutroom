@@ -103,7 +103,7 @@ export async function createProject(input: {
     artStyle: t?.artStyle ?? niche?.artStyle ?? '',
     notes: [t?.notes, nicheNotes(niche), input.notes].filter((n) => n?.trim()).join('\n\n'),
     targetMinutes: t?.targetMinutes ?? (format === 'portrait' ? 1 : (niche?.targetMinutes ?? 5)),
-    pace: t?.pace ?? (format === 'portrait' ? 3 : (niche?.pace ?? 6)),
+    pace: t?.pace ?? (format === 'portrait' ? 3 : (niche?.pace ?? 3)),
     textOverlays: t?.textOverlays ?? true,
     voice: t?.voice ?? null,
     musicVolume: t?.musicVolume ?? 0.15,

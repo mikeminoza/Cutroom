@@ -132,14 +132,14 @@ export function BriefStep({ data, goTo }: StepProps) {
               </div>
             </Field>
             <Field
-              label="New image every"
-              hint="Shorter keeps viewers watching. Each scene needs its own image."
+              label="New picture every"
+              hint="On average: the split cuts quicker on jokes and fast moments and stays longer on calm ones. Shorter keeps viewers watching."
             >
               <Segmented
                 ariaLabel="Seconds per scene"
                 value={String(project.pace)}
                 onChange={(pace) => saver.project({ pace: Number(pace) }, 0)}
-                options={['3', '4', '6', '8', '10'].map((v) => ({ value: v, label: `${v} s` }))}
+                options={['2', '3', '4', '6', '8'].map((v) => ({ value: v, label: `${v} s` }))}
                 className="w-full"
               />
             </Field>

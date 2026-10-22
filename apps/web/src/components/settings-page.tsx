@@ -934,7 +934,7 @@ function PreferencesForm() {
   )
 }
 
-const PACES = ['3', '4', '6', '8', '10']
+const PACES = ['2', '3', '4', '6', '8']
 
 /** The channel's niche: subject, narrator, look, length and main characters for new videos. */
 function ChannelNichePanel({
@@ -1117,11 +1117,11 @@ function ChannelNichePanel({
         </Field>
         <Field
           label="New image every"
-          hint={`About ${Math.max(1, Math.round((niche.targetMinutes * 60) / niche.pace))} images for a ${niche.targetMinutes}-minute video.`}
+          hint={`On average: quicker cuts on jokes and fast moments, longer on calm ones. About ${Math.max(1, Math.round((niche.targetMinutes * 60) / niche.pace))} pictures for a ${niche.targetMinutes}-minute video.`}
         >
           <Segmented
             ariaLabel="Seconds per image"
-            value={PACES.includes(String(niche.pace)) ? String(niche.pace) : '6'}
+            value={PACES.includes(String(niche.pace)) ? String(niche.pace) : '3'}
             onChange={(pace) => onChange({ pace: Number(pace) })}
             options={PACES.map((v) => ({ value: v, label: `${v} s` }))}
             className="w-full"

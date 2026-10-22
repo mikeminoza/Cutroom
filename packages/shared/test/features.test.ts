@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { scriptParts } from '../src/ai'
 import { refineTranscript, segmentsFromWords, sliceTranscript, speechParts, timeWords } from '../src/align'
 import { overlayEvents, overlayOpacity, speechSpans } from '../src/captions'
 import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
 import { explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
-import { chaptersToText, refreshChapters, sceneRange, splitByParagraphs } from '../src/timing'
+import {
+  chaptersToText,
+  countWords,
+  refreshChapters,
+  sceneRange,
+  splitByParagraphs,
+  splitBySentences,
+} from '../src/timing'
 import { blackLevel, planTransitions } from '../src/transitions'
 import { hasPicture, normalizeTransition, thumbnailOf } from '../src/types'
 
@@ -788,5 +796,44 @@ describe('layered scenes', () => {
     expect(hasPicture({ imageUrl: null, layer })).toBe(true)
     expect(thumbnailOf({ imageUrl: null, layer: { ...layer, backgroundUrl: '/bg.png' } })).toBe('/bg.png')
     expect(thumbnailOf({ imageUrl: '/own.png', layer })).toBe('/own.png')
+  })
+})
+
+describe('picture pacing', () => {
+  const script =
+    'Cappy wakes up in the morning, stretches his little legs, and waddles slowly toward the kitchen because his tummy is rumbling louder than a thunderstorm. ' +
+    'He opens the fridge. Nothing! ' +
+    'Not a single carrot, not one slice of watermelon, and not even the sad old lettuce from last week. ' +
+    'Wait… what? ' +
+    'Cappy sits down and thinks very hard about where all the food could have gone.'
+
+  it('cuts a new picture about every few seconds, quicker on punchlines, keeping every word', () => {
+    const scenes = splitBySentences(script, 3)
+    const narration = scenes.map((s) => s.narration)
+    expect(narration.join(' ')).toBe(script.trim())
+    // Punchlines get a quick picture of their own.
+    expect(narration).toContain('Nothing!')
+    expect(narration).toContain('Wait… what?')
+    // Long sentences are cut at their pauses, never in the middle of a phrase.
+    expect(narration.slice(0, 3)).toEqual([
+      'Cappy wakes up in the morning,',
+      'stretches his little legs,',
+      'and waddles slowly toward the kitchen',
+    ])
+    expect(narration).toContain('and not even the sad old lettuce from last week.')
+    for (const n of narration) expect(countWords(n) / 2.5).toBeLessThanOrEqual(3 * 1.8 + 0.01)
+    const average = (scenes[scenes.length - 1].end - scenes[0].start) / scenes.length
+    expect(average).toBeGreaterThan(1.5)
+    expect(average).toBeLessThan(4)
+  })
+
+  it('storyboards long scripts in parts, between paragraphs, with every word', () => {
+    const paragraph = (n: number) => Array.from({ length: n }, (_, i) => `Word${i}.`).join(' ')
+    const long = [paragraph(120), paragraph(200), paragraph(90), paragraph(600)].join('\n\n')
+    const parts = scriptParts(long, 260)
+    expect(parts.length).toBeGreaterThan(2)
+    for (const part of parts) expect(countWords(part)).toBeLessThanOrEqual(260)
+    expect(parts.join(' ').split(/\s+/)).toEqual(long.split(/\s+/))
+    expect(scriptParts('A short script.', 260)).toEqual(['A short script.'])
   })
 })

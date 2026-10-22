@@ -2,7 +2,7 @@
 // and by the worker for the voice-over transcription.
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
-import { type Chapter, chaptersToText, countWords, normalizeChapters } from './timing'
+import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
 import {
   type CommentInsights,
   MOTIONS,
@@ -287,6 +287,33 @@ const sceneSchema = z.object({
   notes: z.string().default(''),
 })
 
+/** Words per Gemini call when storyboarding: longer scripts go in parallel parts. */
+const STORYBOARD_PART_WORDS = 260
+
+/** The script in parts of about `size` words, cut between paragraphs, or sentences if need be. */
+export function scriptParts(script: string, size = STORYBOARD_PART_WORDS): string[] {
+  const pieces = script
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .flatMap((paragraph) => (countWords(paragraph) <= size ? [paragraph] : sentencesOf(paragraph)))
+  const parts: string[] = []
+  let current: string[] = []
+  let words = 0
+  for (const piece of pieces) {
+    const n = countWords(piece)
+    if (current.length && words + n > size) {
+      parts.push(current.join('\n\n'))
+      current = []
+      words = 0
+    }
+    current.push(piece)
+    words += n
+  }
+  if (current.length) parts.push(current.join('\n\n'))
+  return parts
+}
+
 export async function splitScript(input: {
   script: string
   pace: number
@@ -294,21 +321,44 @@ export async function splitScript(input: {
   format: VideoFormat
   characters: { name: string; description: string }[]
 }): Promise<SceneDraft[]> {
+  const parts = scriptParts(input.script)
+  const results: SceneDraft[][] = new Array(parts.length)
+  // A few at a time: quick answers, within the free tier's requests per minute.
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(3, parts.length) }, async () => {
+      while (next < parts.length) {
+        const i = next++
+        results[i] = await storyboardPart(input, parts[i], i, parts.length)
+      }
+    }),
+  )
+  return results.flat()
+}
+
+async function storyboardPart(
+  input: Parameters<typeof splitScript>[0],
+  script: string,
+  part: number,
+  parts: number,
+): Promise<SceneDraft[]> {
   const cast = input.characters.length
     ? input.characters.map((c) => `- ${c.name}: ${c.description}`).join('\n')
     : '(no recurring characters)'
-  const prompt = `Split this narration script into scenes for an image-based video. Each scene shows ONE still image while its narration plays.
+  const pace = input.pace
+  const prompt = `Split this narration script into scenes for an image-based video. Each scene shows ONE still picture while its narration plays.${parts > 1 ? ` This is part ${part + 1} of ${parts} of one script: split only this part.` : ''}
 
 Rules:
-- Target about ${input.pace} seconds of narration per scene (≈${Math.round(input.pace * 2.5)} words). Never split mid-sentence unless a sentence is very long.
+- Pacing: a new picture about every ${pace} seconds on average (≈${Math.round(pace * 2.5)} words). Let the script decide the rhythm: cut quicker, even 1–2 seconds and a few words, on punchlines, reactions, lists, quick actions and surprises (several quick pictures in a row are great for a joke or a list); stay up to about ${Math.round(pace * 1.7)} seconds on calm or descriptive moments.
+- A new picture may start mid-sentence at a natural pause: after a comma, or before "and", "but", "then", "so", or a reveal. Never cut inside a name or a number.
 - Copy the narration text EXACTLY, word for word, in order. Every word of the script must appear in exactly one scene. Do not add, drop or rephrase words.
-- visual: what the viewer sees, concretely (subject, setting, action, mood, lighting).
-- imagePrompt: a self-contained prompt for an image generator describing that picture. Do not mention the art style or aspect ratio (added later). Refer to recurring characters by name.
+- visual: what the viewer sees, in one concrete sentence (subject, setting, action, mood). A quick cut can show the same place with a new reaction, pose or close-up.
+- imagePrompt: a self-contained prompt for an image generator describing that picture, under 40 words. Do not mention the art style or aspect ratio (added later). Refer to recurring characters by name.
 - characters: names of recurring characters visible in the image (from the list below), or [].
 - shot: camera framing, e.g. "wide establishing shot", "medium shot", "close-up", "over-the-shoulder", "top-down".
-- motion: one of ${MOTIONS.join(', ')} — pick what suits the shot; vary it between scenes.
+- motion: one of ${MOTIONS.join(', ')}: pick what suits the shot; vary it between scenes.
 - onScreenText: a short optional title shown at the top of the frame (max 5 words), or "". Use it sparingly: key numbers, names, chapter-like moments.
-- transition: how this scene's picture replaces the previous one: "cut" (the default, most scenes), "crossfade" for a soft change of place or time, "fade-black" for a big jump or the closing scene.
+- transition: how this scene's picture replaces the previous one: "cut" (the default, nearly every scene, and always for quick cuts), "crossfade" for a soft change of place or time, "fade-black" only for a big jump${parts > 1 && part < parts - 1 ? '' : ' or the closing scene'}.
 - notes: optional sound-effect or music cue, or "".
 
 Format: ${input.format === 'portrait' ? 'vertical 9:16' : 'horizontal 16:9'}
@@ -318,7 +368,7 @@ ${cast}
 
 Script:
 """
-${input.script.trim()}
+${script.trim()}
 """`
   const result = await generateJson(
     prompt,
@@ -355,7 +405,7 @@ ${input.script.trim()}
     transition: normalizeTransition(s.transition),
     onScreenText: s.onScreenText.trim().slice(0, 200),
   }))
-  const original = countWords(input.script)
+  const original = countWords(script)
   const kept = scenes.reduce((n, s) => n + countWords(s.narration), 0)
   if (original > 0 && Math.abs(kept - original) / original > 0.08) {
     throw new AiError(

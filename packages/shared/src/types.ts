@@ -367,7 +367,7 @@ export const EMPTY_NICHE: ChannelNiche = {
   tone: '',
   artStyle: '',
   targetMinutes: 5,
-  pace: 6,
+  pace: 3,
   characterIds: [],
 }
 

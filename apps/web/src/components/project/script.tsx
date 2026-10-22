@@ -141,8 +141,8 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             {how === 'paragraph'
               ? 'You decide the cuts: put a blank line wherever a new picture should start. Write each scene’s picture description yourself, or leave it and the narration is used.'
               : how === 'sentence'
-                ? `Sentences are grouped into scenes of about ${project.pace} seconds.`
-                : 'Gemini picks the cuts and writes a picture description and image prompt for every scene. You can edit all of it.'}
+                ? `A new picture about every ${project.pace} seconds: long sentences are cut at their pauses, and short punchlines get a quick picture of their own.`
+                : `Gemini picks the cuts, about every ${project.pace} seconds but quicker on jokes and fast moments, and writes a picture description and image prompt for every scene. You can edit all of it.`}
           </p>
           {busy === 'split' && (
             <p className="mt-3 text-[13px] text-ink-2">
