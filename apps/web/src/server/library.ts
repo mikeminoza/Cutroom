@@ -35,21 +35,36 @@ export async function assertNotInUse(urls: string[], what: string) {
 }
 
 /**
- * Scenes keep a copy of their pose's name and eyes-closed picture: when either changes in the
- * Library (say, an eyes-closed version is added later), the scenes using that pose follow.
+ * Scenes keep a copy of their pose's picture, name and eyes-closed picture. When a pose changes in
+ * the Library (renamed, an eyes-closed version added, or its picture touched up and replaced), the
+ * scenes using it follow. Poses are matched by id, so a replaced picture moves its scenes along.
  */
 export async function syncPoses(before: CharacterPose[], after: CharacterPose[]) {
-  const changed = after.filter((pose) => {
-    const old = before.find((p) => p.url === pose.url)
-    return old && (old.name !== pose.name || old.blinkUrl !== pose.blinkUrl)
+  const changed = after.flatMap((pose) => {
+    const old = before.find((p) => p.id === pose.id)
+    return old && (old.url !== pose.url || old.name !== pose.name || old.blinkUrl !== pose.blinkUrl)
+      ? [{ old, pose }]
+      : []
   })
   if (changed.length === 0) return
   const database = await db()
-  for (const pose of changed) {
-    const update = JSON.stringify({ pose: pose.name, blinkUrl: pose.blinkUrl })
+  for (const { old, pose } of changed) {
+    const update = JSON.stringify({ poseUrl: pose.url, pose: pose.name, blinkUrl: pose.blinkUrl })
     await database
       .update(schema.scenes)
       .set({ layer: sql`${schema.scenes.layer} || ${update}::jsonb` })
-      .where(sql`${schema.scenes.layer}->>'poseUrl' = ${pose.url}`)
+      .where(sql`${schema.scenes.layer}->>'poseUrl' = ${old.url}`)
   }
+}
+
+/** The old files of poses whose picture (or eyes-closed picture) was replaced in place. */
+export function replacedFiles(before: CharacterPose[], after: CharacterPose[]): Set<string> {
+  const replaced = new Set<string>()
+  for (const pose of after) {
+    const old = before.find((p) => p.id === pose.id)
+    if (!old) continue
+    if (old.url !== pose.url) replaced.add(old.url)
+    if (old.blinkUrl && old.blinkUrl !== pose.blinkUrl && pose.blinkUrl) replaced.add(old.blinkUrl)
+  }
+  return replaced
 }

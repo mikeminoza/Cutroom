@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db, schema } from '@/server/db'
 import { badRequest, notFound, readJson, route } from '@/server/http'
-import { assertNotInUse, syncPoses } from '@/server/library'
+import { assertNotInUse, replacedFiles, syncPoses } from '@/server/library'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -55,7 +55,14 @@ export const PATCH = route(async (request, { params }: Ctx) => {
     const removed = current.poses
       .flatMap((p) => [p.url, p.blinkUrl])
       .filter((u): u is string => Boolean(u) && !kept.has(u as string))
-    await assertNotInUse(removed, 'That pose')
+    // A picture replaced in place (touched up) moves its scenes to the new file, so its old file
+    // may go; any other pose a video still needs can't.
+    const replaced = replacedFiles(current.poses, patch.poses)
+    await assertNotInUse(
+      removed.filter((url) => !replaced.has(url)),
+      'That pose',
+    )
+    await syncPoses(current.poses, patch.poses)
     await Promise.all(removed.map((url) => deleteFile(url)))
   }
   const [row] = await database
@@ -64,7 +71,6 @@ export const PATCH = route(async (request, { params }: Ctx) => {
     .where(eq(schema.libraryCharacters.id, id))
     .returning()
   if (!row) notFound('That character')
-  if (patch.poses) await syncPoses(current.poses, row.poses)
   return { ...row, createdAt: row.createdAt.toISOString() }
 })
 

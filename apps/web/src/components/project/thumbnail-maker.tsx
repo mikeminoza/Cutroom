@@ -9,6 +9,7 @@ import { errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ProjectFull } from '@/lib/dto'
 import { useBackgrounds, useLibrary, useSaver } from '@/lib/hooks'
+import { loadImage } from '@/lib/picture'
 import { useUploader } from './fields'
 
 const W = 1280
@@ -35,27 +36,7 @@ interface Design {
   upper: boolean
 }
 
-/** The app's own pictures come through its own origin, so the canvas can be saved. */
-const sameOrigin = (url: string) =>
-  url.startsWith('/') ? url : `/api/picture?url=${encodeURIComponent(url)}`
-
 const named = (name: string) => name.trim().toLowerCase()
-
-const images = new Map<string, Promise<HTMLImageElement>>()
-function loadImage(url: string): Promise<HTMLImageElement> {
-  let image = images.get(url)
-  if (!image) {
-    image = new Promise((resolve, reject) => {
-      const img = new Image()
-      img.onload = () => resolve(img)
-      img.onerror = () => reject(new Error('A picture could not be loaded.'))
-      img.src = sameOrigin(url)
-    })
-    image.catch(() => images.delete(url))
-    images.set(url, image)
-  }
-  return image
-}
 
 /** Words into lines no wider than `width`; a word too long for a line gets a line of its own. */
 function wrap(ctx: CanvasRenderingContext2D, text: string, width: number): string[] {

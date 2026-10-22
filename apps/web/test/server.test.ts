@@ -1525,3 +1525,52 @@ describe('learning from a channel', () => {
     }
   })
 })
+
+describe('touched-up poses', () => {
+  const json = (body: unknown, method = 'POST') =>
+    new Request('http://localhost/api', {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+
+  it('replaces a pose a scene uses: the scene follows and the old files go', async () => {
+    const zed = await (await libraryRoute.POST(json({ name: 'Zed', description: '' }), undefined)).json()
+    const folder = `library/characters/${zed.id}`
+    const first = await putFile(`${folder}/wave.png`, Buffer.from('1'), 'image/png')
+    const firstBlink = await putFile(`${folder}/wave-blink.png`, Buffer.from('1b'), 'image/png')
+    const pose = { id: 'wave', name: 'Wave', ...first, blinkUrl: firstBlink.url, blinkKey: firstBlink.key }
+    await libraryItemRoute.PATCH(json({ poses: [pose] }, 'PATCH'), ctx(zed.id))
+
+    const project = await newProject()
+    await projects.replaceScenes(project, [{ start: 0, end: 3, narration: 'Zed waves.' }])
+    const [scene] = await projects.getScenes(project)
+    const layer = {
+      backgroundUrl: null,
+      background: '',
+      poseUrl: first.url,
+      blinkUrl: firstBlink.url,
+      character: 'Zed',
+      pose: 'Wave',
+      side: 'center',
+    }
+    expect((await sceneRoute.PATCH(json({ layer }, 'PATCH'), ctx(scene.id))).status).toBe(200)
+
+    const second = await putFile(`${folder}/wave-clean.png`, Buffer.from('2'), 'image/png')
+    const secondBlink = await putFile(`${folder}/wave-clean-blink.png`, Buffer.from('2b'), 'image/png')
+    const replaced = { ...pose, ...second, blinkUrl: secondBlink.url, blinkKey: secondBlink.key }
+    const response = await libraryItemRoute.PATCH(json({ poses: [replaced] }, 'PATCH'), ctx(zed.id))
+    expect(response.status).toBe(200)
+    expect((await projects.getScenes(project))[0].layer).toMatchObject({
+      poseUrl: second.url,
+      blinkUrl: secondBlink.url,
+    })
+    expect(stored(keyOfUrl(first.url))).toBe(false)
+    expect(stored(keyOfUrl(firstBlink.url))).toBe(false)
+    expect(stored(keyOfUrl(second.url))).toBe(true)
+
+    // Removing it outright is still refused while the scene uses it.
+    expect((await libraryItemRoute.PATCH(json({ poses: [] }, 'PATCH'), ctx(zed.id))).status).toBe(400)
+  })
+})

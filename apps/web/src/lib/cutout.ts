@@ -107,3 +107,59 @@ export async function cutOut(file: File): Promise<File> {
   if (!blob) return file
   return new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'pose'}.png`, { type: 'image/png' })
 }
+
+/**
+ * Clears the patch of colour clicked at (x, y): every touching pixel close to that colour becomes
+ * transparent, with a softened edge. For background left inside the outline (between an arm and
+ * the body), which cutOut keeps so it never takes the whites of the eyes. Returns the pixels cleared.
+ */
+export function eraseAt(image: ImageData, x: number, y: number, tolerance = TOLERANCE): number {
+  const { width: w, height: h, data: d } = image
+  const start = Math.round(y) * w + Math.round(x)
+  if (x < 0 || y < 0 || x >= w || y >= h || d[start * 4 + 3] === 0) return 0
+  const color = [d[start * 4], d[start * 4 + 1], d[start * 4 + 2]]
+  const far = (p: number) =>
+    Math.max(
+      Math.abs(d[p * 4] - color[0]),
+      Math.abs(d[p * 4 + 1] - color[1]),
+      Math.abs(d[p * 4 + 2] - color[2]),
+    )
+  const seen = new Uint8Array(w * h)
+  const queue = new Int32Array(w * h)
+  let head = 0
+  let tail = 0
+  const visit = (p: number) => {
+    if (!seen[p] && d[p * 4 + 3] > 0 && far(p) <= tolerance) {
+      seen[p] = 1
+      queue[tail++] = p
+    }
+  }
+  visit(start)
+  while (head < tail) {
+    const p = queue[head++]
+    const px = p % w
+    d[p * 4 + 3] = 0
+    if (px > 0) visit(p - 1)
+    if (px < w - 1) visit(p + 1)
+    if (p >= w) visit(p - w)
+    if (p < w * (h - 1)) visit(p + w)
+  }
+  // Soften the new edge, like cutOut does.
+  for (let i = 0; i < tail; i++) {
+    const p = queue[i]
+    const px = p % w
+    for (const q of [
+      px > 0 ? p - 1 : -1,
+      px < w - 1 ? p + 1 : -1,
+      p >= w ? p - w : -1,
+      p < w * (h - 1) ? p + w : -1,
+    ]) {
+      if (q < 0 || seen[q] || d[q * 4 + 3] === 0) continue
+      const f = far(q)
+      if (f < tolerance * 2) {
+        d[q * 4 + 3] = Math.min(d[q * 4 + 3], Math.max(0, Math.round((255 * (f - tolerance)) / tolerance)))
+      }
+    }
+  }
+  return tail
+}

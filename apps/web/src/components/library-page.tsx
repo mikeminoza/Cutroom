@@ -3,7 +3,7 @@
 import type { PoseSuggestion } from '@cutroom/shared/ai'
 import type { CharacterPose } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ImagePlus, Layers, Pencil, Plus, Sparkles, Trash2, UserRound, X } from 'lucide-react'
+import { Eraser, ImagePlus, Layers, Pencil, Plus, Sparkles, Trash2, UserRound, X } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { toast } from 'sonner'
@@ -15,6 +15,7 @@ import type { LibraryBackgroundDTO, LibraryCharacterDTO, SeriesDTO, StatusDTO } 
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useSeriesList, useStatus } from '@/lib/hooks'
 import { uploadTo } from '@/lib/upload'
+import { PoseTouchUp } from './pose-touch-up'
 import {
   Button,
   CopyButton,
@@ -484,6 +485,7 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
   const [timer] = useState(() => new Map<string, ReturnType<typeof setTimeout>>())
   const [suggestions, setSuggestions] = useState<PoseSuggestion[] | null>(null)
   const [asking, setAsking] = useState(false)
+  const [touching, setTouching] = useState<CharacterPose | null>(null)
   const folder = `library/characters/${character.id}`
   const latest = () =>
     client.getQueryData<LibraryCharacterDTO[]>(keys.library)?.find((c) => c.id === character.id)?.poses ??
@@ -552,6 +554,28 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
     )
   }
 
+  /** A touched-up pose replaces its pictures in place; the scenes using it follow. */
+  const saveTouchUp = async (poseId: string, files: { pose: File; blink: File | null }) => {
+    const where = await driver()
+    const [picture, blink] = await Promise.all([
+      uploadTo(files.pose, folder, where),
+      files.blink ? uploadTo(files.blink, folder, where) : null,
+    ])
+    await save(
+      latest().map((p) =>
+        p.id === poseId
+          ? {
+              ...p,
+              url: picture.url,
+              key: picture.key,
+              ...(blink ? { blinkUrl: blink.url, blinkKey: blink.key } : {}),
+            }
+          : p,
+      ),
+    )
+    toast.success('Pose touched up', { description: 'Scenes using it show the new picture.' })
+  }
+
   const suggest = async () => {
     setAsking(true)
     try {
@@ -585,6 +609,13 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
         ) : undefined
       }
     >
+      {touching && (
+        <PoseTouchUp
+          pose={touching}
+          onClose={() => setTouching(null)}
+          onSave={(files) => saveTouchUp(touching.id, files)}
+        />
+      )}
       {suggestions && suggestions.length > 0 && (
         <PoseSuggestions
           name={character.name}
@@ -610,6 +641,15 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
                 >
                   {/* biome-ignore lint/performance/noImgElement: user uploads */}
                   <img src={pose.url} alt={pose.name} className="size-full object-contain" />
+                  <button
+                    type="button"
+                    onClick={() => setTouching(pose)}
+                    aria-label={`Touch up ${pose.name || 'pose'}`}
+                    title="Touch up: clear leftover background"
+                    className="absolute top-1 left-1 grid size-6 place-items-center rounded-full bg-film/80 text-film-ink opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <Eraser className="size-3.5" />
+                  </button>
                   <button
                     type="button"
                     onClick={() => void save(latest().filter((p) => p.id !== pose.id))}
