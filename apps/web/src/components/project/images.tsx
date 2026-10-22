@@ -21,6 +21,8 @@ import {
   ImagePlus,
   Images,
   Layers,
+  LayoutGrid,
+  List,
   Replace,
   Sparkles,
   Square,
@@ -39,7 +41,6 @@ import {
   Segmented,
   Select,
   Spinner,
-  Switch,
   Tip,
   useConfirm,
   useFilePicker,
@@ -98,7 +99,8 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const { data: status } = useStatus()
   const { confirm, element: confirmDialog } = useConfirm()
   const [progress, setProgress] = useState<Progress>({})
-  const [missingOnly, setMissingOnly] = useState(false)
+  const [filter, setFilter] = useState<Filter>('all')
+  const [view, setView] = useImagesView()
   useGeneration()
   const generating = generation.scenes
   const batch = generation.batches.get(project.id) ?? null
@@ -323,7 +325,13 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     )
   }
 
-  const visible = missingOnly ? scenes.filter((s) => !hasPicture(s) || progress[s.id] !== undefined) : scenes
+  const shown = (s: SceneDTO) =>
+    filter === 'missing'
+      ? !hasPicture(s) || progress[s.id] !== undefined
+      : filter === 'no-character'
+        ? !s.imageUrl && !s.layer?.poseUrl
+        : true
+  const visible = scenes.filter(shown)
   const complete = done === scenes.length
 
   return (
@@ -417,11 +425,41 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                   </>
                 )}
               </p>
-              <div className="w-52">
-                <Switch
-                  checked={missingOnly}
-                  onCheckedChange={setMissingOnly}
-                  label="Only scenes without pictures"
+              <div className="flex flex-wrap items-center gap-2">
+                <Segmented<Filter>
+                  ariaLabel="Which scenes to show"
+                  value={filter}
+                  onChange={setFilter}
+                  options={[
+                    { value: 'all', label: 'All' },
+                    { value: 'missing', label: 'No picture', hint: 'Scenes still without a picture' },
+                    ...(hasLayers
+                      ? [
+                          {
+                            value: 'no-character' as const,
+                            label: 'No character',
+                            hint: 'Scenes without an uploaded picture or a character pose',
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+                <Segmented<ImagesView>
+                  ariaLabel="Layout"
+                  value={view}
+                  onChange={setView}
+                  options={[
+                    {
+                      value: 'list',
+                      label: <List className="size-4" aria-label="List" />,
+                      hint: 'One row per scene, to edit',
+                    },
+                    {
+                      value: 'grid',
+                      label: <LayoutGrid className="size-4" aria-label="Grid" />,
+                      hint: 'Every picture at a glance; click one to edit it',
+                    },
+                  ]}
                 />
               </div>
             </div>
@@ -429,29 +467,153 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
         )}
       </DropZone>
 
-      <ol className="flex flex-col gap-3">
-        {visible.map((scene) => (
-          <SceneImageRow
-            key={scene.id}
-            data={data}
-            scene={scene}
-            characters={characters}
-            selected={scene.id === selectedSceneId}
-            progress={progress[scene.id]}
-            onSelect={() => selectScene(scene.id)}
-            onFile={(file) => uploadOne(scene, file)}
-            generating={generating.has(scene.id)}
-            onGenerate={canGenerate && !batch ? () => generateScene(scene) : undefined}
-          />
-        ))}
-      </ol>
-      {missingOnly && visible.length === 0 && (
+      {view === 'grid' ? (
+        <ol
+          className={cn(
+            'grid gap-x-2.5 gap-y-3',
+            project.format === 'portrait'
+              ? 'grid-cols-3 sm:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10'
+              : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6',
+          )}
+        >
+          {visible.map((scene) => (
+            <SceneTile
+              key={scene.id}
+              scene={scene}
+              format={project.format}
+              selected={scene.id === selectedSceneId}
+              busy={progress[scene.id] !== undefined || generating.has(scene.id)}
+              onOpen={() => {
+                selectScene(scene.id)
+                setView('list')
+              }}
+              onFile={(file) => uploadOne(scene, file)}
+            />
+          ))}
+        </ol>
+      ) : (
+        <ol className="flex flex-col gap-3">
+          {visible.map((scene) => (
+            <SceneImageRow
+              key={scene.id}
+              data={data}
+              scene={scene}
+              characters={characters}
+              selected={scene.id === selectedSceneId}
+              progress={progress[scene.id]}
+              onSelect={() => selectScene(scene.id)}
+              onFile={(file) => uploadOne(scene, file)}
+              generating={generating.has(scene.id)}
+              onGenerate={canGenerate && !batch ? () => generateScene(scene) : undefined}
+            />
+          ))}
+        </ol>
+      )}
+      {filter !== 'all' && visible.length === 0 && (
         <p className="rounded-[var(--radius-panel)] border border-line bg-panel px-5 py-8 text-center text-[14px] text-ink-2">
-          Every scene has a picture.
+          {filter === 'missing' ? 'Every scene has a picture.' : 'Every scene has a character.'}
         </p>
       )}
       {confirmDialog}
     </div>
+  )
+}
+
+type Filter = 'all' | 'missing' | 'no-character'
+type ImagesView = 'list' | 'grid'
+const VIEW_KEY = 'cutroom-images-view'
+
+/** List or grid, remembered in this browser. */
+function useImagesView(): [ImagesView, (view: ImagesView) => void] {
+  const [view, setView] = useState<ImagesView>('list')
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(VIEW_KEY) === 'grid') setView('grid')
+    } catch {
+      // Storage blocked: start with the list.
+    }
+  }, [])
+  const choose = (next: ImagesView) => {
+    setView(next)
+    try {
+      localStorage.setItem(VIEW_KEY, next)
+    } catch {
+      // Storage blocked: the choice lasts until the page reloads.
+    }
+  }
+  return [view, choose]
+}
+
+/**
+ * One scene in the grid: its picture (uploaded or layered), number and length. Drop an image on
+ * it to fill it; click it to edit the scene in the list.
+ */
+function SceneTile({
+  scene,
+  format,
+  selected,
+  busy,
+  onOpen,
+  onFile,
+}: {
+  scene: SceneDTO
+  format: SceneFormat
+  selected: boolean
+  busy: boolean
+  onOpen: () => void
+  onFile: (file: File) => void
+}) {
+  return (
+    <li className="min-w-0">
+      <DropZone
+        accept="image/*"
+        onFiles={([file]) => file && onFile(file)}
+        className="rounded-[var(--radius-frame)]"
+      >
+        {({ dragging }) => (
+          <button
+            type="button"
+            onClick={onOpen}
+            title={scene.narration}
+            aria-label={`Scene ${scene.index + 1}: ${scene.narration}`}
+            className={cn(
+              'relative block w-full overflow-hidden rounded-[var(--radius-frame)] bg-film',
+              format === 'portrait' ? 'aspect-[9/16]' : 'aspect-video',
+              dragging
+                ? 'ring-2 ring-kodak'
+                : selected
+                  ? 'ring-2 ring-ink ring-offset-2 ring-offset-paper'
+                  : 'ring-1 ring-line hover:ring-ink-3',
+            )}
+          >
+            {scene.imageUrl ? (
+              // biome-ignore lint/performance/noImgElement: user uploads
+              <img src={scene.imageUrl} alt="" className="absolute inset-0 size-full object-cover" />
+            ) : scene.layer && hasPicture(scene) ? (
+              <span className="absolute inset-0">
+                <LayeredPicture layer={scene.layer} fit={scene.fit} format={format} className="size-full" />
+              </span>
+            ) : (
+              <span className="hatch absolute inset-0 grid place-items-center bg-sunk text-[11.5px] text-ink-3">
+                No picture
+              </span>
+            )}
+            {busy && (
+              <span className="absolute inset-0 grid place-items-center bg-film/60 text-film-ink">
+                <Spinner />
+              </span>
+            )}
+            <span className="tc absolute top-1 left-1 rounded-[3px] bg-ink/85 px-1 text-[11px] font-semibold text-paper">
+              {scene.index + 1}
+            </span>
+            <span className="tc absolute right-1 bottom-1 rounded-[3px] bg-film/75 px-1 text-[10.5px] text-film-ink">
+              {(scene.end - scene.start).toFixed(1)} s
+            </span>
+          </button>
+        )}
+      </DropZone>
+      <p className="mt-1 truncate text-[11.5px] text-ink-3">{scene.narration}</p>
+    </li>
   )
 }
 
