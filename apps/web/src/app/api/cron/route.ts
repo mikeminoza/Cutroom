@@ -8,6 +8,7 @@ import { refreshStats } from '@/server/analytics'
 import { postDueComments, readDueComments } from '@/server/comments'
 import { cronDenied } from '@/server/cron'
 import { db, schema } from '@/server/db'
+import { runAutopilot } from '@/server/drafting'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
 import { appUrl } from '@/server/settings'
@@ -50,8 +51,13 @@ export async function GET(request: Request): Promise<Response> {
   }
   // Comments for viewers on videos that went public since yesterday.
   stats.notes.push(...(await postDueComments().catch((error) => [String(error)])))
-  const comments = await readDueComments().catch((error) =>
+  // A new draft for the week, if one is due. It and the weekly comment summary both use Gemini for
+  // a while, so a day that drafted leaves the comments for tomorrow.
+  const autopilot = await runAutopilot().catch((error) =>
     error instanceof Error ? error.message : String(error),
   )
-  return NextResponse.json({ worker, nudged: active.length, stuck: stuck.length, stats, comments })
+  const comments = autopilot
+    ? null
+    : await readDueComments().catch((error) => (error instanceof Error ? error.message : String(error)))
+  return NextResponse.json({ worker, nudged: active.length, stuck: stuck.length, stats, autopilot, comments })
 }

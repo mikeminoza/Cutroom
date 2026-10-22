@@ -3,7 +3,7 @@ import { scriptParts } from '../src/ai'
 import { refineTranscript, segmentsFromWords, sliceTranscript, speechParts, timeWords } from '../src/align'
 import { overlayEvents, overlayOpacity, speechSpans } from '../src/captions'
 import { elevenLabsSpeech, wordsFromAlignment } from '../src/elevenlabs'
-import { explainGoogleError, hasAnalyticsScope } from '../src/google'
+import { channelRef, explainGoogleError, hasAnalyticsScope } from '../src/google'
 import { imageDimensions, imageExtension } from '../src/images'
 import { isPlainKey, isStoredUnder, keyOf, localPath } from '../src/storage'
 import {
@@ -835,5 +835,17 @@ describe('picture pacing', () => {
     for (const part of parts) expect(countWords(part)).toBeLessThanOrEqual(260)
     expect(parts.join(' ').split(/\s+/)).toEqual(long.split(/\s+/))
     expect(scriptParts('A short script.', 260)).toEqual(['A short script.'])
+  })
+})
+
+describe('channel links', () => {
+  it('reads a handle or a channel id from what you paste', () => {
+    expect(channelRef('https://www.youtube.com/@monkebiznis')).toEqual({ handle: '@monkebiznis' })
+    expect(channelRef('youtube.com/@some.name/videos')).toEqual({ handle: '@some.name' })
+    expect(channelRef('@cappy')).toEqual({ handle: '@cappy' })
+    expect(channelRef('https://www.youtube.com/channel/UCC2nLqBUIy8bagyNMDRiRcA')).toEqual({
+      id: 'UCC2nLqBUIy8bagyNMDRiRcA',
+    })
+    expect(channelRef('just some words')).toBeNull()
   })
 })

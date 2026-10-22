@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "autopilot" boolean DEFAULT false NOT NULL;

@@ -6,6 +6,7 @@ import {
   ART_STYLES,
   type ChannelNiche,
   GEMINI_VOICES,
+  type NicheReference,
   YOUTUBE_CATEGORIES,
 } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -674,6 +675,39 @@ function PreferencesForm() {
         </Panel>
       </div>
 
+      <div id="autopilot" className="scroll-mt-6">
+        <Panel
+          title="Weekly drafts"
+          description="Each week the daily check turns your ideas into ready drafts, one a day: the newest idea on the Ideas page (requests from your comments included, or fresh ones from Gemini when the list is empty), its script written, split into scenes, with backgrounds and poses picked from your Library. You record the voice-over, check it and schedule it. Free, on Gemini's free tier."
+        >
+          <div className="px-5 py-5">
+            <Field
+              label="Drafts a week"
+              hint={
+                settings.autopilot.perWeek > 0
+                  ? `Up to ${settings.autopilot.perWeek} a week, made from Monday on. You get a message for each when notifications are set up.`
+                  : 'Off: drafts are only made when you ask on the Ideas page.'
+              }
+            >
+              <Segmented
+                ariaLabel="Drafts a week"
+                value={String(settings.autopilot.perWeek)}
+                onChange={(perWeek) => update({ autopilot: { perWeek: Number(perWeek) } })}
+                options={[
+                  { value: '0', label: 'Off' },
+                  { value: '1', label: '1' },
+                  { value: '2', label: '2' },
+                  { value: '3', label: '3' },
+                  { value: '5', label: '5' },
+                  { value: '7', label: '7' },
+                ]}
+                className="w-full max-w-md"
+              />
+            </Field>
+          </div>
+        </Panel>
+      </div>
+
       <Panel
         title="Defaults for new videos"
         description="Every project starts with these. You can change them per video."
@@ -936,6 +970,156 @@ function PreferencesForm() {
 
 const PACES = ['2', '3', '4', '6', '8']
 
+interface LearnedStyle {
+  reference: NicheReference
+  suggestion: Pick<
+    ChannelNiche,
+    'description' | 'narration' | 'audience' | 'tone' | 'artStyle' | 'targetMinutes' | 'pace'
+  > & {
+    ideas: { title: string; angle: string }[]
+  }
+  videos: number
+}
+
+/**
+ * "Learn from a channel": paste a channel you want your videos to be like; Gemini describes its
+ * format for your own narrator, and "Use this style" fills the niche in.
+ */
+function LearnStyle({
+  niche,
+  onChange,
+}: {
+  niche: ChannelNiche
+  onChange: (patch: Partial<ChannelNiche>) => void
+}) {
+  const client = useQueryClient()
+  const [url, setUrl] = useState('')
+  const [learning, setLearning] = useState(false)
+  const [learned, setLearned] = useState<LearnedStyle | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  const learn = async () => {
+    setLearning(true)
+    try {
+      setLearned(await api.post<LearnedStyle>('/api/settings/learn-style', { url }))
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setLearning(false)
+    }
+  }
+  const use = () => {
+    if (!learned) return
+    const { ideas: _ideas, ...fields } = learned.suggestion
+    onChange({ ...fields, reference: learned.reference })
+    toast.success(`Your niche now follows ${learned.reference.title}`)
+  }
+  const addIdeas = async () => {
+    if (!learned) return
+    setAdding(true)
+    try {
+      for (const idea of learned.suggestion.ideas) {
+        await api.post('/api/ideas/own', { title: idea.title, angle: idea.angle })
+      }
+      void client.invalidateQueries({ queryKey: keys.ideas })
+      toast.success(`Added ${learned.suggestion.ideas.length} ideas`, {
+        description: 'Find them on the Ideas page.',
+      })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const s = learned?.suggestion
+  return (
+    <Field
+      label="Learn from a channel"
+      className="sm:col-span-2"
+      hint={
+        niche.reference
+          ? `Following the style of ${niche.reference.title}: its best titles guide yours until your channel has hits of its own.`
+          : 'Paste a channel you want your videos to be like. Its format is adapted to your own character, never copied.'
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="youtube.com/@channel"
+            aria-label="Channel to learn from"
+            className="min-w-0"
+          />
+          <Button variant="plain" busy={learning} disabled={url.trim().length < 3} onClick={learn}>
+            Learn the style
+          </Button>
+          {niche.reference && !learned && (
+            <Button variant="ghost" onClick={() => onChange({ reference: null })}>
+              Stop following
+            </Button>
+          )}
+        </div>
+        {learned && s && (
+          <div className="rounded-[var(--radius-control)] border border-line bg-sunk">
+            <p className="border-b border-line px-3.5 py-2.5 text-[13px] text-ink-2">
+              From {learned.videos} videos on{' '}
+              <span className="font-medium text-ink">{learned.reference.title}</span>. Check it, then use it:
+              it replaces the niche fields below.
+            </p>
+            <dl className="grid gap-x-5 gap-y-3 px-3.5 py-3 text-[13.5px] sm:grid-cols-[130px_1fr]">
+              {(
+                [
+                  ['About', s.description],
+                  ['Narration', s.narration],
+                  ['Audience', s.audience],
+                  ['Tone', s.tone],
+                  ['Art style', s.artStyle],
+                  ['Length', `About ${s.targetMinutes} min, a new picture every ${s.pace} s`],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label} className="contents">
+                  <dt className="text-ink-3">{label}</dt>
+                  <dd className="leading-relaxed whitespace-pre-line">{value}</dd>
+                </div>
+              ))}
+              {s.ideas.length > 0 && (
+                <div className="contents">
+                  <dt className="text-ink-3">Ideas</dt>
+                  <dd>
+                    <ul className="flex flex-col gap-1.5">
+                      {s.ideas.map((idea) => (
+                        <li key={idea.title}>
+                          <span className="font-medium">{idea.title}</span>
+                          {idea.angle && <span className="text-ink-2"> {idea.angle}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              )}
+            </dl>
+            <div className="flex flex-wrap gap-2 border-t border-line px-3.5 py-2.5">
+              <Button variant="go" size="sm" onClick={use}>
+                Use this style
+              </Button>
+              {s.ideas.length > 0 && (
+                <Button variant="plain" size="sm" busy={adding} onClick={addIdeas}>
+                  Add the {s.ideas.length} ideas
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setLearned(null)}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Field>
+  )
+}
+
 /** The channel's niche: subject, narrator, look, length and main characters for new videos. */
 function ChannelNichePanel({
   niche,
@@ -961,6 +1145,7 @@ function ChannelNichePanel({
       description="What your channel is about. Every new video starts from this (series episodes use their series instead), and you can still change anything per video on its Brief step."
     >
       <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+        <LearnStyle niche={niche} onChange={onChange} />
         <Field
           label="Main characters"
           className="sm:col-span-2"

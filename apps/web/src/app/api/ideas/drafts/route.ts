@@ -1,9 +1,8 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { db, schema } from '@/server/db'
+import { draftFromIdea } from '@/server/drafting'
 import { badRequest, readJson, route } from '@/server/http'
-import { createProject } from '@/server/projects'
-import { getSeries } from '@/server/series'
 
 // Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
 // default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
@@ -31,14 +30,7 @@ export const POST = route(async (request) => {
   for (const id of body.ids) {
     const idea = ideas.find((i) => i.id === id)
     if (!idea) continue
-    const series = idea.seriesId ? await getSeries(idea.seriesId) : null
-    const projectId = await createProject({
-      title: idea.title,
-      topic: idea.angle ? `${idea.title}. ${idea.angle}` : idea.title,
-      format: body.format,
-      series,
-    })
-    await database.update(schema.ideas).set({ status: 'used', projectId }).where(eq(schema.ideas.id, idea.id))
+    const projectId = await draftFromIdea(idea, body.format)
     created.push({ ideaId: idea.id, projectId })
   }
   return { created }

@@ -73,6 +73,8 @@ export const projects = pgTable('projects', {
   stats: jsonb('stats').$type<VideoStats>(),
   /** The comment posted for viewers (post.comment); '' when it could not be posted. */
   commentId: text('comment_id'),
+  /** Drafted by the weekly autopilot (server/drafting.ts). */
+  autopilot: boolean('autopilot').notNull().default(false),
   /** The long video a Short was cut from. */
   sourceProjectId: text('source_project_id'),
   createdAt: created(),

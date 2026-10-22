@@ -10,19 +10,33 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 const pickSceneLayers = vi.hoisted(() => vi.fn())
 const summarizeComments = vi.hoisted(() => vi.fn())
 const suggestPoses = vi.hoisted(() => vi.fn())
-vi.mock('@cutroom/shared/ai', async (original) => ({
-  ...(await original<typeof import('@cutroom/shared/ai')>()),
-  pickSceneLayers,
-  summarizeComments,
-  suggestPoses,
-}))
+vi.mock('@cutroom/shared/ai', async (original) => {
+  const actual = await original<typeof import('@cutroom/shared/ai')>()
+  return {
+    ...actual,
+    pickSceneLayers,
+    summarizeComments,
+    suggestPoses,
+    // Real unless a test says otherwise.
+    writeScript: vi.fn(actual.writeScript),
+    splitScript: vi.fn(actual.splitScript),
+    generateIdeas: vi.fn(actual.generateIdeas),
+    learnChannelStyle: vi.fn(actual.learnChannelStyle),
+  }
+})
 // Reading comments from YouTube is stubbed too.
 const videoComments = vi.hoisted(() => vi.fn())
 const postComment = vi.hoisted(() => vi.fn())
 vi.mock('@cutroom/shared/google', async (original) => {
   const actual = await original<typeof import('@cutroom/shared/google')>()
   // Video statistics stay real unless a test says otherwise.
-  return { ...actual, videoComments, postComment, videoStatistics: vi.fn(actual.videoStatistics) }
+  return {
+    ...actual,
+    videoComments,
+    postComment,
+    videoStatistics: vi.fn(actual.videoStatistics),
+    channelUploads: vi.fn(actual.channelUploads),
+  }
 })
 
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cutroom-test-'))
@@ -80,6 +94,9 @@ const pictureRoute = await import('../src/app/api/picture/route')
 const commentsRoute = await import('../src/app/api/performance/comments/route')
 const comments = await import('../src/server/comments')
 const google = await import('@cutroom/shared/google')
+const ai = await import('@cutroom/shared/ai')
+const drafting = await import('../src/server/drafting')
+const learnStyleRoute = await import('../src/app/api/settings/learn-style/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -1362,5 +1379,149 @@ describe('pose shopping list', () => {
     expect(asked.character).toEqual({ name: 'Pip', description: 'A tiny hamster' })
     expect(asked.have).toEqual(['Happy'])
     expect(asked.scripts).toEqual(['Pip runs to the wheel. Pip is shocked!'])
+  })
+})
+
+describe('weekly drafts', () => {
+  it('turns the newest idea into a full draft once a day, up to the number a week', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'key')
+    try {
+      const database = await db()
+      const before = await settingsModule.getSettings()
+      // Off: nothing happens.
+      expect(await drafting.runAutopilot()).toBeNull()
+      await settingsModule.saveSettings({ ...before, autopilot: { perWeek: 1 } })
+      await database.update(schema.ideas).set({ status: 'dismissed' })
+      await database.insert(schema.ideas).values([
+        { id: 'old-idea', title: 'Cappy and the rain', angle: '', createdAt: new Date('2026-01-01') },
+        { id: 'new-idea', title: 'Cappy at the beach', angle: 'Sand everywhere.', createdAt: new Date() },
+      ])
+      vi.mocked(ai.writeScript).mockResolvedValueOnce({
+        title: 'Cappy at the beach',
+        script: 'Cappy goes to the beach. Sand everywhere!',
+      })
+      vi.mocked(ai.splitScript).mockResolvedValueOnce([
+        {
+          narration: 'Cappy goes to the beach.',
+          visual: 'A beach',
+          imagePrompt: '',
+          characters: [],
+          shot: '',
+          motion: 'zoom-in',
+          onScreenText: '',
+          transition: 'cut',
+          notes: '',
+        },
+        {
+          narration: 'Sand everywhere!',
+          visual: 'Sand',
+          imagePrompt: '',
+          characters: [],
+          shot: '',
+          motion: 'pan-left',
+          onScreenText: '',
+          transition: 'cut',
+          notes: '',
+        },
+      ])
+
+      const note = await drafting.runAutopilot()
+      expect(note).toBe('Autopilot: drafted "Cappy at the beach".')
+      const [idea] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, 'new-idea'))
+      expect(idea.status).toBe('used')
+      const project = await projects.getProjectRow(idea.projectId as string)
+      expect(project).toMatchObject({ autopilot: true, script: 'Cappy goes to the beach. Sand everywhere!' })
+      expect((await projects.getScenes(project.id)).map((s) => s.narration)).toEqual([
+        'Cappy goes to the beach.',
+        'Sand everywhere!',
+      ])
+      // This week's one is made: the older idea waits.
+      expect(await drafting.runAutopilot()).toBeNull()
+      const [waiting] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, 'old-idea'))
+      expect(waiting.status).toBe('new')
+      await settingsModule.saveSettings(before)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+describe('learning from a channel', () => {
+  it("reads the channel's long videos and suggests a niche in its style, then guides titles", async () => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    try {
+      const video = (title: string, seconds: number, views: number) => ({
+        title,
+        description: '',
+        seconds,
+        views,
+        thumbnail: null,
+      })
+      vi.mocked(google.channelUploads).mockResolvedValueOnce({
+        title: 'Big Habits',
+        description: 'Habits, explained simply.',
+        videos: [
+          video('5 habits for focus', 300, 9000),
+          video('Short one', 40, 99000),
+          video('How to study', 420, 20000),
+          video('Morning routine', 480, 500),
+        ],
+      })
+      vi.mocked(ai.learnChannelStyle).mockResolvedValueOnce({
+        description: 'Cappy explains habits.',
+        narration: 'Cappy speaks simply.',
+        audience: 'Teens and adults',
+        tone: 'Funny',
+        artStyle: 'Crude marker drawings',
+        pace: 3,
+        ideas: [{ title: 'Cappy fixes his sleep', angle: 'Bedtime, explained.' }],
+      })
+      const response = await learnStyleRoute.POST(
+        new Request('http://localhost/api', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: 'https://www.youtube.com/@bighabits' }),
+        }),
+        undefined,
+      )
+      expect(response.status).toBe(200)
+      const learned = await response.json()
+      // Shorts don't count when there are long videos: lengths 5, 7 and 8 minutes.
+      expect(learned.suggestion).toMatchObject({
+        description: 'Cappy explains habits.',
+        targetMinutes: 7,
+        pace: 3,
+      })
+      expect(learned.reference).toEqual({
+        url: 'https://www.youtube.com/@bighabits',
+        title: 'Big Habits',
+        titles: [
+          { title: 'How to study', views: 20000 },
+          { title: '5 habits for focus', views: 9000 },
+          { title: 'Morning routine', views: 500 },
+        ],
+      })
+      expect(vi.mocked(ai.learnChannelStyle).mock.calls[0][0].reference.videos).toHaveLength(3)
+
+      // A channel without posted hits of its own learns its titles from the reference.
+      const before = await settingsModule.getSettings()
+      await settingsModule.saveSettings({
+        ...before,
+        niche: { ...before.niche, reference: learned.reference },
+      })
+      // The default channel has two hits of its own: they come first, the reference fills the rest.
+      const titles = await analytics.topTitles(null, null)
+      expect(titles.map((t) => t.title)).toEqual([
+        'Big hit',
+        'Smaller hit',
+        'How to study',
+        '5 habits for focus',
+        'Morning routine',
+      ])
+      await settingsModule.saveSettings(before)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

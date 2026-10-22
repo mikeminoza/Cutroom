@@ -15,6 +15,7 @@ export async function getSettings(): Promise<AppSettings> {
     notifications: { ...DEFAULT_SETTINGS.notifications, ...row.data.notifications },
     niche: { ...DEFAULT_SETTINGS.niche, ...row.data.niche },
     shorts: { ...DEFAULT_SETTINGS.shorts, ...row.data.shorts },
+    autopilot: { ...DEFAULT_SETTINGS.autopilot, ...row.data.autopilot },
   }
 }
 

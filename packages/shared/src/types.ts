@@ -336,6 +336,13 @@ export interface AppSettings {
   niche: ChannelNiche
   /** Shorts made from each long video right after it posts. */
   shorts: AutoShorts
+  /** Drafts made each week from the ideas, by the daily cron. */
+  autopilot: Autopilot
+}
+
+export interface Autopilot {
+  /** Drafts a week, one a day at most; 0 turns it off. */
+  perWeek: number
 }
 
 export interface AutoShorts {
@@ -364,6 +371,17 @@ export interface ChannelNiche {
   pace: number
   /** Library characters added to every new video, the narrator first. */
   characterIds: string[]
+  /**
+   * A channel whose style this one follows ("Learn from a channel"): its most-viewed titles guide
+   * new titles and ideas until this channel has enough views of its own.
+   */
+  reference?: NicheReference | null
+}
+
+export interface NicheReference {
+  url: string
+  title: string
+  titles: { title: string; views: number }[]
 }
 
 export const EMPTY_NICHE: ChannelNiche = {
@@ -407,6 +425,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifications: { approval: true, failed: true, posted: true },
   niche: EMPTY_NICHE,
   shorts: { count: 2, maxSeconds: 60 },
+  autopilot: { perWeek: 0 },
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.

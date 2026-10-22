@@ -277,6 +277,73 @@ export async function postComment(client: OAuthClient, videoId: string, text: st
   return res.data.snippet?.topLevelComment?.id ?? res.data.id ?? ''
 }
 
+export interface ChannelVideo {
+  title: string
+  description: string
+  seconds: number
+  views: number
+  thumbnail: string | null
+}
+
+/** A channel from a link or handle: youtube.com/@name, youtube.com/channel/UC…, or "@name". */
+export function channelRef(input: string): { handle: string } | { id: string } | null {
+  const text = input.trim()
+  const id = text.match(/\b(UC[\w-]{22})\b/)
+  if (id) return { id: id[1] }
+  const handle = text.match(/@([\w.-]{3,100})/)
+  return handle ? { handle: `@${handle[1]}` } : null
+}
+
+/** "PT7M33S" → 453. */
+function isoSeconds(duration: string | null | undefined): number {
+  const m = duration?.match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
+  if (!m) return 0
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3] ?? 0) * 60 + Number(m[4] ?? 0)
+}
+
+/** A public channel's title, description and newest uploads (3 quota units). */
+export async function channelUploads(
+  client: OAuthClient,
+  input: string,
+  max = 40,
+): Promise<{ title: string; description: string; videos: ChannelVideo[] }> {
+  const ref = channelRef(input)
+  if (!ref) throw new Error('Paste a channel link like youtube.com/@name.')
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const found = await yt.channels.list({
+    part: ['snippet', 'contentDetails'],
+    ...('id' in ref ? { id: [ref.id] } : { forHandle: ref.handle }),
+  })
+  const channel = found.data.items?.[0]
+  if (!channel) throw new Error('That channel was not found on YouTube.')
+  const uploads = channel.contentDetails?.relatedPlaylists?.uploads
+  const items = uploads
+    ? ((
+        await yt.playlistItems.list({
+          part: ['contentDetails'],
+          playlistId: uploads,
+          maxResults: Math.min(50, max),
+        })
+      ).data.items ?? [])
+    : []
+  const ids = items.map((i) => i.contentDetails?.videoId).filter((v): v is string => Boolean(v))
+  const videos = ids.length
+    ? ((await yt.videos.list({ part: ['snippet', 'contentDetails', 'statistics'], id: ids, maxResults: 50 }))
+        .data.items ?? [])
+    : []
+  return {
+    title: channel.snippet?.title ?? '',
+    description: channel.snippet?.description ?? '',
+    videos: videos.map((v) => ({
+      title: v.snippet?.title ?? '',
+      description: (v.snippet?.description ?? '').slice(0, 400),
+      seconds: isoSeconds(v.contentDetails?.duration),
+      views: Number(v.statistics?.viewCount ?? 0),
+      thumbnail: v.snippet?.thumbnails?.medium?.url ?? v.snippet?.thumbnails?.default?.url ?? null,
+    })),
+  }
+}
+
 export interface VideoComment {
   text: string
   likes: number

@@ -16,6 +16,7 @@ import { resolveChannel } from '@/lib/channels'
 import { listChannels } from './connections'
 import { db, schema } from './db'
 import type { ChannelRow, ProjectRow } from './db/schema'
+import { getSettings } from './settings'
 
 /** Stats younger than this are not fetched again by the daily refresh. */
 const FRESH_MS = 6 * 60 * 60 * 1000
@@ -147,12 +148,15 @@ export async function topTitles(
   youtubeId: string | null,
   limit = 5,
 ): Promise<{ title: string; views: number }[]> {
-  const [projects, channels] = await Promise.all([postedProjects(), listChannels()])
+  const [projects, channels, settings] = await Promise.all([postedProjects(), listChannels(), getSettings()])
   const target = resolveChannel(channels, channelId, youtubeId)?.id ?? null
-  return projects
+  const own = projects
     .filter((p) => p.stats && p.stats.views > 0 && (channelOf(channels, p)?.id ?? null) === target)
     .sort((a, b) => (b.stats?.views ?? 0) - (a.stats?.views ?? 0))
     .slice(0, limit)
     .map((p) => ({ title: (p.post?.title || p.title).trim(), views: p.stats?.views ?? 0 }))
     .filter((t) => t.title)
+  // A new channel learns from the channel whose style it follows until it has hits of its own.
+  if (own.length >= 3) return own
+  return [...own, ...(settings.niche.reference?.titles ?? [])].slice(0, limit)
 }

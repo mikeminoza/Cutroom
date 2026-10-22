@@ -142,9 +142,18 @@ export const settingsSchema = z.object({
     targetMinutes: z.number().min(0.25).max(60),
     pace: z.number().min(2).max(30),
     characterIds: z.array(z.string().max(100)).max(6),
+    reference: z
+      .object({
+        url: z.string().max(500),
+        title: z.string().max(200),
+        titles: z.array(z.object({ title: z.string().max(200), views: z.number().min(0) })).max(20),
+      })
+      .nullable()
+      .optional(),
   }),
   shorts: z.object({
     count: z.number().int().min(0).max(3),
     maxSeconds: z.number().int().min(15).max(180),
   }),
+  autopilot: z.object({ perWeek: z.number().int().min(0).max(7) }).default({ perWeek: 0 }),
 })

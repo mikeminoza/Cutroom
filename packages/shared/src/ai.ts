@@ -506,7 +506,7 @@ export interface PostDraftInput {
 function topTitlesNote(top: { title: string; views: number }[] | undefined): string {
   if (!top?.length) return ''
   const list = top.map((t) => `- "${t.title}" (${t.views.toLocaleString('en-US')} views)`).join('\n')
-  return `\nTitles that got the most views on this channel so far. Learn from their style, length and wording, but do not copy them:\n${list}\n`
+  return `\nTitles that got the most views on this channel (or, while it is new, on the channel whose style it follows). Learn from their style, length and wording, but do not copy them:\n${list}\n`
 }
 
 export interface PostDraft {
@@ -909,6 +909,106 @@ Pick up to ${input.count} runs of consecutive scenes that do not overlap. Each m
     if (!overlaps) picks.push({ ...pick, title: raw.title.trim().slice(0, 100) })
   }
   return picks
+}
+
+export interface NicheSuggestion {
+  description: string
+  narration: string
+  audience: string
+  tone: string
+  artStyle: string
+  /** Seconds per picture that suits the style. */
+  pace: number
+  ideas: { title: string; angle: string }[]
+}
+
+/**
+ * Describes a reference channel's format so a creator can make videos like it with their own
+ * character: what it covers, how the narrator talks, its tone and its look (from a few
+ * thumbnails). The format is borrowed, never the reference's character, name or catchphrases.
+ */
+export async function learnChannelStyle(input: {
+  reference: {
+    title: string
+    description: string
+    videos: { title: string; seconds: number; views: number; description: string }[]
+  }
+  thumbnails: { mimeType: string; data: string }[]
+  character: { name: string; description: string } | null
+  audience: string
+}): Promise<NicheSuggestion> {
+  const name = input.character?.name.trim() || 'the narrator'
+  const videos = [...input.reference.videos]
+    .sort((a, b) => b.views - a.views)
+    .slice(0, 30)
+    .map(
+      (v) =>
+        `- "${v.title}" (${Math.round(v.seconds / 60)} min, ${v.views.toLocaleString('en-US')} views)${v.description.trim() ? `: ${v.description.trim().split('\n')[0].slice(0, 160)}` : ''}`,
+    )
+    .join('\n')
+  const prompt = `A creator wants their YouTube channel to work like the reference channel below, narrated by their own character.
+
+Reference channel: ${input.reference.title}
+About: ${input.reference.description.trim().slice(0, 600) || '(none)'}
+Its videos, most viewed first:
+${videos}
+${input.thumbnails.length ? '\nThe images are some of its thumbnails.\n' : ''}
+The creator's character: ${name}${input.character?.description.trim() ? `: ${input.character.description.trim()}` : ''}
+The creator's audience: ${input.audience.trim() || '(not set)'}
+
+Describe the reference's format so the creator can make videos like it with ${name}: the kind of topics, how the narrator talks, the structure (hooks, lists, jokes), the pace and the look. Borrow the format, never its character, name, catchphrases, titles or branding: everything is about ${name}. If the creator's audience includes kids, keep every topic and line family-friendly even where the reference isn't.
+- description: what the channel covers, 1–2 sentences, with ${name} as the narrator.
+- narration: how ${name} talks, matching the reference narrator's voice (person, sentence length, slang, running jokes), with two short example lines in ${name}'s voice.
+- audience: who it is for.
+- tone: a few words.
+- artStyle: the visual style of the pictures and thumbnails, concrete enough for an image generator (lines, colours, backgrounds, how text looks).
+- pace: seconds per picture that suits this style: 2, 3, 4 or 6.
+- ideas: 5 video ideas in this format for ${name}, each with a title in the reference's title style (but not copied) and a one-sentence angle.`
+  const result = await generateJson(
+    [
+      { text: prompt },
+      ...input.thumbnails.map((t) => ({ inlineData: { mimeType: t.mimeType, data: t.data } })),
+    ],
+    {
+      type: 'object',
+      properties: {
+        description: str,
+        narration: str,
+        audience: str,
+        tone: str,
+        artStyle: str,
+        pace: { type: 'integer' },
+        ideas: {
+          type: 'array',
+          items: { type: 'object', properties: { title: str, angle: str }, required: ['title', 'angle'] },
+        },
+      },
+      required: ['description', 'narration', 'audience', 'tone', 'artStyle', 'pace', 'ideas'],
+    },
+    z.object({
+      description: z.string(),
+      narration: z.string(),
+      audience: z.string(),
+      tone: z.string(),
+      artStyle: z.string(),
+      pace: z.number().catch(3),
+      ideas: z.array(z.object({ title: z.string(), angle: z.string() })).catch([]),
+    }),
+    'You are a YouTube strategist who studies successful channels and adapts their format for new creators.',
+  )
+  const clip = (text: string, max: number) => text.trim().slice(0, max)
+  return {
+    description: clip(result.description, 1000),
+    narration: clip(result.narration, 1000),
+    audience: clip(result.audience, 500),
+    tone: clip(result.tone, 500),
+    artStyle: clip(result.artStyle, 1000),
+    pace: [2, 3, 4, 6].includes(Math.round(result.pace)) ? Math.round(result.pace) : 3,
+    ideas: result.ideas
+      .filter((i) => i.title.trim())
+      .slice(0, 5)
+      .map((i) => ({ title: clip(i.title, 200), angle: clip(i.angle, 1000) })),
+  }
 }
 
 export interface PoseSuggestion {

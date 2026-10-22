@@ -64,4 +64,8 @@ export const migrations: { tag: string; statements: string[] }[] = [
     tag: '0005_comment_id',
     statements: ['ALTER TABLE "projects" ADD COLUMN "comment_id" text;'],
   },
+  {
+    tag: '0006_autopilot',
+    statements: ['ALTER TABLE "projects" ADD COLUMN "autopilot" boolean DEFAULT false NOT NULL;'],
+  },
 ]
