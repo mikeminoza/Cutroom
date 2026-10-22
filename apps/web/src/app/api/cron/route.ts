@@ -5,8 +5,8 @@
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { refreshStats } from '@/server/analytics'
-import { authEnabled, safeEqual } from '@/server/auth'
 import { postDueComments, readDueComments } from '@/server/comments'
+import { cronDenied } from '@/server/cron'
 import { db, schema } from '@/server/db'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
@@ -19,15 +19,8 @@ export const maxDuration = 300
 const STUCK_MS = 60 * 60 * 1000
 
 export async function GET(request: Request): Promise<Response> {
-  const secret = process.env.CRON_SECRET
-  if (!secret && authEnabled()) {
-    // A password-protected app must not leave this open to anyone (it sends notifications and
-    // spends YouTube quota). Vercel only signs its calls when CRON_SECRET is set.
-    return NextResponse.json({ error: 'Set CRON_SECRET to enable the daily check.' }, { status: 401 })
-  }
-  if (secret && !safeEqual(request.headers.get('authorization') ?? '', `Bearer ${secret}`)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronDenied(request)
+  if (denied) return denied
   const database = await db()
   const active = await database
     .select()

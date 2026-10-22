@@ -34,6 +34,7 @@ Locally both read a single `.env` file at the repository root. In production you
 | `GITHUB_WORKFLOW_FILE`, `GITHUB_BRANCH`, `WORKER_MODE` | ✓ | – | No | `worker.yml`, `main`, `render` |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | – | ✓ | No | `C:\ffmpeg\bin\ffmpeg.exe` |
 | `FFMPEG_THREADS` | – | ✓ | No | `1` |
+| `RENDER_PARALLEL` | – | ✓ | No | `2` |
 | `WORKER_PUBLIC_URL` | – | ✓ | No | `https://my-worker.example.com` |
 | `STORAGE_DIR`, `PGLITE_DIR` | local only | local only | No | `D:\cutroom-data\storage` |
 | `PORT` | – | set by Render | No | `10000` |
@@ -210,6 +211,7 @@ Optional. While a job runs, the worker calls its own public address every few mi
 
 - **Paths:** only needed when ffmpeg is not on your `PATH`. The Docker image used on Render already includes ffmpeg.
 - **`FFMPEG_THREADS`:** caps how many CPU threads a render uses. The default is the number of available cores, up to 4. On Render's free plan leave it empty or set `1`.
+- **`RENDER_PARALLEL`:** how many scene clips render at the same time. The default is one per usable core, as memory allows (about 400 MB each), up to 4. GitHub Actions gets 4, which renders a 7-minute video about a third faster than one clip at a time. Render's free plan stays at 1. Leave it empty unless a render runs out of memory.
 
 ### `STORAGE_DIR`, `PGLITE_DIR` (local only)
 

@@ -62,6 +62,7 @@ const analytics = await import('../src/server/analytics')
 const notify = await import('../src/server/notify')
 const { HttpError } = await import('../src/server/http')
 const cron = await import('../src/app/api/cron/route')
+const hourly = await import('../src/app/api/cron/hourly/route')
 const settingsModule = await import('../src/server/settings')
 const libraryRoute = await import('../src/app/api/library/characters/route')
 const libraryItemRoute = await import('../src/app/api/library/characters/[id]/route')
@@ -751,10 +752,29 @@ describe('daily cron and stats', () => {
   it('stays closed on a password-protected app without CRON_SECRET', async () => {
     process.env.APP_PASSWORD = 'secret'
     try {
-      const response = await cron.GET(new Request('http://localhost/api/cron'))
-      expect(response.status).toBe(401)
+      expect((await cron.GET(new Request('http://localhost/api/cron'))).status).toBe(401)
+      expect((await hourly.GET(new Request('http://localhost/api/cron/hourly'))).status).toBe(401)
     } finally {
       delete process.env.APP_PASSWORD
+    }
+  })
+
+  it('runs the hourly check with the right secret only', async () => {
+    vi.stubEnv('CRON_SECRET', 'tick')
+    try {
+      const call = (authorization?: string) =>
+        hourly.GET(
+          new Request('http://localhost/api/cron/hourly', {
+            headers: authorization ? { authorization } : {},
+          }),
+        )
+      expect((await call()).status).toBe(401)
+      expect((await call('Bearer nope')).status).toBe(401)
+      const ok = await call('Bearer tick')
+      expect(ok.status).toBe(200)
+      expect(await ok.json()).toEqual({ notes: [] })
+    } finally {
+      vi.unstubAllEnvs()
     }
   })
 

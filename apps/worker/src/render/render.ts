@@ -32,7 +32,14 @@ import type {
 } from '@cutroom/shared/types'
 import { outputSize, poseBox } from '@cutroom/shared/types'
 import { buildAss } from './ass'
-import { defaultThreads, probeDuration, probeImageSize, runFfmpeg, throwIfAborted } from './ffmpeg'
+import {
+  defaultThreads,
+  probeDuration,
+  probeImageSize,
+  renderSlots,
+  runFfmpeg,
+  throwIfAborted,
+} from './ffmpeg'
 
 export interface RenderScene {
   /** Seconds on the final timeline; scenes are contiguous & sorted. */
@@ -697,27 +704,65 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
 
   // A layered scene's character bounces while the narrator speaks.
   const speech = speechSpans(input.words)
+  // Clips rendered side by side share the cores between them.
+  const slots = renderSlots()
+  const clipThreads = slots > 1 ? Math.max(1, Math.floor(threads / slots)) : threads
   const jobs: SegmentJob[] = segments.map((segment, i) => {
     const file = `scene-${String(i + 1).padStart(3, '0')}.mp4`
     const previous = segments[i - 1] ?? null
-    return { segment, file, args: segmentArgs(segment, previous, file, size, sizes, burn, threads, speech) }
+    return {
+      segment,
+      file,
+      args: segmentArgs(segment, previous, file, size, sizes, burn, clipThreads, speech),
+    }
   })
 
+  // Several clips at once on a multi-core machine; the first failure stops the rest.
   const sceneCount = Math.max(1, input.scenes.length)
+  const running = new Map<SegmentJob, number>()
   let framesDone = 0
-  for (const job of jobs) {
-    const { segment } = job
-    const detail = `Rendering scene ${Math.min(segment.sceneIndex + 1, sceneCount)} of ${sceneCount}`
-    const at = (fraction: number) =>
-      report((SCENES_WEIGHT * (framesDone + fraction * segment.frames)) / totalFrames, detail)
-    at(0)
-    await runFfmpeg(job.args, {
-      cwd: workDir,
-      signal,
-      duration: segment.frames / FPS,
-      onProgress: at,
-    })
-    framesDone += segment.frames
+  const progress = (detail: string) => {
+    let frames = framesDone
+    for (const [job, fraction] of running) frames += fraction * job.segment.frames
+    report((SCENES_WEIGHT * frames) / totalFrames, detail)
+  }
+  const stop = new AbortController()
+  const abort = () => stop.abort(signal?.reason)
+  signal?.addEventListener('abort', abort, { once: true })
+  let next = 0
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(slots, jobs.length) }, async () => {
+        while (next < jobs.length && !stop.signal.aborted) {
+          const job = jobs[next++]
+          const detail = `Rendering scene ${Math.min(job.segment.sceneIndex + 1, sceneCount)} of ${sceneCount}`
+          running.set(job, 0)
+          progress(detail)
+          try {
+            await runFfmpeg(job.args, {
+              cwd: workDir,
+              signal: stop.signal,
+              duration: job.segment.frames / FPS,
+              onProgress: (fraction) => {
+                running.set(job, fraction)
+                progress(detail)
+              },
+            })
+          } catch (error) {
+            stop.abort(error)
+            throw error
+          }
+          running.delete(job)
+          framesDone += job.segment.frames
+        }
+      }),
+    )
+  } catch (error) {
+    // The caller's own abort comes out as that, not as the clip it happened to interrupt.
+    throwIfAborted(signal)
+    throw error
+  } finally {
+    signal?.removeEventListener('abort', abort)
   }
 
   // Concat (stream copy) + audio.

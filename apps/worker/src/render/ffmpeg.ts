@@ -2,7 +2,7 @@
 // progress parsing, abort handling and the few probes the renderer needs.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { availableParallelism } from 'node:os'
+import { availableParallelism, totalmem } from 'node:os'
 
 export function ffmpegPath(): string {
   return process.env.FFMPEG_PATH || 'ffmpeg'
@@ -264,6 +264,38 @@ function cgroupCpuLimit(): number | null {
     if (quota > 0 && period > 0) return quota / period
   } catch {}
   return null
+}
+
+/** The container's memory limit in bytes (cgroup v2 or v1), or null when there is none. */
+function cgroupMemoryLimit(): number | null {
+  if (process.platform !== 'linux') return null
+  for (const file of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const value = Number(readFileSync(file, 'utf8').trim())
+      // v1 reports "no limit" as a huge number.
+      if (value > 0 && value < 2 ** 50) return value
+    } catch {}
+  }
+  return null
+}
+
+/** Memory one 720p–1080p clip render may take, with room to spare. */
+const CLIP_MEMORY = 400 * 1024 * 1024
+
+/**
+ * How many scene clips to render at once: one per usable core, as memory allows, at most 4.
+ * A clip's filters run mostly on one core, so separate clips side by side use a multi-core
+ * machine (GitHub Actions has 4) far better than more threads in one clip. RENDER_PARALLEL
+ * overrides; a 512 MB, 0.1-CPU instance stays at one.
+ */
+export function renderSlots(): number {
+  const fromEnv = Number(process.env.RENDER_PARALLEL)
+  if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv
+  let cores = availableParallelism()
+  const cpu = cgroupCpuLimit()
+  if (cpu !== null) cores = Math.min(cores, Math.max(1, Math.floor(cpu)))
+  const memory = Math.min(totalmem(), cgroupMemoryLimit() ?? Number.POSITIVE_INFINITY)
+  return Math.max(1, Math.min(4, cores, Math.floor(memory / CLIP_MEMORY) - 1))
 }
 
 let cachedThreads: number | null = null

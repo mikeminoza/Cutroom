@@ -465,6 +465,18 @@ Views, likes and comments work for every connected channel. Watch time and reten
 
 **Settings → Connections → YouTube → Add a channel**, then pick the other account or Brand Account. The first channel is the default; **Make default** changes it. Each video posts to the default channel unless you pick another on its Publish step, and every channel gets its own posting slots.
 
+### Comments for viewers within the hour (cron-job.org)
+
+Vercel's free plan runs the daily check once a day, so the comment for viewers on a scheduled video goes up at the next daily check, up to a day after the video goes public. A free scheduler can check every hour instead. Add a job on [cron-job.org](https://console.cron-job.org/jobs), next to your worker health check:
+
+| Field | Value |
+|---|---|
+| URL | `https://YOUR-APP.vercel.app/api/cron/hourly` |
+| Schedule | Every hour |
+| Request header | `Authorization: Bearer YOUR_CRON_SECRET` (the `CRON_SECRET` from step 1) |
+
+It answers `{"notes":[]}` when all is well. It's light: no AI, and only a couple of YouTube calls when a video is due.
+
 ## 11. Recommended for long videos: the worker on GitHub Actions
 
 Instead of the Render worker, GitHub Actions can run each job in its own run: several CPU cores, and nothing that falls asleep. Public repositories run free; private ones include 2,000 minutes a month on GitHub's free plan, enough for well over 100 videos. Rendering a 6-minute video at 720p takes a few minutes, where the free Render worker (a tenth of a CPU) takes about half an hour. For 5–8-minute videos, use this.

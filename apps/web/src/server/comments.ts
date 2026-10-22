@@ -171,8 +171,9 @@ export async function postDueComments(projectIds?: string[]): Promise<string[]> 
     })
   }
   for (const { channel, projects } of groups.values()) {
-    const client = clientFromRefresh(channel.refreshToken)
     try {
+      // Inside the try: a missing Google client setup is a note for this channel, not a crash.
+      const client = clientFromRefresh(channel.refreshToken)
       const status = await videoStatistics(
         client,
         projects.map((p) => p.youtubeVideoId as string),
