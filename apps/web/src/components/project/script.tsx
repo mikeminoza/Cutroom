@@ -72,17 +72,19 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     await splitNow()
   }
 
-  /** `script`: the one just written, when this render still holds the previous one. */
-  const splitNow = async (script = project.script) => {
+  /**
+   * `script`: the one just written, when this render still holds the previous one. `by`: the way
+   * to split, the menu's choice unless said otherwise.
+   */
+  const splitNow = async (script = project.script, by: SplitMethod = how) => {
     setBusy('split')
     const full =
-      how === 'ai'
+      by === 'ai'
         ? await action(`/api/projects/${project.id}/ai/scenes`, {}, undefined)
         : await action(
             `/api/projects/${project.id}/scenes`,
             {
-              drafts:
-                how === 'paragraph' ? splitByParagraphs(script) : splitBySentences(script, project.pace),
+              drafts: by === 'paragraph' ? splitByParagraphs(script) : splitBySentences(script, project.pace),
             },
             undefined,
           )
@@ -184,8 +186,10 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           setBusy(null)
           if (!full) return
           setWriting(false)
-          // Straight into scenes: the storyboard below lists each one's time and image prompt.
-          await splitNow(full.project.script)
+          // Straight into scenes, always with AI (Gemini just wrote the script, so it's set up): only
+          // the AI split writes each scene's picture description and image prompt for the
+          // storyboard below, whatever the menu is set to for splitting your own scripts.
+          await splitNow(full.project.script, 'ai')
         }}
       />
       {element}
