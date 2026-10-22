@@ -34,15 +34,16 @@ export function scenePrompts(data: ProjectFull): ScenePrompt[] {
   }))
 }
 
-/** Plain text, one block per scene: time range, characters to attach, then the prompt. */
+/** Plain text, one block per scene: time range, narration, characters to attach, then the prompt. */
 export function scenePromptsText(entries: ScenePrompt[]): string {
   return entries
     .map((entry) =>
       [
         `Scene ${entry.number}  (${entry.range})`,
+        entry.narration.trim() ? `Narration: “${entry.narration.trim()}”` : null,
         entry.cast.length ? `Attach reference images for: ${entry.cast.join(', ')}` : null,
         '',
-        entry.prompt,
+        `Image prompt: ${entry.prompt}`,
       ]
         .filter((line) => line !== null)
         .join('\n'),
@@ -54,7 +55,7 @@ export function downloadScenePrompts(title: string, entries: ScenePrompt[]) {
   const blob = new Blob([scenePromptsText(entries)], { type: 'text/plain;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `${(title || 'video').replace(/[^\w-]+/g, '-').toLowerCase()}-image-prompts.txt`
+  a.download = `${(title || 'video').replace(/[^\w-]+/g, '-').toLowerCase()}-storyboard.txt`
   a.click()
   URL.revokeObjectURL(a.href)
 }

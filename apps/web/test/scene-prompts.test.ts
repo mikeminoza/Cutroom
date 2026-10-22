@@ -32,11 +32,13 @@ describe('timestamps and image prompts', () => {
     expect(entries[1].cast).toEqual(['Milo'])
   })
 
-  it('writes one block per scene, with the characters to attach', () => {
+  it('writes the storyboard: one block per scene, with its narration and the characters to attach', () => {
     const text = scenePromptsText(scenePrompts(data))
     const blocks = text.split('────────────────────────────────────────')
     expect(blocks).toHaveLength(2)
-    expect(blocks[0]).toMatch(/^Scene 1 {2}\(0:00\.0 – 0:05\.2\)\n\n/)
-    expect(blocks[1]).toContain('Scene 2  (0:05.2 – 0:09.8)\nAttach reference images for: Milo\n\n')
+    expect(blocks[0]).toMatch(/^Scene 1 {2}\(0:00\.0 – 0:05\.2\)\nNarration: “Line 1\.”\n\nImage prompt: /)
+    expect(blocks[1]).toContain(
+      'Scene 2  (0:05.2 – 0:09.8)\nNarration: “Line 2.”\nAttach reference images for: Milo\n\nImage prompt: ',
+    )
   })
 })

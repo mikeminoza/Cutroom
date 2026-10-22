@@ -7,10 +7,19 @@ import type { ProjectFull } from '@/lib/dto'
 import { downloadScenePrompts, scenePrompts, scenePromptsText } from '@/lib/scene-prompts'
 
 /**
- * Every scene's time range with the prompt for its picture, so the images can be made in any
- * tool straight from the timing: copy one prompt, copy them all, or download them.
+ * The storyboard: every scene's time range, its narration and the prompt for its picture, so the
+ * whole script can be read with its timing and the images made in any tool: copy one prompt,
+ * copy them all, or download them.
  */
-export function ScenePromptsPanel({ data, timed }: { data: ProjectFull; timed: boolean }) {
+export function ScenePromptsPanel({
+  data,
+  timed,
+  className,
+}: {
+  data: ProjectFull
+  timed: boolean
+  className?: string
+}) {
   const entries = useMemo(() => scenePrompts(data), [data])
   const [missingOnly, setMissingOnly] = useState(false)
   const missing = entries.filter((entry) => !entry.hasImage).length
@@ -19,11 +28,12 @@ export function ScenePromptsPanel({ data, timed }: { data: ProjectFull; timed: b
 
   return (
     <Panel
-      title="Timestamps and image prompts"
+      className={className}
+      title="Storyboard"
       description={
         timed
-          ? 'One picture per scene, shown for these times. Make each one from its prompt, then drop it on its scene in the Images step.'
-          : 'One picture per scene. The times are estimates until the scenes are matched to the voice-over.'
+          ? 'The whole script, scene by scene: when each picture shows, what is said, and the prompt to make the picture. Make each one in your image tool, then drop it on its scene in the Images step.'
+          : 'The whole script, scene by scene: when each picture shows, what is said, and the prompt to make the picture. The times are estimates until the scenes are matched to the voice-over.'
       }
       actions={
         <>
@@ -77,7 +87,7 @@ export function ScenePromptsPanel({ data, timed }: { data: ProjectFull; timed: b
             </div>
             <div className="min-w-0">
               {entry.narration.trim() && (
-                <p className="line-clamp-2 text-[13.5px] text-ink-2">“{entry.narration.trim()}”</p>
+                <p className="text-[14px] leading-relaxed">“{entry.narration.trim()}”</p>
               )}
               <div className="mt-2 rounded-[var(--radius-control)] border border-line bg-sunk px-3 py-2.5">
                 <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">{entry.prompt}</p>

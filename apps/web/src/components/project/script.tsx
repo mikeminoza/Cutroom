@@ -27,6 +27,7 @@ import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { formatLength } from '@/lib/format'
 import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { SyncedInput, SyncedTextarea } from './fields'
+import { ScenePromptsPanel } from './scene-prompts'
 import type { StepProps } from './workspace'
 
 export const MOTION_LABEL: Record<Motion, string> = {
@@ -68,6 +69,11 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
 
   const split = async () => {
     if (!(await confirmReplace())) return
+    await splitNow()
+  }
+
+  /** `script`: the one just written, when this render still holds the previous one. */
+  const splitNow = async (script = project.script) => {
     setBusy('split')
     const full =
       how === 'ai'
@@ -76,9 +82,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             `/api/projects/${project.id}/scenes`,
             {
               drafts:
-                how === 'paragraph'
-                  ? splitByParagraphs(project.script)
-                  : splitBySentences(project.script, project.pace),
+                how === 'paragraph' ? splitByParagraphs(script) : splitBySentences(script, project.pace),
             },
             undefined,
           )
@@ -87,72 +91,76 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   }
 
   return (
-    <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-      <Panel
-        className="xl:sticky xl:top-4"
-        title="Script"
-        description="Paste the narration exactly as it will be spoken, or let Gemini draft it from your brief."
-        actions={
-          <Button
-            variant="plain"
-            size="sm"
-            icon={<Sparkles className="size-3.5" />}
-            onClick={() => setWriting(true)}
-          >
-            Write with AI
-          </Button>
-        }
-      >
-        <div className="px-5 py-4">
-          <SyncedTextarea
-            aria-label="Script"
-            value={project.script}
-            onValue={(script) => saver.project({ script })}
-            placeholder="Paste your script here."
-            className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
-          />
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-3">
-            <span className="tc text-[13px] text-ink-2">
-              {words.toLocaleString()} words · about {formatLength(words / WORDS_PER_SECOND)} spoken
-            </span>
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              <Select
-                aria-label="How to split the script into scenes"
-                value={how}
-                onChange={(e) => setMethod(e.target.value as SplitMethod)}
-                className="h-[38px] w-auto"
-              >
-                <option value="paragraph">One scene per paragraph</option>
-                <option value="sentence">Group sentences</option>
-                {aiReady && <option value="ai">With AI (adds picture prompts)</option>}
-              </Select>
-              <Button
-                variant={scenes.length ? 'plain' : 'go'}
-                busy={busy === 'split'}
-                disabled={!project.script.trim()}
-                onClick={split}
-                icon={<Scissors className="size-4" />}
-              >
-                {scenes.length ? 'Split again' : 'Split into scenes'}
-              </Button>
+    <div className="flex flex-col gap-5">
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        <Panel
+          className="xl:sticky xl:top-4"
+          title="Script"
+          description="Paste the narration exactly as it will be spoken, or let Gemini draft it from your brief."
+          actions={
+            <Button
+              variant="plain"
+              size="sm"
+              icon={<Sparkles className="size-3.5" />}
+              onClick={() => setWriting(true)}
+            >
+              Write with AI
+            </Button>
+          }
+        >
+          <div className="px-5 py-4">
+            <SyncedTextarea
+              aria-label="Script"
+              value={project.script}
+              onValue={(script) => saver.project({ script })}
+              placeholder="Paste your script here."
+              className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-3">
+              <span className="tc text-[13px] text-ink-2">
+                {words.toLocaleString()} words · about {formatLength(words / WORDS_PER_SECOND)} spoken
+              </span>
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <Select
+                  aria-label="How to split the script into scenes"
+                  value={how}
+                  onChange={(e) => setMethod(e.target.value as SplitMethod)}
+                  className="h-[38px] w-auto"
+                >
+                  <option value="paragraph">One scene per paragraph</option>
+                  <option value="sentence">Group sentences</option>
+                  {aiReady && <option value="ai">With AI (adds picture prompts)</option>}
+                </Select>
+                <Button
+                  variant={scenes.length ? 'plain' : 'go'}
+                  busy={busy === 'split'}
+                  disabled={!project.script.trim()}
+                  onClick={split}
+                  icon={<Scissors className="size-4" />}
+                >
+                  {scenes.length ? 'Split again' : 'Split into scenes'}
+                </Button>
+              </div>
             </div>
-          </div>
-          <p className="mt-2 text-[12.5px] leading-snug text-ink-3">
-            {how === 'paragraph'
-              ? 'You decide the cuts: put a blank line wherever a new picture should start. Write each scene’s picture description yourself, or leave it and the narration is used.'
-              : how === 'sentence'
-                ? `A new picture about every ${project.pace} seconds: long sentences are cut at their pauses, and short punchlines get a quick picture of their own.`
-                : `Gemini picks the cuts, about every ${project.pace} seconds but quicker on jokes and fast moments, and writes a picture description and image prompt for every scene. You can edit all of it.`}
-          </p>
-          {busy === 'split' && (
-            <p className="mt-3 text-[13px] text-ink-2">
-              Gemini is storyboarding your script. Long scripts take up to a minute.
+            <p className="mt-2 text-[12.5px] leading-snug text-ink-3">
+              {how === 'paragraph'
+                ? 'You decide the cuts: put a blank line wherever a new picture should start. Write each scene’s picture description yourself, or leave it and the narration is used.'
+                : how === 'sentence'
+                  ? `A new picture about every ${project.pace} seconds: long sentences are cut at their pauses, and short punchlines get a quick picture of their own.`
+                  : `Gemini picks the cuts, about every ${project.pace} seconds but quicker on jokes and fast moments, and writes a picture description and image prompt for every scene. You can edit all of it.`}
             </p>
-          )}
-        </div>
-      </Panel>
+            {busy === 'split' && (
+              <p className="mt-3 text-[13px] text-ink-2">
+                Gemini is storyboarding your script. Long scripts take up to a minute.
+              </p>
+            )}
+          </div>
+        </Panel>
 
-      <ScenesPanel data={data} selectedSceneId={selectedSceneId} selectScene={selectScene} goTo={goTo} />
+        <ScenesPanel data={data} selectedSceneId={selectedSceneId} selectScene={selectScene} goTo={goTo} />
+      </div>
+      {/* Outside the grid, so the sticky script panel never slides over it. */}
+      <ScenePromptsPanel data={data} timed={Boolean(project.transcript?.words.length)} />
 
       <WriteDialog
         open={writing}
@@ -164,7 +172,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             project.script.trim() &&
             !(await confirm({
               title: 'Replace your script?',
-              body: 'Gemini writes a new script from your brief. Your current script is replaced.',
+              body: `Gemini writes a new script from your brief. Your current script${scenes.length ? ' and its scenes are' : ' is'} replaced.`,
               action: 'Replace script',
               danger: true,
             }))
@@ -174,7 +182,10 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           setBusy('write')
           const full = await action(`/api/projects/${project.id}/ai/script`, { notes }, 'Script written')
           setBusy(null)
-          if (full) setWriting(false)
+          if (!full) return
+          setWriting(false)
+          // Straight into scenes: the storyboard below lists each one's time and image prompt.
+          await splitNow(full.project.script)
         }}
       />
       {element}
