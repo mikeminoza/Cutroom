@@ -12,6 +12,7 @@ import {
   ExternalLink,
   FolderOpen,
   ImagePlus,
+  Palette,
   RotateCcw,
   Send,
   Sparkles,
@@ -45,6 +46,7 @@ import type { StepId, Tone } from '@/lib/stage'
 import { downloadHref } from '@/lib/upload'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import { JobSteps, Warnings } from './job-panel'
+import { ThumbnailMaker } from './thumbnail-maker'
 import { type StepProps, stageOf } from './workspace'
 
 export function PublishStep({ data, goTo }: StepProps) {
@@ -359,6 +361,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
   const [progress, setProgress] = useState<number | null>(null)
   const [generating, setGenerating] = useState<string | null>(null)
   const [own, setOwn] = useState('')
+  const [making, setMaking] = useState(false)
   const ideas = project.post.thumbnailIdeas
   const canGenerate = status?.gemini.configured === true
 
@@ -440,6 +443,20 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
           }
         </DropZone>
         <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-control)] border border-line bg-sunk px-3 py-2.5">
+            <p className="min-w-48 flex-1 text-[13.5px] leading-snug text-ink-2">
+              Make one here from a background, your character's pose and big text. Free, nothing to install.
+            </p>
+            <Button
+              variant={canGenerate ? 'plain' : 'go'}
+              size="sm"
+              disabled={generating !== null || progress !== null}
+              onClick={() => setMaking(true)}
+              icon={<Palette className="size-3.5" />}
+            >
+              Make a thumbnail
+            </Button>
+          </div>
           {ideas.length === 0 ? (
             <p className="text-[13.5px] leading-relaxed text-ink-2">
               Use Write with AI above to get three thumbnail ideas with ready-to-use prompts. Without a
@@ -503,6 +520,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
         </div>
       </div>
       {element}
+      {making && <ThumbnailMaker data={data} open={making} onOpenChange={setMaking} />}
     </Panel>
   )
 }

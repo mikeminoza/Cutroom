@@ -63,6 +63,7 @@ const { DEFAULT_SETTINGS } = await import('@cutroom/shared/types')
 const backgroundsRoute = await import('../src/app/api/library/backgrounds/route')
 const backgroundRoute = await import('../src/app/api/library/backgrounds/[id]/route')
 const composeRoute = await import('../src/app/api/projects/[id]/ai/compose/route')
+const pictureRoute = await import('../src/app/api/picture/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1106,5 +1107,22 @@ describe('layered scenes', () => {
       side: 'right',
     })
     expect(after.find((s) => s.id === third.id)?.layer).toBeNull()
+  })
+})
+
+describe('pictures for the thumbnail maker', () => {
+  const get = (url: string) =>
+    pictureRoute.GET(new Request(`http://localhost/api/picture?url=${encodeURIComponent(url)}`), undefined)
+
+  it("serves the app's own pictures from its origin, and nothing else", async () => {
+    const own = await putFile('library/backgrounds/b1/kitchen.png', Buffer.from('png'), 'image/png')
+    const response = await get(own.url)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('png')
+    expect((await get('https://example.com/library/x.png')).status).toBe(400)
+    expect((await get('/api/files/../secrets.png')).status).toBe(400)
+    const audio = await putFile('projects/p9/music/song.mp3', Buffer.from('m'), 'audio/mpeg')
+    expect((await get(audio.url)).status).toBe(400)
   })
 })
