@@ -3,7 +3,7 @@
 import {
   CADENCES,
   type Cadence,
-  type ChannelSetup,
+  type ChannelDetails,
   clockLabel,
   footerTemplate,
   MARKETS,
@@ -20,6 +20,7 @@ import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { keys, useSettings, useStatus } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
+import { AiSetup } from './ai-setup'
 import {
   Button,
   ButtonLink,
@@ -101,7 +102,7 @@ export function SetupPage() {
   const youtube = useQuery({
     queryKey: keys.channelSetup(channel?.id ?? null),
     queryFn: () =>
-      api.get<ChannelSetup | null>(`/api/setup/youtube?channel=${encodeURIComponent(channel?.id ?? '')}`),
+      api.get<ChannelDetails | null>(`/api/setup/youtube?channel=${encodeURIComponent(channel?.id ?? '')}`),
     enabled: Boolean(channel),
     retry: false,
   })
@@ -161,7 +162,7 @@ export function SetupPage() {
     if (!ok) return false
     setBusy(key)
     try {
-      const next = await api.patch<ChannelSetup | null>('/api/setup/youtube', {
+      const next = await api.patch<ChannelDetails | null>('/api/setup/youtube', {
         channel: channel.id,
         ...patch,
       })
@@ -752,6 +753,7 @@ export function SetupPage() {
       </header>
 
       <div className="flex flex-col gap-6">
+        <AiSetup settings={settings} channel={channel} yt={yt} geminiReady={geminiReady} confirm={confirm} />
         {sections.map((section) => (
           <Panel key={section.title} title={section.title} description={section.description}>
             <ul className="divide-y divide-line">

@@ -238,9 +238,11 @@ export interface UploadSummary {
   id: string
   title: string
   publishedAt: string | null
+  seconds: number
+  views: number
 }
 
-/** The channel's newest uploads, newest first, for picking a trailer. */
+/** The channel's newest uploads, newest first, with length and views, for picking a trailer. */
 export async function recentUploads(
   client: OAuthClient,
   playlistId: string,
@@ -252,13 +254,30 @@ export async function recentUploads(
     playlistId,
     maxResults: Math.min(50, max),
   })
-  return (res.data.items ?? [])
+  const uploads = (res.data.items ?? [])
     .map((item) => ({
       id: item.contentDetails?.videoId ?? '',
       title: item.snippet?.title ?? '',
       publishedAt: item.contentDetails?.videoPublishedAt ?? item.snippet?.publishedAt ?? null,
+      seconds: 0,
+      views: 0,
     }))
     .filter((v) => v.id)
+  if (uploads.length === 0) return uploads
+  const videos = await yt.videos.list({
+    part: ['contentDetails', 'statistics'],
+    id: uploads.map((u) => u.id),
+    maxResults: 50,
+  })
+  const byId = new Map((videos.data.items ?? []).map((v) => [v.id ?? '', v]))
+  return uploads.map((u) => {
+    const video = byId.get(u.id)
+    return {
+      ...u,
+      seconds: isoSeconds(video?.contentDetails?.duration),
+      views: Number(video?.statistics?.viewCount ?? 0),
+    }
+  })
 }
 
 export interface Choice {

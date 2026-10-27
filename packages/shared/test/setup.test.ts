@@ -139,32 +139,83 @@ describe('channel setup on YouTube', () => {
     })
   })
 
-  it('cleans up the drafted tags and keywords', async () => {
+  it('drafts the whole setup and keeps only choices YouTube and Cutroom can use', async () => {
     const { suggestChannelSetup } = await import('../src/ai')
-    generateContent.mockResolvedValueOnce({
-      text: JSON.stringify({
-        description: '  Funny sleep science with Cappy.  ',
-        keywords: ['sleep science', '"capybara"', 'Sleep Science'],
-        tags: ['#capybara', 'sleep', 'Capybara'],
-      }),
-    })
-    const draft = await suggestChannelSetup({
+    const reply = (fields: Record<string, unknown>) =>
+      generateContent.mockResolvedValueOnce({
+        text: JSON.stringify({
+          description: '  Funny sleep science with Cappy.  ',
+          keywords: ['sleep science', '"capybara"', 'Sleep Science'],
+          tags: ['#capybara', 'sleep', 'Capybara'],
+          subscribeLine: ' Subscribe for a new sleep fact every week. ',
+          category: { id: '27', why: 'It explains things.' },
+          madeForKids: { value: false, why: 'Made for adults.' },
+          cadence: { perWeek: 3, why: 'Six-minute videos.' },
+          trailer: { id: 'v2', why: 'Short and typical.' },
+          ...fields,
+        }),
+      })
+    const input = {
       channel: 'Cappy Sleeps',
       niche: 'Sleep science explained by a capybara',
       narration: '',
       audience: 'Adults',
       tone: 'Funny',
       market: 'US',
+      targetMinutes: 6,
       schedule: 'New videos every Saturday and Sunday.',
-    })
-    expect(draft).toEqual({
+      uploads: [
+        { id: 'v1', title: 'Why you wake up at 3 AM', seconds: 420, views: 900 },
+        { id: 'v2', title: 'Cappy tries to sleep', seconds: 75, views: 3000 },
+      ],
+    }
+    reply({})
+    expect(await suggestChannelSetup(input)).toEqual({
       description: 'Funny sleep science with Cappy.',
       keywords: ['sleep science', 'capybara'],
       tags: ['capybara', 'sleep'],
+      subscribeLine: 'Subscribe for a new sleep fact every week.',
+      category: { id: '27', why: 'It explains things.' },
+      madeForKids: { value: false, why: 'Made for adults.' },
+      cadence: { perWeek: 3, why: 'Six-minute videos.' },
+      trailer: { id: 'v2', title: 'Cappy tries to sleep', why: 'Short and typical.' },
     })
     const prompt = String(generateContent.mock.calls.at(-1)?.[0].contents)
-    expect(prompt).toContain('Posting schedule: New videos every Saturday and Sunday.')
+    expect(prompt).toContain('Current posting schedule: New videos every Saturday and Sunday.')
     expect(prompt).toContain('Write for viewers in the United States')
+    expect(prompt).toContain('v2 | Cappy tries to sleep | 75s | 3000')
+
+    // A category, rhythm or trailer outside the choices falls back instead of breaking the page.
+    reply({
+      category: { id: '22', why: '' },
+      cadence: { perWeek: 4, why: '' },
+      trailer: { id: 'nope', why: '' },
+    })
+    const fallback = await suggestChannelSetup({ ...input, uploads: [] })
+    expect(fallback.category.id).toBe('27')
+    expect(fallback.cadence.perWeek).toBe(3)
+    expect(fallback.trailer).toBeNull()
+    expect(String(generateContent.mock.calls.at(-1)?.[0].contents)).toContain(
+      'The channel has no uploads yet.',
+    )
+  })
+
+  it('draws the profile picture and banner around the main character', async () => {
+    const { channelArtPrompt } = await import('../src/ai')
+    const input = {
+      channel: 'Cappy Sleeps',
+      niche: 'Sleep science',
+      artStyle: 'Crude MS Paint',
+      character: 'Cappy: a capybara',
+    }
+    const avatar = channelArtPrompt('avatar', input)
+    expect(avatar).toContain('Cappy: a capybara (match the attached reference images exactly)')
+    expect(avatar).toContain('No text, no letters')
+    expect(avatar).toContain('Art style: Crude MS Paint.')
+    const banner = channelArtPrompt('banner', { ...input, character: null })
+    expect(banner).toContain('the channel name "Cappy Sleeps" in big, bold, easy-to-read letters')
+    expect(banner).toContain('central horizontal strip about 60% of the width and 30% of the height')
+    expect(banner).toContain('one simple mascot')
   })
 })
 

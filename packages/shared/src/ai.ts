@@ -2,7 +2,7 @@
 // and by the worker for the voice-over transcription.
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
-import { marketNote } from './setup'
+import { CADENCES, type Cadence, marketNote } from './setup'
 import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
 import {
   type CommentInsights,
@@ -713,7 +713,7 @@ export const MAX_REFERENCE_IMAGES = 6
 export async function generateImage(input: {
   prompt: string
   references: ReferenceImage[]
-  aspectRatio: '16:9' | '9:16'
+  aspectRatio: '16:9' | '9:16' | '1:1'
 }): Promise<{ data: Buffer; mimeType: string }> {
   const ai = client()
   const imageSize = process.env.GEMINI_IMAGE_SIZE?.trim() || undefined
@@ -825,6 +825,9 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
 // ---------------------------------------------------------------------------
 // Channel setup
 
+/** YouTube categories the setup picks from: explainers, mostly-jokes videos, and comedy. */
+export const SETUP_CATEGORIES = ['27', '24', '23'] as const
+
 export interface ChannelSetupDraft {
   /** The channel's About text on YouTube (YouTube allows 1,000 characters). */
   description: string
@@ -832,9 +835,21 @@ export interface ChannelSetupDraft {
   keywords: string[]
   /** Broad tags added to every video. */
   tags: string[]
+  /**
+   * The line under every description after the schedule: a reason to subscribe. The page puts
+   * the schedule line above it, so it matches whichever schedule is kept.
+   */
+  subscribeLine: string
+  category: { id: (typeof SETUP_CATEGORIES)[number]; why: string }
+  madeForKids: { value: boolean; why: string }
+  /** Videos a week the channel can keep up with, given its usual length. */
+  cadence: { perWeek: Cadence; why: string }
+  /** The upload to show people who haven't subscribed, picked from `uploads`; null when none fits. */
+  trailer: { id: string; title: string; why: string } | null
 }
 
-/** Drafts the channel's About text, its keywords and the tags for every video, from the niche. */
+/** Drafts the whole channel setup from the niche: YouTube's About text and keywords, the tags,
+ * footer, category and made-for-kids default for every video, a posting rhythm, and a trailer. */
 export async function suggestChannelSetup(input: {
   channel: string
   niche: string
@@ -842,22 +857,38 @@ export async function suggestChannelSetup(input: {
   audience: string
   tone: string
   market: string
+  /** Usual length of a video, in minutes. */
+  targetMinutes: number
   /** "New videos every Thursday, Saturday and Sunday.", or ''. */
   schedule: string
+  /** The channel's newest uploads, to pick a trailer from. */
+  uploads: { id: string; title: string; seconds: number; views: number }[]
 }): Promise<ChannelSetupDraft> {
+  const uploads = input.uploads.slice(0, 30)
   const prompt = [
-    'Write the YouTube channel setup for this channel.',
+    'Plan the YouTube channel setup for this channel.',
     `Channel name: ${input.channel || '(not set)'}`,
     `What the channel is about: ${input.niche || '(not described)'}`,
     input.narration && `Narration: ${input.narration}`,
     input.audience && `Audience: ${input.audience}`,
     input.tone && `Tone: ${input.tone}`,
     marketNote(input.market),
-    input.schedule && `Posting schedule: ${input.schedule}`,
+    `Usual video length: about ${input.targetMinutes} minutes`,
+    input.schedule && `Current posting schedule: ${input.schedule}`,
+    uploads.length
+      ? `Newest uploads (id | title | length | views):\n${uploads
+          .map((u) => `${u.id} | ${u.title.slice(0, 100)} | ${Math.round(u.seconds)}s | ${u.views}`)
+          .join('\n')}`
+      : 'The channel has no uploads yet.',
     `Return:
-- description: the channel's About text, 2–3 short paragraphs, under 900 characters. The first sentence says plainly what viewers get, in the words people search for. Mention the posting schedule if there is one. No hashtags, no links, no emoji.
+- description: the channel's About text, 2–3 short paragraphs, under 900 characters. The first sentence says plainly what viewers get, in the words people search for. Don't name posting days (they can change). No hashtags, no links, no emoji.
 - keywords: 8–12 channel keywords, short search phrases people type, most important first.
-- tags: 5–8 broad tags that fit every video on the channel (its subject, format and main character), no "#".`,
+- tags: 5–8 broad tags that fit every video on the channel (its subject, format and main character), no "#".
+- subscribeLine: one short sentence for the end of every video description, giving a reason to subscribe in the channel's voice. No emoji.
+- category: id "27" (Education) for explainers, "24" (Entertainment) for videos that are mostly entertainment, or "23" (Comedy) for comedy first; with why, one short sentence.
+- madeForKids: true only if children are the main audience (as US law, COPPA, defines it), otherwise false; a cartoon look alone is not enough. With why, one short sentence.
+- cadence: perWeek 2, 3, 5 or 7, what one creator can keep up every week for videos of this length (longer videos, fewer a week); with why, one short sentence.
+- trailer: the id of the upload that best shows a new visitor what the channel is (short, typical of the channel, well watched), with why; id "" if there are no uploads or none fits.`,
   ]
     .filter(Boolean)
     .join('\n')
@@ -869,19 +900,104 @@ export async function suggestChannelSetup(input: {
         description: str,
         keywords: { type: 'array', items: str },
         tags: { type: 'array', items: str },
+        subscribeLine: str,
+        category: {
+          type: 'object',
+          properties: { id: { type: 'string', enum: SETUP_CATEGORIES }, why: str },
+          required: ['id', 'why'],
+        },
+        madeForKids: {
+          type: 'object',
+          properties: { value: { type: 'boolean' }, why: str },
+          required: ['value', 'why'],
+        },
+        cadence: {
+          type: 'object',
+          properties: { perWeek: { type: 'integer', enum: [...CADENCES] }, why: str },
+          required: ['perWeek', 'why'],
+        },
+        trailer: { type: 'object', properties: { id: str, why: str }, required: ['id', 'why'] },
       },
-      required: ['description', 'keywords', 'tags'],
+      required: [
+        'description',
+        'keywords',
+        'tags',
+        'subscribeLine',
+        'category',
+        'madeForKids',
+        'cadence',
+        'trailer',
+      ],
     },
-    z.object({ description: z.string(), keywords: z.array(z.string()), tags: z.array(z.string()) }),
+    z.object({
+      description: z.string(),
+      keywords: z.array(z.string()),
+      tags: z.array(z.string()),
+      subscribeLine: z.string().default(''),
+      category: z.object({ id: z.string(), why: z.string().default('') }),
+      madeForKids: z.object({ value: z.boolean(), why: z.string().default('') }),
+      cadence: z.object({ perWeek: z.number(), why: z.string().default('') }),
+      trailer: z
+        .object({ id: z.string(), why: z.string().default('') })
+        .nullable()
+        .default(null),
+    }),
     'You are a YouTube strategist who sets up channels so the right viewers find them.',
   )
   const clean = (values: string[], max: number) =>
     dedupe(values.map((v) => v.replace(/^#/, '').replace(/"/g, '').trim()).filter(Boolean)).slice(0, max)
+  const category = (SETUP_CATEGORIES as readonly string[]).includes(result.category.id)
+    ? (result.category.id as ChannelSetupDraft['category']['id'])
+    : '27'
+  const perWeek = (CADENCES as readonly number[]).includes(result.cadence.perWeek)
+    ? (result.cadence.perWeek as Cadence)
+    : 3
+  const trailerUpload = uploads.find((u) => u.id === result.trailer?.id)
+  const why = (text: string) => text.trim().slice(0, 300)
   return {
     description: result.description.trim().slice(0, 1000),
     keywords: clean(result.keywords, 12),
     tags: fitTags(clean(result.tags, 8)),
+    subscribeLine: result.subscribeLine.trim().slice(0, 300),
+    category: { id: category, why: why(result.category.why) },
+    madeForKids: { value: result.madeForKids.value, why: why(result.madeForKids.why) },
+    cadence: { perWeek, why: why(result.cadence.why) },
+    trailer:
+      trailerUpload && result.trailer
+        ? { id: trailerUpload.id, title: trailerUpload.title, why: why(result.trailer.why) }
+        : null,
   }
+}
+
+/** A profile picture or banner for the channel, drawn in its art style around its main character. */
+export function channelArtPrompt(
+  kind: 'avatar' | 'banner',
+  input: { channel: string; niche: string; artStyle: string; character: string | null },
+): string {
+  const subject = input.character
+    ? `the channel's main character, ${input.character} (match the attached reference images exactly)`
+    : 'one simple mascot that fits the channel'
+  const about = `${input.channel ? `"${input.channel}", ` : ''}a YouTube channel: ${input.niche || 'general interest'}.`
+  const style = input.artStyle ? `Art style: ${input.artStyle}.` : ''
+  if (kind === 'avatar') {
+    return [
+      `A profile picture for ${about}`,
+      `Show ${subject}: head and shoulders, large and centred, with a friendly, clear expression, on a plain bold background in one colour that contrasts with it.`,
+      'YouTube shows it as a small circle, so keep it simple and readable at 98 × 98 pixels, with nothing important near the corners. No text, no letters, no logos, no border.',
+      style,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
+  return [
+    `A wide channel banner for ${about}`,
+    `Feature ${subject}${input.channel ? ` and the channel name "${input.channel}" in big, bold, easy-to-read letters` : ''}.`,
+    'YouTube crops banners differently on TVs, computers and phones: put everything important inside a central horizontal strip about 60% of the width and 30% of the height, and fill the rest with background that can be cut off without losing anything.',
+    'No other text, no logos, no borders.',
+    style,
+  ]
+    .filter(Boolean)
+    .join(' ')
 }
 
 // ---------------------------------------------------------------------------

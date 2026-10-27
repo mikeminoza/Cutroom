@@ -1,8 +1,9 @@
 'use client'
 
+import type { ChannelSetupDraft } from '@cutroom/shared/ai'
 import { type ChannelDetails, formatChannelKeywords, KEYWORDS_LIMIT } from '@cutroom/shared/setup'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, ImagePlus, RotateCcw } from 'lucide-react'
+import { Download, ExternalLink, ImagePlus, RotateCcw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
@@ -130,13 +131,26 @@ export function ChannelPage() {
       ) : !query.data || !channel ? (
         <div className="h-96 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
       ) : (
-        <ChannelView key={query.data.details.id} data={query.data} channelId={channel.id} />
+        <ChannelView
+          key={query.data.details.id}
+          data={query.data}
+          channelId={channel.id}
+          geminiReady={status?.gemini.configured === true}
+        />
       )}
     </div>
   )
 }
 
-function ChannelView({ data, channelId }: { data: ChannelData; channelId: string }) {
+function ChannelView({
+  data,
+  channelId,
+  geminiReady,
+}: {
+  data: ChannelData
+  channelId: string
+  geminiReady: boolean
+}) {
   const { details } = data
   const client = useQueryClient()
   const { confirm, element: confirmDialog } = useConfirm()
@@ -165,9 +179,17 @@ function ChannelView({ data, channelId }: { data: ChannelData; channelId: string
   return (
     <div className="flex flex-col gap-6">
       <Profile details={details} />
-      <DetailsForm data={data} busy={busy === 'details'} confirm={confirm} update={update} />
+      <DetailsForm
+        data={data}
+        channelId={channelId}
+        geminiReady={geminiReady}
+        busy={busy === 'details'}
+        confirm={confirm}
+        update={update}
+      />
       <Audience details={details} busy={busy === 'kids'} confirm={confirm} update={update} />
       <Watermark channelId={channelId} confirm={confirm} />
+      <ChannelArt details={details} channelId={channelId} geminiReady={geminiReady} />
       <StudioOnly details={details} />
       {confirmDialog}
     </div>
@@ -275,17 +297,43 @@ function Profile({ details }: { details: ChannelDetails }) {
 
 function DetailsForm({
   data,
+  channelId,
+  geminiReady,
   busy,
   confirm,
   update,
 }: {
   data: ChannelData
+  channelId: string
+  geminiReady: boolean
   busy: boolean
   confirm: Confirm
   update: Update
 }) {
   const { details } = data
   const [form, setForm] = useState<Form>(() => formOf(details))
+  const [drafting, setDrafting] = useState(false)
+  const [aiTrailer, setAiTrailer] = useState<{ id: string; why: string } | null>(null)
+
+  /** Gemini drafts the description, keywords and trailer into the form, to check before saving. */
+  const draftWithAi = async () => {
+    setDrafting(true)
+    try {
+      const draft = await api.post<ChannelSetupDraft>('/api/setup/suggest', { channel: channelId })
+      setForm((f) => ({
+        ...f,
+        description: draft.description,
+        keywords: draft.keywords.join(', '),
+        trailer: draft.trailer?.id ?? f.trailer,
+      }))
+      setAiTrailer(draft.trailer)
+      toast.success('Draft filled in', { description: 'Check it, then Save to YouTube.' })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setDrafting(false)
+    }
+  }
   // After a save, show what YouTube now has.
   useEffect(() => setForm(formOf(details)), [details])
   const saved = formOf(details)
@@ -342,6 +390,20 @@ function DetailsForm({
       description="What viewers see on your channel's About page, and how YouTube files the channel."
       actions={
         <>
+          <Button
+            size="sm"
+            icon={<Sparkles className="size-3.5" />}
+            busy={drafting}
+            disabled={!geminiReady || busy}
+            title={
+              geminiReady
+                ? 'Writes the description and keywords from your channel niche'
+                : 'Add GEMINI_API_KEY to use this'
+            }
+            onClick={draftWithAi}
+          >
+            Draft with AI
+          </Button>
           {changed.length > 0 && (
             <Button variant="ghost" size="sm" onClick={() => setForm(saved)} disabled={busy}>
               Undo changes
@@ -412,7 +474,11 @@ function DetailsForm({
         <Field
           label="Channel trailer"
           className="sm:col-span-2"
-          hint="Plays at the top of your channel for people who haven't subscribed yet. Pick a short video that shows what the channel is."
+          hint={
+            aiTrailer && form.trailer === aiTrailer.id
+              ? `AI pick: ${aiTrailer.why}`
+              : "Plays at the top of your channel for people who haven't subscribed yet. Pick a short video that shows what the channel is."
+          }
         >
           <Select value={form.trailer} onChange={(e) => setForm({ ...form, trailer: e.target.value })}>
             <option value="">No trailer</option>
@@ -618,13 +684,131 @@ function Watermark({ channelId, confirm }: { channelId: string; confirm: Confirm
   )
 }
 
+type ArtKind = 'avatar' | 'banner'
+
+const ART: Record<ArtKind, { title: string; size: string; file: string }> = {
+  avatar: {
+    title: 'Profile picture',
+    size: 'Square, shown as a circle. Upload at least 98 × 98.',
+    file: 'profile-picture',
+  },
+  banner: {
+    title: 'Banner',
+    size: 'Upload at 2048 × 1152 or larger. Phones show only the middle strip (the dashed box).',
+    file: 'banner',
+  },
+}
+
+/** A download link: Vercel Blob sends the file as a download with ?download=1. */
+const downloadHref = (url: string) =>
+  /^https?:\/\//.test(url) ? `${url}${url.includes('?') ? '&' : '?'}download=1` : url
+
+/** Profile picture and banner drawn with AI, to download and upload in YouTube Studio. */
+function ChannelArt({
+  details,
+  channelId,
+  geminiReady,
+}: {
+  details: ChannelDetails
+  channelId: string
+  geminiReady: boolean
+}) {
+  const [art, setArt] = useState<Partial<Record<ArtKind, string>>>({})
+  const [busy, setBusy] = useState<ArtKind | null>(null)
+  const make = async (kind: ArtKind) => {
+    setBusy(kind)
+    try {
+      const made = await api.post<{ url: string }>('/api/channel/art', {
+        kind,
+        channel: channelId,
+        replace: art[kind],
+      })
+      setArt((a) => ({ ...a, [kind]: made.url }))
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <Panel
+      title="Profile picture and banner"
+      description="Gemini draws them from your channel niche and main character, in your art style. YouTube's API can't set them, so download them and upload them in YouTube Studio. Image models need billing on your Gemini key."
+      actions={
+        <ButtonLink
+          href={studio(details.id, '/editing/images')}
+          size="sm"
+          variant="ghost"
+          icon={<ExternalLink className="size-3.5" />}
+          {...external}
+        >
+          Upload in Studio
+        </ButtonLink>
+      }
+    >
+      <div className="grid gap-5 px-5 py-5 sm:grid-cols-[220px_1fr]">
+        {(['avatar', 'banner'] as const).map((kind) => {
+          const url = art[kind]
+          return (
+            <div key={kind} className="flex min-w-0 flex-col gap-2.5">
+              <p className="text-[14px] font-semibold">{ART[kind].title}</p>
+              <div
+                className={cn(
+                  'relative overflow-hidden bg-sunk ring-1 ring-line',
+                  kind === 'avatar'
+                    ? 'aspect-square w-40 rounded-full'
+                    : 'aspect-video w-full rounded-[var(--radius-frame)]',
+                )}
+              >
+                {url ? (
+                  // biome-ignore lint/performance/noImgElement: generated file
+                  <img src={url} alt={`${ART[kind].title} made with AI`} className="size-full object-cover" />
+                ) : (
+                  <span className="absolute inset-0 grid place-items-center px-3 text-center text-[12.5px] text-ink-3">
+                    {busy === kind ? 'Gemini is drawing…' : 'Not made yet'}
+                  </span>
+                )}
+                {kind === 'banner' && (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute top-1/2 left-1/2 h-[29.4%] w-[60.4%] -translate-x-1/2 -translate-y-1/2 border border-dashed border-paper/80"
+                  />
+                )}
+              </div>
+              <p className="text-[12.5px] leading-snug text-ink-3">{ART[kind].size}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  icon={<Sparkles className="size-3.5" />}
+                  busy={busy === kind}
+                  disabled={!geminiReady || (busy !== null && busy !== kind)}
+                  title={geminiReady ? undefined : 'Add GEMINI_API_KEY to use this'}
+                  onClick={() => make(kind)}
+                >
+                  {url ? 'Make another' : 'Make with AI'}
+                </Button>
+                {url && (
+                  <ButtonLink
+                    href={downloadHref(url)}
+                    download={`${ART[kind].file}.png`}
+                    size="sm"
+                    variant="ghost"
+                    icon={<Download className="size-3.5" />}
+                  >
+                    Download
+                  </ButtonLink>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </Panel>
+  )
+}
+
 function StudioOnly({ details }: { details: ChannelDetails }) {
   const items = [
-    {
-      title: 'Profile picture and banner',
-      text: "YouTube's API can't change these.",
-      href: studio(details.id, '/editing/images'),
-    },
     {
       title: 'Name and handle',
       text: 'Changed by the channel owner only.',

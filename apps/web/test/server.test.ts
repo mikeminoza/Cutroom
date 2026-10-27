@@ -1717,3 +1717,27 @@ describe('the YouTube channel page', () => {
     }
   })
 })
+
+describe('AI for the channel', () => {
+  it('needs a Gemini key before drawing a profile picture or banner, and knows only those two', async () => {
+    const artRoute = await import('../src/app/api/channel/art/route')
+    const send = (body: unknown) =>
+      artRoute.POST(
+        new Request('http://localhost/api/channel/art', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        undefined,
+      )
+    vi.stubEnv('GEMINI_API_KEY', '')
+    try {
+      const noKey = await send({ kind: 'avatar' })
+      expect(noKey.status).toBe(400)
+      expect((await noKey.json()).error).toMatch(/GEMINI_API_KEY/)
+      expect((await send({ kind: 'poster' })).status).toBe(400)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
