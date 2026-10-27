@@ -100,6 +100,8 @@ const learnStyleRoute = await import('../src/app/api/settings/learn-style/route'
 const settingsRoute = await import('../src/app/api/settings/route')
 const setupSuggestRoute = await import('../src/app/api/setup/suggest/route')
 const setupYoutubeRoute = await import('../src/app/api/setup/youtube/route')
+const channelRoute = await import('../src/app/api/channel/route')
+const watermarkRoute = await import('../src/app/api/channel/watermark/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -1645,6 +1647,71 @@ describe('channel setup', () => {
       const change = await setupYoutubeRoute.PATCH(send({ country: 'US' }, 'PATCH'), undefined)
       expect(change.status).toBe(400)
       expect((await setupYoutubeRoute.PATCH(send({ country: 'usa' }, 'PATCH'), undefined)).status).toBe(400)
+    } finally {
+      if (channels.length) await database.insert(schema.channels).values(channels)
+    }
+  })
+})
+
+describe('the YouTube channel page', () => {
+  const upload = (fields: Record<string, string | File>) => {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(fields)) form.set(key, value)
+    return new Request('http://localhost/api/channel/watermark', { method: 'POST', body: form })
+  }
+  const errorOf = async (res: Response) => ({ status: res.status, error: (await res.json()).error as string })
+
+  it('checks the watermark image before it goes anywhere near YouTube', async () => {
+    expect(await errorOf(await watermarkRoute.POST(upload({ timing: 'end' }), undefined))).toEqual({
+      status: 400,
+      error: 'Choose an image for the watermark.',
+    })
+    const gif = new File([new Uint8Array([1, 2, 3])], 'w.gif', { type: 'image/gif' })
+    expect((await errorOf(await watermarkRoute.POST(upload({ file: gif }), undefined))).error).toMatch(
+      /PNG or JPG/,
+    )
+    const huge = new File([new Uint8Array(1024 * 1024 + 1)], 'w.png', { type: 'image/png' })
+    expect((await errorOf(await watermarkRoute.POST(upload({ file: huge }), undefined))).error).toMatch(
+      /1 MB/,
+    )
+    const png = new File([new Uint8Array([1, 2, 3])], 'w.png', { type: 'image/png' })
+    expect(
+      (await errorOf(await watermarkRoute.POST(upload({ file: png, timing: 'sometimes' }), undefined))).error,
+    ).toMatch(/when the watermark shows/)
+    expect(
+      (
+        await errorOf(
+          await watermarkRoute.POST(upload({ file: png, timing: 'custom', start: '-3' }), undefined),
+        )
+      ).error,
+    ).toMatch(/start time/)
+  })
+
+  it('asks for a connected channel and refuses settings YouTube would reject', async () => {
+    const database = await db()
+    const channels = await database.select().from(schema.channels)
+    await database.delete(schema.channels)
+    const patch = (body: unknown) =>
+      channelRoute.PATCH(
+        new Request('http://localhost/api/channel', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        undefined,
+      )
+    try {
+      expect(
+        (await errorOf(await channelRoute.GET(new Request('http://localhost/api/channel'), undefined))).error,
+      ).toMatch(/Connect YouTube/)
+      expect((await errorOf(await patch({ trailer: 'abc' }))).error).toMatch(/Connect YouTube/)
+      expect((await patch({ trailer: 'not a video id!' })).status).toBe(400)
+      expect((await patch({ country: 'Philippines' })).status).toBe(400)
+      expect((await patch({ description: 'x'.repeat(1001) })).status).toBe(400)
+      const png = new File([new Uint8Array([1, 2, 3])], 'w.png', { type: 'image/png' })
+      expect((await errorOf(await watermarkRoute.POST(upload({ file: png }), undefined))).error).toMatch(
+        /Connect YouTube/,
+      )
     } finally {
       if (channels.length) await database.insert(schema.channels).values(channels)
     }

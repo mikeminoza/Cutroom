@@ -1,10 +1,11 @@
 // Google OAuth, YouTube and Drive helpers. Server-side only.
 import { createReadStream, createWriteStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
+import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { drive as driveApi } from '@googleapis/drive'
-import { auth, youtube as youtubeApi } from '@googleapis/youtube'
-import { type ChannelSetup, formatChannelKeywords, parseChannelKeywords } from './setup'
+import { auth, type youtube_v3, youtube as youtubeApi } from '@googleapis/youtube'
+import { type ChannelDetails, formatChannelKeywords, parseChannelKeywords, topicName } from './setup'
 import type { Privacy } from './types'
 
 export type GoogleProvider = 'youtube' | 'drive'
@@ -120,22 +121,45 @@ export async function channelInfo(client: OAuthClient): Promise<{ id: string; ti
   return channel?.id ? { id: channel.id, title: channel.snippet?.title ?? 'Your channel' } : null
 }
 
-/** The channel's country, language, About text, keywords and verification, for Channel setup. */
-export async function channelSetup(client: OAuthClient): Promise<ChannelSetup | null> {
-  const yt = youtubeApi({ version: 'v3', auth: client })
-  const res = await yt.channels.list({ part: ['snippet', 'brandingSettings', 'status'], mine: true })
-  const channel = res.data.items?.[0]
-  if (!channel?.id) return null
+/** A channel resource as Cutroom shows it, on Channel setup and the YouTube channel page. */
+export function toChannelDetails(channel: youtube_v3.Schema$Channel): ChannelDetails | null {
+  if (!channel.id) return null
   const branding = channel.brandingSettings?.channel
+  const stats = channel.statistics
+  const thumbs = channel.snippet?.thumbnails
+  const handle = channel.snippet?.customUrl ?? ''
   return {
     id: channel.id,
     title: channel.snippet?.title ?? 'Your channel',
+    handle: handle && !handle.startsWith('@') ? `@${handle}` : handle,
+    publishedAt: channel.snippet?.publishedAt ?? null,
+    thumbnail: thumbs?.high?.url ?? thumbs?.medium?.url ?? thumbs?.default?.url ?? null,
     country: branding?.country ?? channel.snippet?.country ?? '',
     defaultLanguage: branding?.defaultLanguage ?? channel.snippet?.defaultLanguage ?? '',
     description: branding?.description ?? channel.snippet?.description ?? '',
     keywords: parseChannelKeywords(branding?.keywords ?? ''),
+    trailer: branding?.unsubscribedTrailer ?? '',
+    subscribers: stats?.hiddenSubscriberCount ? null : Number(stats?.subscriberCount ?? 0),
+    views: Number(stats?.viewCount ?? 0),
+    videos: Number(stats?.videoCount ?? 0),
+    madeForKids: channel.status?.madeForKids ?? null,
+    selfDeclaredMadeForKids: channel.status?.selfDeclaredMadeForKids ?? null,
+    privacy: channel.status?.privacyStatus ?? null,
     longUploads: channel.status?.longUploadsStatus ?? null,
+    topics: (channel.topicDetails?.topicCategories ?? []).map(topicName).filter(Boolean),
+    uploadsPlaylistId: channel.contentDetails?.relatedPlaylists?.uploads ?? null,
   }
+}
+
+/** The connected channel's details and settings on YouTube (one quota unit, whatever the parts). */
+export async function channelDetails(client: OAuthClient): Promise<ChannelDetails | null> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.channels.list({
+    part: ['snippet', 'statistics', 'brandingSettings', 'status', 'topicDetails', 'contentDetails'],
+    mine: true,
+  })
+  const channel = res.data.items?.[0]
+  return channel ? toChannelDetails(channel) : null
 }
 
 export interface ChannelBrandingPatch {
@@ -143,6 +167,8 @@ export interface ChannelBrandingPatch {
   defaultLanguage?: string
   description?: string
   keywords?: string[]
+  /** Video id of the trailer for people who haven't subscribed; '' removes it. */
+  trailer?: string
 }
 
 /**
@@ -170,6 +196,10 @@ export function mergeBranding(
   if (patch.defaultLanguage !== undefined) merged.defaultLanguage = patch.defaultLanguage
   if (patch.description !== undefined) merged.description = patch.description
   if (patch.keywords !== undefined) merged.keywords = formatChannelKeywords(patch.keywords)
+  if (patch.trailer !== undefined) {
+    if (patch.trailer) merged.unsubscribedTrailer = patch.trailer
+    else delete merged.unsubscribedTrailer
+  }
   return merged
 }
 
@@ -177,7 +207,7 @@ export function mergeBranding(
 export async function updateChannelBranding(
   client: OAuthClient,
   patch: ChannelBrandingPatch,
-): Promise<ChannelSetup | null> {
+): Promise<ChannelDetails | null> {
   const yt = youtubeApi({ version: 'v3', auth: client })
   const res = await yt.channels.list({ part: ['brandingSettings'], mine: true })
   const channel = res.data.items?.[0]
@@ -189,7 +219,116 @@ export async function updateChannelBranding(
       brandingSettings: { channel: mergeBranding(channel.brandingSettings?.channel, patch) },
     },
   })
-  return channelSetup(client)
+  return channelDetails(client)
+}
+
+/** YouTube's channel-wide "made for kids" setting, as the channel declares it. */
+export async function setChannelMadeForKids(client: OAuthClient, madeForKids: boolean): Promise<void> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.channels.list({ part: ['id'], mine: true })
+  const id = res.data.items?.[0]?.id
+  if (!id) throw new Error('That YouTube account has no channel.')
+  await yt.channels.update({
+    part: ['status'],
+    requestBody: { id, status: { selfDeclaredMadeForKids: madeForKids } },
+  })
+}
+
+export interface UploadSummary {
+  id: string
+  title: string
+  publishedAt: string | null
+}
+
+/** The channel's newest uploads, newest first, for picking a trailer. */
+export async function recentUploads(
+  client: OAuthClient,
+  playlistId: string,
+  max = 50,
+): Promise<UploadSummary[]> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.playlistItems.list({
+    part: ['snippet', 'contentDetails'],
+    playlistId,
+    maxResults: Math.min(50, max),
+  })
+  return (res.data.items ?? [])
+    .map((item) => ({
+      id: item.contentDetails?.videoId ?? '',
+      title: item.snippet?.title ?? '',
+      publishedAt: item.contentDetails?.videoPublishedAt ?? item.snippet?.publishedAt ?? null,
+    }))
+    .filter((v) => v.id)
+}
+
+export interface Choice {
+  id: string
+  name: string
+}
+
+// YouTube's languages and countries hardly ever change: read once per server instance.
+const choiceCache = new Map<'languages' | 'regions', Choice[]>()
+
+async function cachedChoices(
+  kind: 'languages' | 'regions',
+  read: () => Promise<Choice[]>,
+): Promise<Choice[]> {
+  const cached = choiceCache.get(kind)
+  if (cached) return cached
+  const list = (await read()).filter((c) => c.id && c.name).sort((a, b) => a.name.localeCompare(b.name))
+  choiceCache.set(kind, list)
+  return list
+}
+
+/** The languages YouTube accepts for a channel, e.g. { id: 'en', name: 'English' }. */
+export function youtubeLanguages(client: OAuthClient): Promise<Choice[]> {
+  return cachedChoices('languages', async () => {
+    const yt = youtubeApi({ version: 'v3', auth: client })
+    const res = await yt.i18nLanguages.list({ part: ['snippet'], hl: 'en_US' })
+    return (res.data.items ?? []).map((i) => ({ id: i.snippet?.hl ?? '', name: i.snippet?.name ?? '' }))
+  })
+}
+
+/** The countries YouTube accepts for a channel, e.g. { id: 'US', name: 'United States' }. */
+export function youtubeRegions(client: OAuthClient): Promise<Choice[]> {
+  return cachedChoices('regions', async () => {
+    const yt = youtubeApi({ version: 'v3', auth: client })
+    const res = await yt.i18nRegions.list({ part: ['snippet'], hl: 'en_US' })
+    return (res.data.items ?? []).map((i) => ({ id: i.snippet?.gl ?? '', name: i.snippet?.name ?? '' }))
+  })
+}
+
+export interface WatermarkTiming {
+  type: 'offsetFromStart' | 'offsetFromEnd'
+  offsetMs: number
+  durationMs?: number
+}
+
+/** The branding watermark shown on all of the channel's videos (always in the top-right corner). */
+export async function setWatermark(
+  client: OAuthClient,
+  channelId: string,
+  image: { mimeType: string; data: Buffer },
+  timing: WatermarkTiming,
+): Promise<void> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  await yt.watermarks.set({
+    channelId,
+    // The API takes the milliseconds as strings (int64).
+    requestBody: {
+      timing: {
+        type: timing.type,
+        offsetMs: String(timing.offsetMs),
+        ...(timing.durationMs ? { durationMs: String(timing.durationMs) } : {}),
+      },
+    },
+    media: { mimeType: image.mimeType, body: Readable.from(image.data) },
+  })
+}
+
+export async function removeWatermark(client: OAuthClient, channelId: string): Promise<void> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  await yt.watermarks.unset({ channelId })
 }
 
 export async function listPlaylists(client: OAuthClient): Promise<{ id: string; title: string }[]> {

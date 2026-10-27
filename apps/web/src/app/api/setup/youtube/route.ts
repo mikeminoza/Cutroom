@@ -1,34 +1,13 @@
-import {
-  channelSetup,
-  clientFromRefresh,
-  explainGoogleError,
-  updateChannelBranding,
-} from '@cutroom/shared/google'
+import { channelDetails, updateChannelBranding } from '@cutroom/shared/google'
 import { z } from 'zod'
-import { defaultChannel, getChannel } from '@/server/connections'
-import { badRequest, readJson, route } from '@/server/http'
-
-async function pickChannel(id: string | null | undefined) {
-  const channel = id ? await getChannel(id) : await defaultChannel()
-  if (!channel) badRequest('Connect YouTube in Settings first.')
-  return channel
-}
-
-function googleFailure(error: unknown): never {
-  const reasons = ((error as { errors?: { reason?: string }[] } | null)?.errors ?? []).map((e) => e.reason)
-  if (reasons.includes('insufficientPermissions')) {
-    badRequest(
-      'Cutroom may not change this channel yet. Reconnect it in Settings and allow every permission.',
-    )
-  }
-  badRequest(explainGoogleError(error) ?? (error instanceof Error ? error.message : String(error)))
-}
+import { readJson, route } from '@/server/http'
+import { channelClient, googleFailure } from '@/server/youtube'
 
 /** The channel's own settings on YouTube that the Channel setup tips check. */
 export const GET = route(async (request) => {
-  const channel = await pickChannel(new URL(request.url).searchParams.get('channel'))
+  const { client } = await channelClient(new URL(request.url).searchParams.get('channel'))
   try {
-    return await channelSetup(clientFromRefresh(channel.refreshToken))
+    return await channelDetails(client)
   } catch (error) {
     googleFailure(error)
   }
@@ -48,9 +27,9 @@ const patchSchema = z.object({
 /** Changes only the given settings of the channel on YouTube; everything else stays as it is. */
 export const PATCH = route(async (request) => {
   const { channel: id, ...patch } = await readJson(request, patchSchema)
-  const channel = await pickChannel(id)
+  const { client } = await channelClient(id)
   try {
-    return await updateChannelBranding(clientFromRefresh(channel.refreshToken), patch)
+    return await updateChannelBranding(client, patch)
   } catch (error) {
     googleFailure(error)
   }

@@ -8,6 +8,7 @@ import {
   Lightbulb,
   ListChecks,
   LogOut,
+  MonitorPlay,
   Settings2,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -25,6 +26,7 @@ const NAV = [
   { href: '/schedule', label: 'Schedule', icon: CalendarClock },
   { href: '/performance', label: 'Performance', short: 'Stats', icon: ChartColumn },
   { href: '/library', label: 'Library', icon: Library },
+  { href: '/channel', label: 'YouTube channel', short: 'Channel', icon: MonitorPlay },
   { href: '/setup', label: 'Channel setup', short: 'Setup', icon: ListChecks },
   { href: '/settings', label: 'Settings', icon: Settings2 },
 ]
@@ -191,7 +193,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Phone tab bar */}
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-8 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
         {NAV.map(({ href, label, short, icon: Icon }) => {
           const active = isActive(href)
@@ -201,7 +203,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href={href}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                'relative flex h-[var(--tabbar)] flex-col items-center justify-center gap-1 text-[10.5px] transition-colors',
+                'relative flex h-[var(--tabbar)] min-w-0 flex-col items-center justify-center gap-1 text-[10px] transition-colors',
                 active ? 'font-semibold text-ink' : 'text-ink-3 hover:text-ink',
               )}
             >

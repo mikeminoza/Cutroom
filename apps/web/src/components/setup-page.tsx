@@ -166,6 +166,7 @@ export function SetupPage() {
         ...patch,
       })
       client.setQueryData(keys.channelSetup(channel.id), next)
+      await client.invalidateQueries({ queryKey: keys.channel(channel.id) })
       toast.success('Channel updated on YouTube')
       return true
     } catch (error) {

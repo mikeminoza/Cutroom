@@ -135,8 +135,41 @@ export interface ChannelSetup {
   longUploads: string | null
 }
 
+/** Everything the YouTube channel page shows and edits. */
+export interface ChannelDetails extends ChannelSetup {
+  /** "@name", or '' when the channel has no handle. */
+  handle: string
+  publishedAt: string | null
+  /** The profile picture. */
+  thumbnail: string | null
+  /** null when the channel hides its subscriber count. */
+  subscribers: number | null
+  views: number
+  videos: number
+  /** Id of the video shown to people who haven't subscribed, or ''. */
+  trailer: string
+  /** YouTube's final say, which its own review can set even when the channel declared otherwise. */
+  madeForKids: boolean | null
+  /** What the channel declared. */
+  selfDeclaredMadeForKids: boolean | null
+  privacy: string | null
+  /** What YouTube thinks the channel is about, e.g. "Entertainment". */
+  topics: string[]
+  uploadsPlaylistId: string | null
+}
+
+/** "https://en.wikipedia.org/wiki/Video_game_culture" -> "Video game culture". */
+export function topicName(url: string): string {
+  const last = url.split('/').filter(Boolean).pop() ?? ''
+  try {
+    return decodeURIComponent(last).replace(/_/g, ' ')
+  } catch {
+    return last.replace(/_/g, ' ')
+  }
+}
+
 /** YouTube caps the channel keywords at 500 characters. */
-const KEYWORDS_LIMIT = 500
+export const KEYWORDS_LIMIT = 500
 
 /** Channel keywords as YouTube stores them: space-separated, multi-word ones in quotes. */
 export function formatChannelKeywords(keywords: string[]): string {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mergeBranding } from '../src/google'
+import { mergeBranding, toChannelDetails } from '../src/google'
 import {
   clockLabel,
   footerTemplate,
@@ -9,6 +9,7 @@ import {
   presetSlots,
   scheduleLine,
   slotDays,
+  topicName,
 } from '../src/setup'
 
 const generateContent = vi.hoisted(() => vi.fn())
@@ -164,5 +165,65 @@ describe('channel setup on YouTube', () => {
     const prompt = String(generateContent.mock.calls.at(-1)?.[0].contents)
     expect(prompt).toContain('Posting schedule: New videos every Saturday and Sunday.')
     expect(prompt).toContain('Write for viewers in the United States')
+  })
+})
+
+describe('the YouTube channel page', () => {
+  it('reads the channel as YouTube returns it', () => {
+    const details = toChannelDetails({
+      id: 'UC123',
+      snippet: {
+        title: 'Cappy Sleeps',
+        customUrl: 'cappysleeps',
+        publishedAt: '2025-03-02T10:00:00Z',
+        thumbnails: { default: { url: 'small.jpg' }, high: { url: 'big.jpg' } },
+        country: 'PH',
+      },
+      statistics: {
+        subscriberCount: '1200',
+        hiddenSubscriberCount: false,
+        viewCount: '45000',
+        videoCount: '31',
+      },
+      brandingSettings: {
+        channel: {
+          description: 'Sleep science',
+          keywords: 'capybara "sleep science"',
+          unsubscribedTrailer: 'vid1',
+        },
+      },
+      status: {
+        madeForKids: false,
+        selfDeclaredMadeForKids: false,
+        privacyStatus: 'public',
+        longUploadsStatus: 'allowed',
+      },
+      topicDetails: { topicCategories: ['https://en.wikipedia.org/wiki/Lifestyle_(sociology)'] },
+      contentDetails: { relatedPlaylists: { uploads: 'UU123' } },
+    })
+    expect(details).toMatchObject({
+      handle: '@cappysleeps',
+      thumbnail: 'big.jpg',
+      country: 'PH',
+      keywords: ['capybara', 'sleep science'],
+      trailer: 'vid1',
+      subscribers: 1200,
+      views: 45000,
+      videos: 31,
+      topics: ['Lifestyle (sociology)'],
+      uploadsPlaylistId: 'UU123',
+    })
+    expect(
+      toChannelDetails({ id: 'UC1', statistics: { hiddenSubscriberCount: true } })?.subscribers,
+    ).toBeNull()
+    expect(toChannelDetails({})).toBeNull()
+    expect(topicName('https://en.wikipedia.org/wiki/Caf%C3%A9_culture')).toBe('Café culture')
+  })
+
+  it('sets and removes the trailer without touching the rest', () => {
+    const current = { country: 'US', unsubscribedTrailer: 'old' }
+    expect(mergeBranding(current, { trailer: 'new' })).toEqual({ country: 'US', unsubscribedTrailer: 'new' })
+    expect(mergeBranding(current, { trailer: '' })).toEqual({ country: 'US' })
+    expect(mergeBranding(current, {})).toEqual(current)
   })
 })
