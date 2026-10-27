@@ -33,7 +33,6 @@ export const keys = {
   comments: ['comments'] as const,
   voices: ['voices'] as const,
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
-  channelSetup: (channelId: string | null) => ['channel-setup', channelId ?? 'default'] as const,
   channel: (channelId: string | null) => ['channel', channelId ?? 'default'] as const,
 }
 

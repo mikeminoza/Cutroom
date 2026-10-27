@@ -708,126 +708,128 @@ function PreferencesForm() {
         </Panel>
       </div>
 
-      <Panel
-        title="Defaults for new videos"
-        description="Every project starts with these. You can change them per video."
-      >
-        <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
-          <Field label="Before uploading" className="sm:col-span-2">
-            <Segmented
-              ariaLabel="Default posting mode"
-              value={settings.defaults.mode}
-              onChange={(mode) => updateDefaults({ mode })}
-              options={[
-                { value: 'review', label: 'Let me approve' },
-                { value: 'autopilot', label: 'Auto-pilot' },
-              ]}
-            />
-          </Field>
-          <Field label="Visibility">
-            <Select
-              value={settings.defaults.privacy}
-              onChange={(e) =>
-                updateDefaults({ privacy: e.target.value as AppSettings['defaults']['privacy'] })
-              }
+      <div id="defaults" className="scroll-mt-6">
+        <Panel
+          title="Defaults for new videos"
+          description="Every project starts with these. You can change them per video."
+        >
+          <div className="grid gap-5 px-5 py-5 sm:grid-cols-2">
+            <Field label="Before uploading" className="sm:col-span-2">
+              <Segmented
+                ariaLabel="Default posting mode"
+                value={settings.defaults.mode}
+                onChange={(mode) => updateDefaults({ mode })}
+                options={[
+                  { value: 'review', label: 'Let me approve' },
+                  { value: 'autopilot', label: 'Auto-pilot' },
+                ]}
+              />
+            </Field>
+            <Field label="Visibility">
+              <Select
+                value={settings.defaults.privacy}
+                onChange={(e) =>
+                  updateDefaults({ privacy: e.target.value as AppSettings['defaults']['privacy'] })
+                }
+              >
+                <option value="public">Public</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="private">Private</option>
+              </Select>
+            </Field>
+            <Field label="Category">
+              <Select
+                value={settings.defaults.categoryId}
+                onChange={(e) => updateDefaults({ categoryId: e.target.value })}
+              >
+                {YOUTUBE_CATEGORIES.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label="Playlist"
+              hint={status?.youtube.connected ? undefined : 'Connect YouTube to choose one.'}
             >
-              <option value="public">Public</option>
-              <option value="unlisted">Unlisted</option>
-              <option value="private">Private</option>
-            </Select>
-          </Field>
-          <Field label="Category">
-            <Select
-              value={settings.defaults.categoryId}
-              onChange={(e) => updateDefaults({ categoryId: e.target.value })}
+              <Select
+                value={settings.defaults.playlistId}
+                disabled={!status?.youtube.connected}
+                onChange={(e) => updateDefaults({ playlistId: e.target.value })}
+              >
+                <option value="">None</option>
+                {playlists.data?.playlists.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Language code" hint="For example en, es, tl.">
+              <Input
+                value={settings.defaults.language}
+                onChange={(e) => updateDefaults({ language: e.target.value.trim() })}
+              />
+            </Field>
+            <Field label="Resolution">
+              <Segmented
+                ariaLabel="Default resolution"
+                value={settings.defaults.resolution}
+                onChange={(resolution) => updateDefaults({ resolution })}
+                options={[
+                  { value: '720p', label: '720p' },
+                  { value: '1080p', label: '1080p' },
+                ]}
+              />
+            </Field>
+            <Field label="Captions">
+              <Segmented
+                ariaLabel="Default captions"
+                value={settings.defaults.captionStyle}
+                onChange={(captionStyle) => updateDefaults({ captionStyle })}
+                options={[
+                  { value: 'highlight', label: 'Word by word' },
+                  { value: 'line', label: 'Plain' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </Field>
+            <Field label="Tags added to every video" className="sm:col-span-2" hint="Separate with commas.">
+              <Input
+                value={settings.defaults.tags.join(', ')}
+                onChange={(e) =>
+                  updateDefaults({
+                    tags: e.target.value
+                      .split(',')
+                      .map((t) => t.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Description footer"
+              className="sm:col-span-2"
+              hint="Links, socials, credits. Added below every description."
             >
-              {YOUTUBE_CATEGORIES.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field
-            label="Playlist"
-            hint={status?.youtube.connected ? undefined : 'Connect YouTube to choose one.'}
-          >
-            <Select
-              value={settings.defaults.playlistId}
-              disabled={!status?.youtube.connected}
-              onChange={(e) => updateDefaults({ playlistId: e.target.value })}
-            >
-              <option value="">None</option>
-              {playlists.data?.playlists.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.title}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Language code" hint="For example en, es, tl.">
-            <Input
-              value={settings.defaults.language}
-              onChange={(e) => updateDefaults({ language: e.target.value.trim() })}
-            />
-          </Field>
-          <Field label="Resolution">
-            <Segmented
-              ariaLabel="Default resolution"
-              value={settings.defaults.resolution}
-              onChange={(resolution) => updateDefaults({ resolution })}
-              options={[
-                { value: '720p', label: '720p' },
-                { value: '1080p', label: '1080p' },
-              ]}
-            />
-          </Field>
-          <Field label="Captions">
-            <Segmented
-              ariaLabel="Default captions"
-              value={settings.defaults.captionStyle}
-              onChange={(captionStyle) => updateDefaults({ captionStyle })}
-              options={[
-                { value: 'highlight', label: 'Word by word' },
-                { value: 'line', label: 'Plain' },
-                { value: 'off', label: 'Off' },
-              ]}
-            />
-          </Field>
-          <Field label="Tags added to every video" className="sm:col-span-2" hint="Separate with commas.">
-            <Input
-              value={settings.defaults.tags.join(', ')}
-              onChange={(e) =>
-                updateDefaults({
-                  tags: e.target.value
-                    .split(',')
-                    .map((t) => t.trim())
-                    .filter(Boolean),
-                })
-              }
-            />
-          </Field>
-          <Field
-            label="Description footer"
-            className="sm:col-span-2"
-            hint="Links, socials, credits. Added below every description."
-          >
-            <Textarea
-              value={settings.defaults.descriptionFooter}
-              onChange={(e) => updateDefaults({ descriptionFooter: e.target.value })}
-              className="min-h-24"
-            />
-          </Field>
-          <div className="sm:col-span-2">
-            <Switch
-              checked={settings.defaults.madeForKids}
-              onCheckedChange={(madeForKids) => updateDefaults({ madeForKids })}
-              label="Made for kids"
-              description="Required by YouTube for every upload."
-            />
+              <Textarea
+                value={settings.defaults.descriptionFooter}
+                onChange={(e) => updateDefaults({ descriptionFooter: e.target.value })}
+                className="min-h-24"
+              />
+            </Field>
+            <div className="sm:col-span-2">
+              <Switch
+                checked={settings.defaults.madeForKids}
+                onCheckedChange={(madeForKids) => updateDefaults({ madeForKids })}
+                label="Made for kids"
+                description="Required by YouTube for every upload."
+              />
+            </div>
           </div>
-        </div>
-      </Panel>
+        </Panel>
+      </div>
 
       <Panel
         title="AI voice"

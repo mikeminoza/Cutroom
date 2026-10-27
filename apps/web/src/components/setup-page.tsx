@@ -5,34 +5,21 @@ import {
   type Cadence,
   type ChannelDetails,
   clockLabel,
-  footerTemplate,
   MARKETS,
   marketOf,
   presetSlots,
   slotDays,
 } from '@cutroom/shared/setup'
-import type { AppSettings, PostingSlot } from '@cutroom/shared/types'
+import { type AppSettings, type PostingSlot, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Sparkles } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
-import { cn } from '@/lib/cn'
 import { keys, useSettings, useStatus } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
 import { AiSetup } from './ai-setup'
-import {
-  Button,
-  ButtonLink,
-  Input,
-  Panel,
-  ProgressBar,
-  Segmented,
-  Select,
-  StatusPill,
-  Textarea,
-  useConfirm,
-} from './ui'
+import { Button, ButtonLink, Panel, ProgressBar, Segmented, Select, StatusPill, useConfirm } from './ui'
 
 type State = 'done' | 'todo' | 'auto' | 'info'
 
@@ -49,7 +36,7 @@ interface TipItem {
   state: State
   body: React.ReactNode
   action?: React.ReactNode
-  /** Shown under the tip, full width: an editor or a picker. */
+  /** Shown under the tip, full width: a picker. */
   extra?: React.ReactNode
 }
 
@@ -59,19 +46,8 @@ interface Section {
   items: TipItem[]
 }
 
-/** What Gemini drafts from the niche (see /api/setup/suggest). */
-interface Draft {
-  description: string
-  keywords: string[]
-  tags: string[]
-}
-
 /** Categories that suit explainer and comedy channels. YouTube's own ids. */
-const CATEGORIES = [
-  { id: '27', name: 'Education' },
-  { id: '24', name: 'Entertainment' },
-  { id: '23', name: 'Comedy' },
-]
+const FITTING_CATEGORIES = ['27', '24', '23']
 
 const STUDIO = 'https://studio.youtube.com/'
 const SLOT_TIME = '15:00'
@@ -83,6 +59,11 @@ function slotSummary(slots: PostingSlot[], timezone: string): string {
   return `${slotDays(slots, true)} at ${times.join(' / ')} (${timezone})`
 }
 
+/**
+ * A checklist for growing the channel. Each setting has one home, which the tips link to: the
+ * channel's own settings are on the YouTube channel page, Cutroom's defaults in Settings. Only
+ * the target audience, the posting presets and "Set up with AI" live here.
+ */
 export function SetupPage() {
   const { data: settings } = useSettings()
   const { data: status } = useStatus()
@@ -91,22 +72,21 @@ export function SetupPage() {
   const [channelId, setChannelId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [cadence, setCadence] = useState<Cadence>(3)
-  const [footer, setFooter] = useState<string | null>(null)
-  const [draft, setDraft] = useState<Draft | null>(null)
-  const [tagPicks, setTagPicks] = useState<string[] | null>(null)
-  const [about, setAbout] = useState<{ description: string; keywords: string } | null>(null)
 
   const channels = status?.channels ?? []
   const channel =
     channels.find((c) => c.id === channelId) ?? channels.find((c) => c.isDefault) ?? channels[0] ?? null
+  // The same data, and cache, as the YouTube channel page.
   const youtube = useQuery({
-    queryKey: keys.channelSetup(channel?.id ?? null),
+    queryKey: keys.channel(channel?.id ?? null),
     queryFn: () =>
-      api.get<ChannelDetails | null>(`/api/setup/youtube?channel=${encodeURIComponent(channel?.id ?? '')}`),
+      api.get<{ details: ChannelDetails } | null>(
+        `/api/channel?channel=${encodeURIComponent(channel?.id ?? '')}`,
+      ),
     enabled: Boolean(channel),
     retry: false,
   })
-  const yt = youtube.data ?? null
+  const yt = youtube.data?.details ?? null
 
   if (!settings) {
     return (
@@ -147,56 +127,6 @@ export function SetupPage() {
       id,
     )
 
-  /** Changes the channel on YouTube after showing exactly what changes. */
-  const updateYoutube = async (
-    key: string,
-    patch: { country?: string; defaultLanguage?: string; description?: string; keywords?: string[] },
-    what: string,
-  ): Promise<boolean> => {
-    if (!channel) return false
-    const ok = await confirm({
-      title: `Update ${channel.title} on YouTube?`,
-      body: `${what} Nothing else on the channel changes.`,
-      action: 'Update channel',
-    })
-    if (!ok) return false
-    setBusy(key)
-    try {
-      const next = await api.patch<ChannelDetails | null>('/api/setup/youtube', {
-        channel: channel.id,
-        ...patch,
-      })
-      client.setQueryData(keys.channelSetup(channel.id), next)
-      await client.invalidateQueries({ queryKey: keys.channel(channel.id) })
-      toast.success('Channel updated on YouTube')
-      return true
-    } catch (error) {
-      toast.error(errorText(error))
-      return false
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  /** One Gemini draft feeds both the tags and the channel description. */
-  const suggest = async (target: 'tags' | 'about') => {
-    let result = draft
-    if (!result) {
-      setBusy(`suggest-${target}`)
-      try {
-        result = await api.post<Draft>('/api/setup/suggest', { channel: channel?.id })
-        setDraft(result)
-      } catch (error) {
-        toast.error(errorText(error))
-        return
-      } finally {
-        setBusy(null)
-      }
-    }
-    if (target === 'tags') setTagPicks(result.tags)
-    else setAbout({ description: result.description, keywords: result.keywords.join(', ') })
-  }
-
   const applyMarket = (code: string) => {
     const next = marketOf(code)
     return save(
@@ -221,20 +151,6 @@ export function SetupPage() {
       await save({ ...settings, timezone: market.timezone, slots }, 'Posting schedule updated', 'schedule')
   }
 
-  const applyAbout = async () => {
-    if (!about) return
-    const keywords = about.keywords
-      .split(',')
-      .map((k) => k.trim())
-      .filter(Boolean)
-    const ok = await updateYoutube(
-      'about',
-      { description: about.description.trim(), keywords },
-      'Replaces the channel description and keywords with the ones you edited.',
-    )
-    if (ok) setAbout(null)
-  }
-
   const studioLink = (
     <ButtonLink
       href={STUDIO}
@@ -246,35 +162,30 @@ export function SetupPage() {
       YouTube Studio
     </ButtonLink>
   )
-  const manual = (id: string, link: React.ReactNode = studioLink) => (
-    <>
-      {link}
-      <Button
-        size="sm"
-        variant={ticked.has(id) ? 'ghost' : 'plain'}
-        busy={busy === id}
-        onClick={() => toggleTick(id)}
-      >
-        {ticked.has(id) ? 'Undo' : 'Mark as done'}
-      </Button>
-    </>
+  const tick = (id: string) => (
+    <Button
+      size="sm"
+      variant={ticked.has(id) ? 'ghost' : 'plain'}
+      busy={busy === id}
+      onClick={() => toggleTick(id)}
+    >
+      {ticked.has(id) ? 'Undo' : 'Mark as done'}
+    </Button>
   )
-  const connectLink = (
+  /** Where a YouTube setting is changed: the channel page, or Settings to connect one first. */
+  const channelLink = channel ? (
+    <ButtonLink href="/channel" size="sm">
+      YouTube channel
+    </ButtonLink>
+  ) : (
     <ButtonLink href="/settings" size="sm">
       Connect YouTube
     </ButtonLink>
   )
-  const suggestButton = (target: 'tags' | 'about') => (
-    <Button
-      size="sm"
-      icon={<Sparkles className="size-3.5" />}
-      busy={busy === `suggest-${target}`}
-      disabled={!geminiReady || busy?.startsWith('suggest')}
-      title={geminiReady ? undefined : 'Add GEMINI_API_KEY to use this'}
-      onClick={() => suggest(target)}
-    >
-      Draft with AI
-    </Button>
+  const defaultsLink = (
+    <ButtonLink href="/settings#defaults" size="sm">
+      Settings
+    </ButtonLink>
   )
 
   const countryDone = Boolean(
@@ -282,10 +193,10 @@ export function SetupPage() {
   )
   const scheduleDone = settings.timezone === market.timezone && settings.slots.length >= 2
   const aboutDone = Boolean(yt && yt.description.trim().length >= 100 && yt.keywords.length >= 3)
-  const categoryDone = CATEGORIES.some((c) => c.id === defaults.categoryId)
+  const categoryName =
+    YOUTUBE_CATEGORIES.find((c) => c.id === defaults.categoryId)?.name ?? `category ${defaults.categoryId}`
   const verified = yt?.longUploads === 'allowed' || ticked.has('verify')
   const reference = settings.niche.reference ?? null
-  const picks = tagPicks ?? []
 
   const sections: Section[] = [
     {
@@ -322,24 +233,7 @@ export function SetupPage() {
           body: `Your channel's country and language on YouTube${
             yt ? ` (now ${yt.country || 'not set'}, ${yt.defaultLanguage || 'no language'})` : ''
           }. It doesn't limit who can watch; YouTube uses it for things like Partner Program eligibility and the channel's details.`,
-          action: !channel
-            ? connectLink
-            : !countryDone && (
-                <Button
-                  size="sm"
-                  busy={busy === 'channel-country'}
-                  disabled={!yt}
-                  onClick={() =>
-                    updateYoutube(
-                      'channel-country',
-                      { country: market.code, defaultLanguage: market.language },
-                      `Sets the country to ${market.label} and the default language to English.`,
-                    )
-                  }
-                >
-                  Update on YouTube
-                </Button>
-              ),
+          action: !countryDone && channelLink,
         },
       ],
     },
@@ -357,6 +251,11 @@ export function SetupPage() {
               matters more than the exact hour: in a study of 40 million US uploads, weekends did only a few
               percent better and the upload hour barely changed 30-day views.
             </>
+          ),
+          action: (
+            <ButtonLink href="/settings#schedule" size="sm" variant="ghost">
+              Edit slots
+            </ButtonLink>
           ),
           extra: (
             <div className="flex flex-wrap items-center gap-3">
@@ -394,7 +293,12 @@ export function SetupPage() {
           title: 'Check when your viewers are online',
           state: ticked.has('studio-times') ? 'done' : 'todo',
           body: 'Once the channel has viewers, YouTube Studio → Analytics → Audience shows when they are on YouTube. Move your slots to an hour or two before the busiest time.',
-          action: manual('studio-times'),
+          action: (
+            <>
+              {studioLink}
+              {tick('studio-times')}
+            </>
+          ),
         },
       ],
     },
@@ -436,45 +340,7 @@ export function SetupPage() {
           title: 'A footer on every description',
           state: defaults.descriptionFooter.trim() ? 'done' : 'todo',
           body: "Goes under each video's description and chapters: when new videos come out and a reason to subscribe. Each video still gets its own description, chapters and 3 hashtags.",
-          action: footer === null && (
-            <Button
-              size="sm"
-              onClick={() => setFooter(defaults.descriptionFooter.trim() || footerTemplate(settings.slots))}
-            >
-              {defaults.descriptionFooter.trim() ? 'Edit footer' : 'Draft footer'}
-            </Button>
-          ),
-          extra: footer !== null && (
-            <div className="flex flex-col gap-2">
-              <Textarea
-                aria-label="Description footer"
-                rows={4}
-                maxLength={2000}
-                value={footer}
-                onChange={(e) => setFooter(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="go"
-                  busy={busy === 'footer'}
-                  onClick={async () => {
-                    const ok = await save(
-                      { ...settings, defaults: { ...defaults, descriptionFooter: footer.trim() } },
-                      'Footer saved',
-                      'footer',
-                    )
-                    if (ok) setFooter(null)
-                  }}
-                >
-                  Save footer
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setFooter(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ),
+          action: defaultsLink,
         },
         {
           id: 'tags',
@@ -487,49 +353,7 @@ export function SetupPage() {
               the first line of the description matter far more. Each video also gets 10–15 tags of its own.
             </>
           ),
-          action: tagPicks === null && suggestButton('tags'),
-          extra: tagPicks !== null && draft && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {draft.tags.map((tag) => {
-                const on = picks.includes(tag)
-                return (
-                  <button
-                    key={tag}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => setTagPicks(on ? picks.filter((t) => t !== tag) : [...picks, tag])}
-                    className={cn(
-                      'rounded-full border px-2.5 py-1 text-[12.5px] transition-colors',
-                      on ? 'border-ink bg-ink text-paper' : 'border-line text-ink-2 hover:border-ink-3',
-                    )}
-                  >
-                    {tag}
-                  </button>
-                )
-              })}
-              <Button
-                size="sm"
-                variant="go"
-                className="ml-1"
-                disabled={picks.length === 0}
-                busy={busy === 'tags'}
-                onClick={async () => {
-                  const tags = [...new Set([...defaults.tags, ...picks])].slice(0, 30)
-                  const ok = await save(
-                    { ...settings, defaults: { ...defaults, tags } },
-                    'Tags saved',
-                    'tags',
-                  )
-                  if (ok) setTagPicks(null)
-                }}
-              >
-                Add {picks.length} {picks.length === 1 ? 'tag' : 'tags'}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setTagPicks(null)}>
-                Cancel
-              </Button>
-            </div>
-          ),
+          action: defaultsLink,
         },
         {
           id: 'about',
@@ -543,48 +367,7 @@ export function SetupPage() {
               what viewers get, in the words people search for.
             </>
           ),
-          action: !channel
-            ? connectLink
-            : about === null && (
-                <>
-                  {suggestButton('about')}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={!yt}
-                    onClick={() =>
-                      yt && setAbout({ description: yt.description, keywords: yt.keywords.join(', ') })
-                    }
-                  >
-                    Edit
-                  </Button>
-                </>
-              ),
-          extra: about !== null && (
-            <div className="flex flex-col gap-2">
-              <Textarea
-                aria-label="Channel description"
-                rows={6}
-                maxLength={1000}
-                value={about.description}
-                onChange={(e) => setAbout({ ...about, description: e.target.value })}
-              />
-              <Input
-                aria-label="Channel keywords"
-                placeholder="Keywords, separated by commas"
-                value={about.keywords}
-                onChange={(e) => setAbout({ ...about, keywords: e.target.value })}
-              />
-              <div className="flex gap-2">
-                <Button size="sm" variant="go" busy={busy === 'about'} onClick={applyAbout}>
-                  Update on YouTube
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setAbout(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ),
+          action: channelLink,
         },
       ],
     },
@@ -594,43 +377,16 @@ export function SetupPage() {
         {
           id: 'category',
           title: 'A category that fits',
-          state: categoryDone ? 'done' : 'todo',
-          body: 'Explainers fit Education; videos that are mostly jokes fit Entertainment or Comedy. It helps YouTube place your videos next to similar ones.',
-          action: (
-            <Segmented<string>
-              ariaLabel="Category"
-              value={categoryDone ? defaults.categoryId : ''}
-              onChange={(categoryId) =>
-                save(
-                  { ...settings, defaults: { ...defaults, categoryId } },
-                  `Category set to ${CATEGORIES.find((c) => c.id === categoryId)?.name}`,
-                  'category',
-                )
-              }
-              options={CATEGORIES.map((c) => ({ value: c.id, label: c.name }))}
-            />
-          ),
+          state: FITTING_CATEGORIES.includes(defaults.categoryId) ? 'done' : 'todo',
+          body: `Now: ${categoryName}. Explainers fit Education; videos that are mostly jokes fit Entertainment or Comedy. It helps YouTube place your videos next to similar ones.`,
+          action: defaultsLink,
         },
         {
           id: 'kids',
           title: 'Not made for kids',
           state: defaults.madeForKids ? 'todo' : 'done',
-          body: "A cartoon look doesn't make a video made for kids: say No unless children are your audience. Made-for-kids videos lose comments, the notification bell and personalised ads. Set the same for the whole channel in YouTube Studio → Settings → Channel → Advanced settings.",
-          action: defaults.madeForKids && (
-            <Button
-              size="sm"
-              busy={busy === 'kids'}
-              onClick={() =>
-                save(
-                  { ...settings, defaults: { ...defaults, madeForKids: false } },
-                  'Set to not made for kids',
-                  'kids',
-                )
-              }
-            >
-              Set to No
-            </Button>
-          ),
+          body: "A cartoon look doesn't make a video made for kids: say No unless children are your audience. Made-for-kids videos lose comments, the notification bell and personalised ads. The whole channel's setting is on the YouTube channel page.",
+          action: defaults.madeForKids && defaultsLink,
         },
         {
           id: 'captions',
@@ -642,7 +398,7 @@ export function SetupPage() {
     },
     {
       title: 'On YouTube',
-      description: "YouTube's API can't do these, so they are done in YouTube Studio. Tick them off here.",
+      description: 'Some of these only YouTube Studio can do: tick them off here.',
       items: [
         {
           id: 'verify',
@@ -659,30 +415,56 @@ export function SetupPage() {
               >
                 Verify on YouTube
               </ButtonLink>
-              {!yt && manual('verify', null)}
+              {!yt && tick('verify')}
             </>
           ),
+        },
+        {
+          id: 'trailer',
+          title: 'A channel trailer',
+          state: yt?.trailer ? 'done' : 'todo',
+          body: "Plays at the top of your channel for people who haven't subscribed yet: a short video that shows what the channel is.",
+          action: !yt?.trailer && channelLink,
         },
         {
           id: 'branding',
           title: 'Profile picture, banner and handle',
           state: ticked.has('branding') ? 'done' : 'todo',
-          body: "Use your main character's face for the profile picture so it's recognisable when tiny, and a banner that says what the channel is about and when new videos come out.",
-          action: manual('branding'),
+          body: "Use your main character's face for the profile picture so it's recognisable when tiny, and a banner that says what the channel is about. The YouTube channel page can draw both with AI; upload them in Studio.",
+          action: (
+            <>
+              {channel && (
+                <ButtonLink href="/channel" size="sm" variant="ghost">
+                  Make with AI
+                </ButtonLink>
+              )}
+              {tick('branding')}
+            </>
+          ),
         },
         {
           id: 'end-screen',
           title: 'An end screen on every video',
           state: ticked.has('end-screen') ? 'done' : 'todo',
           body: "Add a subscribe button and a 'best for viewer' video to the last 5–20 seconds of one video, then use Import from video on each new one.",
-          action: manual('end-screen'),
+          action: (
+            <>
+              {studioLink}
+              {tick('end-screen')}
+            </>
+          ),
         },
         {
-          id: 'trailer',
-          title: 'Channel trailer and home page',
-          state: ticked.has('trailer') ? 'done' : 'todo',
-          body: "Pick a short, strong video as the trailer for people who haven't subscribed yet, and add sections such as popular uploads and a playlist per series to the home tab.",
-          action: manual('trailer'),
+          id: 'home',
+          title: 'Home tab sections',
+          state: ticked.has('home') ? 'done' : 'todo',
+          body: 'Add sections such as popular uploads and a playlist per series to the channel’s home tab.',
+          action: (
+            <>
+              {studioLink}
+              {tick('home')}
+            </>
+          ),
         },
       ],
     },
@@ -718,8 +500,8 @@ export function SetupPage() {
       <header className="mb-8">
         <h1 className="display text-[34px]">Channel setup</h1>
         <p className="mt-2 max-w-[64ch] text-[14.5px] text-ink-2">
-          Tips for growing a channel like yours, most of them one click to apply. Nothing changes on YouTube
-          until you confirm it.
+          A checklist for growing a channel like yours. Set it all up at once with AI, or follow each tip to
+          where it's changed.
         </p>
         <div className="mt-5 flex flex-wrap items-end gap-x-6 gap-y-3">
           <div className="min-w-56 flex-1">
@@ -746,7 +528,7 @@ export function SetupPage() {
         </div>
         {status && !channel && (
           <p className="mt-3 text-[13px] text-ink-3">
-            Connect YouTube in Settings so these tips can check and update your channel.
+            Connect YouTube in Settings so these tips can check your channel.
           </p>
         )}
         {youtube.error && <p className="mt-3 text-[13px] text-bad">{errorText(youtube.error)}</p>}

@@ -260,8 +260,9 @@ export function AiSetup({
         if (has('trailer') && draft.trailer) patch.trailer = draft.trailer.id
         try {
           const now = await api.patch<ChannelDetails | null>('/api/channel', patch)
-          client.setQueryData(keys.channelSetup(channel.id), now)
-          await client.invalidateQueries({ queryKey: keys.channel(channel.id) })
+          client.setQueryData<{ details: ChannelDetails } | null>(keys.channel(channel.id), (prev) =>
+            prev && now ? { ...prev, details: now } : prev,
+          )
         } catch (error) {
           toast.error(
             inCutroom.length

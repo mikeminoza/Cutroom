@@ -107,11 +107,6 @@ export function scheduleLine(slots: PostingSlot[]): string {
   return days.size === 7 ? 'New videos every day.' : `New videos every ${slotDays(slots)}.`
 }
 
-/** A starting point for the footer under every description. */
-export function footerTemplate(slots: PostingSlot[]): string {
-  return [scheduleLine(slots), "Subscribe so you don't miss the next one."].filter(Boolean).join('\n')
-}
-
 /** "15:00" -> "3:00 PM". */
 export function clockLabel(time: string): string {
   const [h, m] = time.split(':').map(Number)
@@ -119,8 +114,8 @@ export function clockLabel(time: string): string {
   return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`
 }
 
-/** The channel's own settings on YouTube that the Channel setup tips check. */
-export interface ChannelSetup {
+/** The channel as YouTube has it: shown and edited on the YouTube channel page, checked on Channel setup. */
+export interface ChannelDetails {
   id: string
   title: string
   /** ISO country code, or '' when not set. */
@@ -133,10 +128,6 @@ export interface ChannelSetup {
    * need; 'eligible' or 'disallowed' before that.
    */
   longUploads: string | null
-}
-
-/** Everything the YouTube channel page shows and edits. */
-export interface ChannelDetails extends ChannelSetup {
   /** "@name", or '' when the channel has no handle. */
   handle: string
   publishedAt: string | null

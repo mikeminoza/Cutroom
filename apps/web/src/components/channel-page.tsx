@@ -165,7 +165,6 @@ function ChannelView({
         client.setQueryData<ChannelData | null>(keys.channel(channelId), (prev) =>
           prev ? { ...prev, details: next } : prev,
         )
-      await client.invalidateQueries({ queryKey: keys.channelSetup(channelId) })
       toast.success(message)
       return true
     } catch (error) {

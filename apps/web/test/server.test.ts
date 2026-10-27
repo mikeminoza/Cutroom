@@ -99,7 +99,6 @@ const drafting = await import('../src/server/drafting')
 const learnStyleRoute = await import('../src/app/api/settings/learn-style/route')
 const settingsRoute = await import('../src/app/api/settings/route')
 const setupSuggestRoute = await import('../src/app/api/setup/suggest/route')
-const setupYoutubeRoute = await import('../src/app/api/setup/youtube/route')
 const channelRoute = await import('../src/app/api/channel/route')
 const watermarkRoute = await import('../src/app/api/channel/watermark/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
@@ -1633,22 +1632,6 @@ describe('channel setup', () => {
       }
     } finally {
       vi.unstubAllEnvs()
-    }
-  })
-
-  it('asks for a connected channel before reading or changing it on YouTube', async () => {
-    const database = await db()
-    const channels = await database.select().from(schema.channels)
-    await database.delete(schema.channels)
-    try {
-      const read = await setupYoutubeRoute.GET(new Request('http://localhost/api/setup/youtube'), undefined)
-      expect(read.status).toBe(400)
-      expect((await read.json()).error).toMatch(/Connect YouTube/)
-      const change = await setupYoutubeRoute.PATCH(send({ country: 'US' }, 'PATCH'), undefined)
-      expect(change.status).toBe(400)
-      expect((await setupYoutubeRoute.PATCH(send({ country: 'usa' }, 'PATCH'), undefined)).status).toBe(400)
-    } finally {
-      if (channels.length) await database.insert(schema.channels).values(channels)
     }
   })
 })

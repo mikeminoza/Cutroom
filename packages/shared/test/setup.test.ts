@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mergeBranding, toChannelDetails } from '../src/google'
 import {
   clockLabel,
-  footerTemplate,
   formatChannelKeywords,
   marketNote,
   parseChannelKeywords,
@@ -40,7 +39,7 @@ describe('posting schedule presets', () => {
     expect(presetSlots(3, '12:30').every((s) => s.time === '12:30')).toBe(true)
   })
 
-  it('writes the schedule for the description footer, Monday first', () => {
+  it('writes the schedule line for descriptions, Monday first', () => {
     const slots = [
       { day: 0, time: '18:00' },
       { day: 4, time: '18:00' },
@@ -51,10 +50,6 @@ describe('posting schedule presets', () => {
     expect(scheduleLine([{ day: 2, time: '09:00' }])).toBe('New videos every Tuesday.')
     expect(scheduleLine(presetSlots(7))).toBe('New videos every day.')
     expect(scheduleLine([])).toBe('')
-    expect(footerTemplate(slots)).toBe(
-      "New videos every Thursday, Saturday and Sunday.\nSubscribe so you don't miss the next one.",
-    )
-    expect(footerTemplate([])).toBe("Subscribe so you don't miss the next one.")
   })
 
   it('shows times on a 12-hour clock', () => {
