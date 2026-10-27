@@ -142,6 +142,7 @@ export const settingsSchema = z.object({
     targetMinutes: z.number().min(0.25).max(60),
     pace: z.number().min(2).max(30),
     characterIds: z.array(z.string().max(100)).max(6),
+    market: z.string().max(10).default(''),
     reference: z
       .object({
         url: z.string().max(500),
@@ -156,4 +157,5 @@ export const settingsSchema = z.object({
     maxSeconds: z.number().int().min(15).max(180),
   }),
   autopilot: z.object({ perWeek: z.number().int().min(0).max(7) }).default({ perWeek: 0 }),
+  setup: z.object({ done: z.array(z.string().max(60)).max(100) }).default({ done: [] }),
 })

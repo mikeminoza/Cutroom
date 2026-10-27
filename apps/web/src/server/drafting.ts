@@ -26,6 +26,7 @@ import { appUrl, getSettings } from './settings'
 export async function writeProjectScript(id: string, notes = ''): Promise<void> {
   const project = await getProjectRow(id)
   if (!project.topic.trim()) badRequest('Add a topic on the Brief step first.')
+  const settings = await getSettings()
   const result = await writeScript({
     topic: project.topic,
     audience: project.audience,
@@ -37,6 +38,7 @@ export async function writeProjectScript(id: string, notes = ''): Promise<void> 
     characters: (await getCharacters(id))
       .filter((c) => c.name.trim())
       .map((c) => ({ name: c.name.trim(), description: c.description })),
+    market: settings.niche.market,
   })
   await updateProject(id, { script: result.script, title: project.title.trim() || result.title })
 }
@@ -157,6 +159,7 @@ export async function addIdeas(input: {
     direction: input.direction ?? '',
     avoid: [...projects.map((p) => p.title || p.topic), ...ideas.map((i) => i.title)],
     topTitles: await topTitles(template?.channelId ?? null, template?.channelYoutubeId ?? null),
+    market: settings.niche.market,
   })
   if (generated.length) {
     await database.insert(schema.ideas).values(

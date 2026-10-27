@@ -10,6 +10,7 @@
     "./prompts": "./src/prompts.ts",
     "./align": "./src/align.ts",
     "./schedule": "./src/schedule.ts",
+    "./setup": "./src/setup.ts",
     "./protocol": "./src/protocol.ts",
     "./ai": "./src/ai.ts",
     "./storage": "./src/storage.ts",

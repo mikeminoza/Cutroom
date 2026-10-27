@@ -2,6 +2,7 @@
 // and by the worker for the voice-over transcription.
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
+import { marketNote } from './setup'
 import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
 import {
   type CommentInsights,
@@ -232,6 +233,8 @@ export interface ScriptBrief {
   notes?: string
   /** Recurring characters; the notes may make one of them the narrator. */
   characters?: { name: string; description: string }[]
+  /** Country code of the viewers the channel is made for (Channel setup). */
+  market?: string
 }
 
 export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
@@ -242,6 +245,7 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
     brief.audience && `Audience: ${brief.audience}`,
     brief.tone && `Tone: ${brief.tone}`,
     `Language: ${brief.language || 'English'}`,
+    marketNote(brief.market),
     `Length: about ${words} spoken words (${brief.minutes} minutes at a natural pace).`,
     brief.notes && `Extra notes from the creator: ${brief.notes}`,
     brief.characters?.length &&
@@ -501,6 +505,8 @@ export interface PostDraftInput {
   descriptionFooter: string
   /** The channel's most-watched titles so far, so new titles learn from what works. */
   topTitles?: { title: string; views: number }[]
+  /** Country code of the viewers the channel is made for (Channel setup). */
+  market?: string
 }
 
 function topTitlesNote(top: { title: string; views: number }[] | undefined): string {
@@ -526,19 +532,20 @@ export async function writePostDetails(input: PostDraftInput): Promise<PostDraft
     .map((s, i) => `[${i}] ${s.start.toFixed(0)}s: ${s.narration.slice(0, 160)}`)
     .join('\n')
   const isShort = input.format === 'portrait'
+  const market = marketNote(input.market)
   const prompt = `Write YouTube upload details for this ${isShort ? 'Short' : 'video'}.
 Working title: ${input.title || '(none)'}
 Topic: ${input.topic}
 Audience: ${input.audience || 'general'}
-Language: ${input.language || 'English'}
+Language: ${input.language || 'English'}${market ? `\n${market}` : ''}
 Length: ${Math.round(input.duration)} seconds
 
 Scenes (index, start time, narration):
 ${sceneList}
 ${topTitlesNote(input.topTitles)}
 Return:
-- titleOptions: 5 distinct titles, max 70 characters, curiosity-driven but honest, no clickbait lies, no ALL CAPS words, no emoji.
-- description: 2 short paragraphs (hook + what the viewer learns). Do NOT include chapters, hashtags or links.
+- titleOptions: 5 distinct titles, max 60 characters with the hook in the first 40 (phones cut off the rest), curiosity-driven but honest, no clickbait lies, no ALL CAPS words, no emoji.
+- description: 2 short paragraphs (hook + what the viewer learns). The first sentence shows in search results: make it the hook, in the words people search for. Do NOT include chapters, hashtags or links.
 - tags: 10–15 search tags, most specific first, no "#".
 - hashtags: 3 hashtags including "#"${isShort ? ', one of them #Shorts' : ''}.
 - chapterPicks: ${isShort ? 'an empty list (Shorts have no chapters)' : '4–8 chapters as {sceneIndex, title}; the first must be sceneIndex 0; titles max 40 characters'}.
@@ -770,6 +777,8 @@ export interface IdeaRequest {
   /** Titles and topics already made or planned, so ideas don't repeat them. */
   avoid: string[]
   topTitles: { title: string; views: number }[]
+  /** Country code of the viewers the channel is made for (Channel setup). */
+  market?: string
 }
 
 export async function generateIdeas(input: IdeaRequest): Promise<{ title: string; angle: string }[]> {
@@ -784,10 +793,11 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     input.audience && `Audience: ${input.audience}`,
     input.tone && `Tone: ${input.tone}`,
     `Language: ${input.language || 'English'}`,
+    marketNote(input.market),
     input.direction && `Direction from the creator: ${input.direction}`,
     topTitlesNote(input.topTitles).trim(),
     avoid && `Already made or planned (do not repeat these or make near-duplicates):\n${avoid}`,
-    'Each idea: a working title (max 70 characters, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from. Make the ideas varied.',
+    'Each idea: a working title (max 60 characters with the hook in the first 40, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from. Make the ideas varied.',
   ]
     .filter(Boolean)
     .join('\n')
@@ -810,6 +820,68 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
     .filter((i) => i.title)
     .slice(0, input.count)
+}
+
+// ---------------------------------------------------------------------------
+// Channel setup
+
+export interface ChannelSetupDraft {
+  /** The channel's About text on YouTube (YouTube allows 1,000 characters). */
+  description: string
+  /** Channel keywords on YouTube, most important first. */
+  keywords: string[]
+  /** Broad tags added to every video. */
+  tags: string[]
+}
+
+/** Drafts the channel's About text, its keywords and the tags for every video, from the niche. */
+export async function suggestChannelSetup(input: {
+  channel: string
+  niche: string
+  narration: string
+  audience: string
+  tone: string
+  market: string
+  /** "New videos every Thursday, Saturday and Sunday.", or ''. */
+  schedule: string
+}): Promise<ChannelSetupDraft> {
+  const prompt = [
+    'Write the YouTube channel setup for this channel.',
+    `Channel name: ${input.channel || '(not set)'}`,
+    `What the channel is about: ${input.niche || '(not described)'}`,
+    input.narration && `Narration: ${input.narration}`,
+    input.audience && `Audience: ${input.audience}`,
+    input.tone && `Tone: ${input.tone}`,
+    marketNote(input.market),
+    input.schedule && `Posting schedule: ${input.schedule}`,
+    `Return:
+- description: the channel's About text, 2–3 short paragraphs, under 900 characters. The first sentence says plainly what viewers get, in the words people search for. Mention the posting schedule if there is one. No hashtags, no links, no emoji.
+- keywords: 8–12 channel keywords, short search phrases people type, most important first.
+- tags: 5–8 broad tags that fit every video on the channel (its subject, format and main character), no "#".`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        description: str,
+        keywords: { type: 'array', items: str },
+        tags: { type: 'array', items: str },
+      },
+      required: ['description', 'keywords', 'tags'],
+    },
+    z.object({ description: z.string(), keywords: z.array(z.string()), tags: z.array(z.string()) }),
+    'You are a YouTube strategist who sets up channels so the right viewers find them.',
+  )
+  const clean = (values: string[], max: number) =>
+    dedupe(values.map((v) => v.replace(/^#/, '').replace(/"/g, '').trim()).filter(Boolean)).slice(0, max)
+  return {
+    description: result.description.trim().slice(0, 1000),
+    keywords: clean(result.keywords, 12),
+    tags: fitTags(clean(result.tags, 8)),
+  }
 }
 
 // ---------------------------------------------------------------------------

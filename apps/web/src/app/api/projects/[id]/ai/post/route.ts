@@ -32,6 +32,7 @@ export const POST = route(async (_request, { params }: Ctx) => {
     defaultTags: settings.defaults.tags,
     descriptionFooter: settings.defaults.descriptionFooter,
     topTitles: await topTitles(project.channelId, project.channelYoutubeId),
+    market: settings.niche.market,
   })
   const current = { ...EMPTY_POST, ...project.post }
   const post = {

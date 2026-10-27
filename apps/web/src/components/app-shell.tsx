@@ -1,6 +1,15 @@
 'use client'
 
-import { CalendarClock, ChartColumn, Clapperboard, Library, Lightbulb, LogOut, Settings2 } from 'lucide-react'
+import {
+  CalendarClock,
+  ChartColumn,
+  Clapperboard,
+  Library,
+  Lightbulb,
+  ListChecks,
+  LogOut,
+  Settings2,
+} from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { api } from '@/lib/api'
@@ -16,6 +25,7 @@ const NAV = [
   { href: '/schedule', label: 'Schedule', icon: CalendarClock },
   { href: '/performance', label: 'Performance', short: 'Stats', icon: ChartColumn },
   { href: '/library', label: 'Library', icon: Library },
+  { href: '/setup', label: 'Channel setup', short: 'Setup', icon: ListChecks },
   { href: '/settings', label: 'Settings', icon: Settings2 },
 ]
 
@@ -181,7 +191,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Phone tab bar */}
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
         {NAV.map(({ href, label, short, icon: Icon }) => {
           const active = isActive(href)

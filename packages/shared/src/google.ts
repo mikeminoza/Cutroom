@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { drive as driveApi } from '@googleapis/drive'
 import { auth, youtube as youtubeApi } from '@googleapis/youtube'
+import { type ChannelSetup, formatChannelKeywords, parseChannelKeywords } from './setup'
 import type { Privacy } from './types'
 
 export type GoogleProvider = 'youtube' | 'drive'
@@ -117,6 +118,78 @@ export async function channelInfo(client: OAuthClient): Promise<{ id: string; ti
   const res = await yt.channels.list({ part: ['snippet'], mine: true })
   const channel = res.data.items?.[0]
   return channel?.id ? { id: channel.id, title: channel.snippet?.title ?? 'Your channel' } : null
+}
+
+/** The channel's country, language, About text, keywords and verification, for Channel setup. */
+export async function channelSetup(client: OAuthClient): Promise<ChannelSetup | null> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.channels.list({ part: ['snippet', 'brandingSettings', 'status'], mine: true })
+  const channel = res.data.items?.[0]
+  if (!channel?.id) return null
+  const branding = channel.brandingSettings?.channel
+  return {
+    id: channel.id,
+    title: channel.snippet?.title ?? 'Your channel',
+    country: branding?.country ?? channel.snippet?.country ?? '',
+    defaultLanguage: branding?.defaultLanguage ?? channel.snippet?.defaultLanguage ?? '',
+    description: branding?.description ?? channel.snippet?.description ?? '',
+    keywords: parseChannelKeywords(branding?.keywords ?? ''),
+    longUploads: channel.status?.longUploadsStatus ?? null,
+  }
+}
+
+export interface ChannelBrandingPatch {
+  country?: string
+  defaultLanguage?: string
+  description?: string
+  keywords?: string[]
+}
+
+/**
+ * The channel settings to send with `patch` applied. YouTube deletes every settable value an
+ * update leaves out, so all of them are carried over from what the channel has now.
+ */
+export function mergeBranding(
+  current: object | null | undefined,
+  patch: ChannelBrandingPatch,
+): Record<string, string> {
+  const settable = [
+    'country',
+    'defaultLanguage',
+    'description',
+    'keywords',
+    'trackingAnalyticsAccountId',
+    'unsubscribedTrailer',
+  ]
+  const merged: Record<string, string> = {}
+  for (const key of settable) {
+    const value = (current as Record<string, unknown> | null | undefined)?.[key]
+    if (typeof value === 'string' && value) merged[key] = value
+  }
+  if (patch.country !== undefined) merged.country = patch.country
+  if (patch.defaultLanguage !== undefined) merged.defaultLanguage = patch.defaultLanguage
+  if (patch.description !== undefined) merged.description = patch.description
+  if (patch.keywords !== undefined) merged.keywords = formatChannelKeywords(patch.keywords)
+  return merged
+}
+
+/** Changes only the given channel settings on YouTube and returns them as they are now. */
+export async function updateChannelBranding(
+  client: OAuthClient,
+  patch: ChannelBrandingPatch,
+): Promise<ChannelSetup | null> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.channels.list({ part: ['brandingSettings'], mine: true })
+  const channel = res.data.items?.[0]
+  if (!channel?.id) return null
+  await yt.channels.update({
+    part: ['brandingSettings'],
+    requestBody: {
+      id: channel.id,
+      brandingSettings: { channel: mergeBranding(channel.brandingSettings?.channel, patch) },
+    },
+  })
+  return channelSetup(client)
 }
 
 export async function listPlaylists(client: OAuthClient): Promise<{ id: string; title: string }[]> {

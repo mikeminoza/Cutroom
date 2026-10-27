@@ -338,6 +338,8 @@ export interface AppSettings {
   shorts: AutoShorts
   /** Drafts made each week from the ideas, by the daily cron. */
   autopilot: Autopilot
+  /** Channel setup tips ticked off by hand (the ones only YouTube Studio can do). */
+  setup: { done: string[] }
 }
 
 export interface Autopilot {
@@ -372,6 +374,11 @@ export interface ChannelNiche {
   /** Library characters added to every new video, the narrator first. */
   characterIds: string[]
   /**
+   * Country code of the viewers the channel is made for (Channel setup), e.g. "US"; '' = not set.
+   * Scripts, titles, descriptions and ideas are written for them.
+   */
+  market: string
+  /**
    * A channel whose style this one follows ("Learn from a channel"): its most-viewed titles guide
    * new titles and ideas until this channel has enough views of its own.
    */
@@ -393,6 +400,7 @@ export const EMPTY_NICHE: ChannelNiche = {
   targetMinutes: 5,
   pace: 3,
   characterIds: [],
+  market: '',
 }
 
 export interface NotificationPrefs {
@@ -426,6 +434,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   niche: EMPTY_NICHE,
   shorts: { count: 2, maxSeconds: 60 },
   autopilot: { perWeek: 0 },
+  setup: { done: [] },
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.

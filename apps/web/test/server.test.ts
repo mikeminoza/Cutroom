@@ -97,6 +97,9 @@ const google = await import('@cutroom/shared/google')
 const ai = await import('@cutroom/shared/ai')
 const drafting = await import('../src/server/drafting')
 const learnStyleRoute = await import('../src/app/api/settings/learn-style/route')
+const settingsRoute = await import('../src/app/api/settings/route')
+const setupSuggestRoute = await import('../src/app/api/setup/suggest/route')
+const setupYoutubeRoute = await import('../src/app/api/setup/youtube/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 
 const stored = (key: string) => existsSync(localPath(key))
@@ -849,6 +852,7 @@ describe('channel niche', () => {
         targetMinutes: 6,
         pace: 8,
         characterIds: [narrator.id, 'deleted-character'],
+        market: '',
       },
     })
     try {
@@ -1572,5 +1576,77 @@ describe('touched-up poses', () => {
 
     // Removing it outright is still refused while the scene uses it.
     expect((await libraryItemRoute.PATCH(json({ poses: [] }, 'PATCH'), ctx(zed.id))).status).toBe(400)
+  })
+})
+
+describe('channel setup', () => {
+  const send = (body: unknown, method = 'POST', url = 'http://localhost/api') =>
+    new Request(url, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+  it('saves the target audience and the ticked-off tips, and fills them in for older settings', async () => {
+    const before = await settingsModule.getSettings()
+    try {
+      const saved = await (
+        await settingsRoute.PUT(
+          send({ ...before, niche: { ...before.niche, market: 'US' }, setup: { done: ['branding'] } }, 'PUT'),
+          undefined,
+        )
+      ).json()
+      expect(saved.niche.market).toBe('US')
+      expect(saved.setup).toEqual({ done: ['branding'] })
+
+      // A page from before Channel setup sends neither field, and settings stored then lack both.
+      const { setup: _setup, ...older } = before
+      const { market: _market, ...olderNiche } = before.niche
+      const resaved = await (
+        await settingsRoute.PUT(send({ ...older, niche: olderNiche }, 'PUT'), undefined)
+      ).json()
+      expect(resaved.setup).toEqual({ done: [] })
+      expect(resaved.niche.market).toBe('')
+      await settingsModule.saveSettings({ ...older, niche: olderNiche } as never)
+      const filled = await settingsModule.getSettings()
+      expect(filled.setup).toEqual({ done: [] })
+      expect(filled.niche.market).toBe('')
+    } finally {
+      await settingsModule.saveSettings(before)
+    }
+  })
+
+  it('drafts the channel description and tags only with a Gemini key and a niche', async () => {
+    vi.stubEnv('GEMINI_API_KEY', '')
+    try {
+      const noKey = await setupSuggestRoute.POST(send({}), undefined)
+      expect(noKey.status).toBe(400)
+      expect((await noKey.json()).error).toMatch(/GEMINI_API_KEY/)
+
+      vi.stubEnv('GEMINI_API_KEY', 'test-key')
+      const before = await settingsModule.getSettings()
+      await settingsModule.saveSettings({ ...before, niche: { ...before.niche, description: '' } })
+      try {
+        const noNiche = await setupSuggestRoute.POST(send({}), undefined)
+        expect(noNiche.status).toBe(400)
+        expect((await noNiche.json()).error).toMatch(/Channel niche/)
+      } finally {
+        await settingsModule.saveSettings(before)
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('asks for a connected channel before reading or changing it on YouTube', async () => {
+    const database = await db()
+    const channels = await database.select().from(schema.channels)
+    await database.delete(schema.channels)
+    try {
+      const read = await setupYoutubeRoute.GET(new Request('http://localhost/api/setup/youtube'), undefined)
+      expect(read.status).toBe(400)
+      expect((await read.json()).error).toMatch(/Connect YouTube/)
+      const change = await setupYoutubeRoute.PATCH(send({ country: 'US' }, 'PATCH'), undefined)
+      expect(change.status).toBe(400)
+      expect((await setupYoutubeRoute.PATCH(send({ country: 'usa' }, 'PATCH'), undefined)).status).toBe(400)
+    } finally {
+      if (channels.length) await database.insert(schema.channels).values(channels)
+    }
   })
 })
