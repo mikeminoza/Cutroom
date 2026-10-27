@@ -92,10 +92,21 @@ export function Filmstrip({
   const ticks: number[] = []
   for (let t = 0; t <= duration; t += tickEvery) ticks.push(t)
 
+  // Bring the selected frame into view by scrolling the strip sideways only. scrollIntoView would
+  // also scroll the page up to the strip, away from the scene you just clicked further down.
   useEffect(() => {
-    if (!selectedId || !scroller.current) return
-    const el = scroller.current.querySelector<HTMLElement>(`[data-frame="${selectedId}"]`)
-    el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+    const strip = scroller.current
+    const el = selectedId ? strip?.querySelector<HTMLElement>(`[data-frame="${selectedId}"]`) : null
+    if (!strip || !el) return
+    const view = strip.getBoundingClientRect()
+    const frame = el.getBoundingClientRect()
+    const left =
+      frame.left < view.left
+        ? frame.left - view.left
+        : frame.right > view.right
+          ? frame.right - view.right
+          : 0
+    if (left) strip.scrollBy({ left, behavior: 'smooth' })
   }, [selectedId])
 
   return (
