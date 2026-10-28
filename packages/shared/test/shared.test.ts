@@ -179,5 +179,32 @@ describe('prompts', () => {
     expect(prompt).toContain('Match the attached reference image')
     expect(prompt).toContain('Style: Watercolor storybook.')
     expect(prompt).toContain('9:16 vertical')
+    // A character in the picture: ask plainly for a normal body.
+    expect(prompt).toContain(
+      'Anatomy: every person or character has one head, two arms, two hands with five fingers',
+    )
+  })
+
+  it('keeps prompts free of contradictions and double full stops', () => {
+    const options = {
+      artStyle: 'Crude MS Paint doodles with bold hand-lettered text and arrows..',
+      format: 'landscape' as const,
+      characters: [],
+    }
+    const scene = { visual: '', characters: [], shot: 'close-up', imagePrompt: '' }
+    const words = buildImagePrompt({ ...scene, imagePrompt: 'A smelly garbage can with a sad face' }, options)
+    expect(words).toContain('Style: Crude MS Paint doodles with bold hand-lettered text and arrows.\n')
+    expect(words).not.toContain('..')
+    // The style asks for lettering, so "No text" would contradict it.
+    expect(words).toContain(
+      'No captions, logos or watermarks; any words in the picture are only the ones described above',
+    )
+    expect(words).not.toContain('Anatomy:')
+    const plain = buildImagePrompt(
+      { ...scene, imagePrompt: 'A stick figure asleep on a sofa' },
+      { ...options, artStyle: 'Watercolor' },
+    )
+    expect(plain).toContain('No text, captions, logos or watermarks in the image.')
+    expect(plain).toContain('Anatomy:')
   })
 })

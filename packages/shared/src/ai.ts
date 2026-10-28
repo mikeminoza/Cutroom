@@ -377,6 +377,9 @@ Rules:
 - Copy the narration text EXACTLY, word for word, in order. Every word of the script must appear in exactly one scene. Do not add, drop or rephrase words.
 - visual: what the viewer sees, in one concrete sentence (subject, setting, action, mood). A quick cut can show the same place with a new reaction, pose or close-up.
 - imagePrompt: a self-contained prompt for an image generator describing that picture, under 40 words. Do not mention the art style or aspect ratio (added later). Refer to recurring characters by name.
+  - One protagonist: whenever the picture shows the narrator, "you" or the person the script is about, it is the same protagonist every time: ${input.characters.length ? 'the recurring character it is (by name)' : '"the main character"'}, in those exact words. Never a different goblin, person or figure from scene to scene.
+  - Keep bodies simple: at most two characters in a picture, simple poses, hands not doing anything fiddly. Image generators get complicated poses wrong (extra arms or fingers).
+  - When a picture shows a place or object from an earlier scene (the bedroom, the alarm clock), describe it with the same words as before, so the pictures match.
 - characters: names of recurring characters visible in the image (from the list below), or [].
 - shot: camera framing, e.g. "wide establishing shot", "medium shot", "close-up", "over-the-shoulder", "top-down".
 - motion: one of ${MOTIONS.join(', ')}: keep the same move through a run of scenes within a section, and change it when the script moves on to a new section or idea. Every picture moves at the same steady speed, so a run of the same move cuts together smoothly.
