@@ -108,6 +108,7 @@ const effectsRoute = await import('../src/app/api/projects/[id]/ai/effects/route
 const breakoutsModule = await import('../src/server/breakouts')
 const breakoutsRoute = await import('../src/app/api/breakouts/route')
 const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/route')
+const monetizationRoute = await import('../src/app/api/channel/monetization/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2014,5 +2015,56 @@ describe('titles and descriptions in other languages', () => {
     )
     expect(put.status).toBe(200)
     expect((await settingsModule.getSettings()).defaults.translateTo).toEqual(['es', 'pt'])
+  })
+})
+
+describe('a channel set up to grow and earn', () => {
+  it('keeps the content pillars and script rules, and every new script follows the rules', async () => {
+    const settings = await settingsModule.getSettings()
+    const niche = {
+      ...settings.niche,
+      audience: 'US adults 18–34 who love weird science and watch Kurzgesagt',
+      pillars: ['Sleep myths tested: one myth checked against the science', 'Weird dreams explained'],
+      rules: ['Hook in the first 10 seconds', 'Take a side: every video has an opinion'],
+    }
+    const put = await settingsRoute.PUT(
+      new Request('http://localhost/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...settings, niche }),
+      }),
+      undefined,
+    )
+    expect(put.status).toBe(200)
+    const saved = await settingsModule.getSettings()
+    expect(saved.niche.pillars).toEqual(niche.pillars)
+    expect(saved.niche.rules).toEqual(niche.rules)
+
+    const id = await newProject()
+    vi.mocked(ai.writeScript).mockResolvedValueOnce({
+      title: 'Dreams',
+      script: 'A script about dreams, well told.',
+    })
+    await drafting.writeProjectScript(id)
+    expect(vi.mocked(ai.writeScript).mock.lastCall?.[0].rules).toEqual(niche.rules)
+    vi.mocked(ai.generateIdeas).mockResolvedValueOnce([])
+    await drafting.addIdeas({ count: 1 })
+    expect(vi.mocked(ai.generateIdeas).mock.lastCall?.[0].pillars).toEqual(niche.pillars)
+  })
+
+  it('asks for a connected channel before tracking the road to monetization', async () => {
+    const database = await db()
+    const channels = await database.select().from(schema.channels)
+    await database.delete(schema.channels)
+    try {
+      const response = await monetizationRoute.GET(
+        new Request('http://localhost/api/channel/monetization'),
+        undefined,
+      )
+      expect(response.status).toBe(400)
+      expect((await response.json()).error).toMatch(/Connect YouTube/)
+    } finally {
+      if (channels.length) await database.insert(schema.channels).values(channels)
+    }
   })
 })

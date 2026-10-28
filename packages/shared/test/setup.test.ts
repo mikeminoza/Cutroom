@@ -3,7 +3,9 @@ import { mergeBranding, toChannelDetails } from '../src/google'
 import {
   clockLabel,
   formatChannelKeywords,
+  type GrowthNumbers,
   marketNote,
+  monetizationTiers,
   parseChannelKeywords,
   presetSlots,
   scheduleLine,
@@ -147,6 +149,18 @@ describe('channel setup on YouTube', () => {
           madeForKids: { value: false, why: 'Made for adults.' },
           cadence: { perWeek: 3, why: 'Six-minute videos.' },
           trailer: { id: 'v2', why: 'Short and typical.' },
+          audience: {
+            text: ' US adults 18–34 who love weird science facts and watch Kurzgesagt. ',
+            why: 'Specific enough to write for.',
+          },
+          length: { minutes: 9.4, why: 'Mid-roll ads from 8 minutes.' },
+          pillars: ['1. Sleep myths tested: one myth checked', '- Weird dreams: what one dream means', ''],
+          rules: ['Hook in the first 10 seconds', 'Hook in the first 10 seconds', '3 AM facts stay light'],
+          monetization: {
+            rates: 'high',
+            why: 'Education in the US pays well.',
+            risks: ['Keep scripts original.'],
+          },
           ...fields,
         }),
       })
@@ -174,8 +188,23 @@ describe('channel setup on YouTube', () => {
       madeForKids: { value: false, why: 'Made for adults.' },
       cadence: { perWeek: 3, why: 'Six-minute videos.' },
       trailer: { id: 'v2', title: 'Cappy tries to sleep', why: 'Short and typical.' },
+      audience: {
+        text: 'US adults 18–34 who love weird science facts and watch Kurzgesagt.',
+        why: 'Specific enough to write for.',
+      },
+      length: { minutes: 9, why: 'Mid-roll ads from 8 minutes.' },
+      // List markers go, numbers that are part of the text stay.
+      pillars: ['Sleep myths tested: one myth checked', 'Weird dreams: what one dream means'],
+      rules: ['Hook in the first 10 seconds', '3 AM facts stay light'],
+      monetization: {
+        rates: 'high',
+        why: 'Education in the US pays well.',
+        risks: ['Keep scripts original.'],
+      },
     })
     const prompt = String(generateContent.mock.calls.at(-1)?.[0].contents)
+    expect(prompt).toContain('1,000 subscribers plus 4,000 public watch hours')
+    expect(prompt).toContain('inauthentic-content rule')
     expect(prompt).toContain('Current posting schedule: New videos every Saturday and Sunday.')
     expect(prompt).toContain('Write for viewers in the United States')
     expect(prompt).toContain('v2 | Cappy tries to sleep | 75s | 3000')
@@ -185,11 +214,26 @@ describe('channel setup on YouTube', () => {
       category: { id: '22', why: '' },
       cadence: { perWeek: 4, why: '' },
       trailer: { id: 'nope', why: '' },
+      length: { minutes: 90, why: '' },
+      monetization: { rates: 'huge', why: '', risks: [] },
     })
-    const fallback = await suggestChannelSetup({ ...input, uploads: [] })
+    const fallback = await suggestChannelSetup({
+      ...input,
+      uploads: [],
+      stats: { subscribers: 312, videos: 14 },
+      current: { pillars: ['Sleep myths'], rules: [] },
+    })
     expect(fallback.category.id).toBe('27')
     expect(fallback.cadence.perWeek).toBe(3)
     expect(fallback.trailer).toBeNull()
+    expect(fallback.length.minutes).toBe(20)
+    expect(fallback.monetization.rates).toBe('medium')
+    expect(String(generateContent.mock.calls.at(-1)?.[0].contents)).toContain(
+      'Now: 312 subscribers, 14 videos.',
+    )
+    expect(String(generateContent.mock.calls.at(-1)?.[0].contents)).toContain(
+      'Content pillars so far:\n- Sleep myths',
+    )
     expect(String(generateContent.mock.calls.at(-1)?.[0].contents)).toContain(
       'The channel has no uploads yet.',
     )
@@ -271,5 +315,64 @@ describe('the YouTube channel page', () => {
     expect(mergeBranding(current, { trailer: 'new' })).toEqual({ country: 'US', unsubscribedTrailer: 'new' })
     expect(mergeBranding(current, { trailer: '' })).toEqual({ country: 'US' })
     expect(mergeBranding(current, {})).toEqual(current)
+  })
+})
+
+describe('the road to monetization', () => {
+  const numbers = (patch: Partial<GrowthNumbers>): GrowthNumbers => ({
+    subscribers: 400,
+    longHours: 1_000,
+    shortsViews: 200_000,
+    recentUploads: 5,
+    pace: { subscribers: 100, longHours: 300, shortsViews: 50_000 },
+    combined: false,
+    ...patch,
+  })
+
+  it("sets out both levels and both ways in, with YouTube's numbers", () => {
+    const [early, ads] = monetizationTiers(numbers({}))
+    expect(early.paths.map((p) => p.goals.map((g) => [g.label, g.need]))).toEqual([
+      [
+        ['Subscribers', 500],
+        ['Uploads, last 90 days', 3],
+        ['Watch hours on long videos, last 12 months', 3_000],
+      ],
+      [
+        ['Subscribers', 500],
+        ['Uploads, last 90 days', 3],
+        ['Shorts views, last 90 days', 3_000_000],
+      ],
+    ])
+    expect(ads.paths.map((p) => p.goals.map((g) => g.need))).toEqual([
+      [1_000, 4_000],
+      [1_000, 10_000_000],
+    ])
+  })
+
+  it('works out when each goal is reached at the pace of the last 28 days', () => {
+    const [early, ads] = monetizationTiers(numbers({}))
+    // 100 subscribers left at 100 every 28 days. 300 hours every 28 days levels the 12-month total
+    // off near 3,911: 3,000 is reached as old hours drop out (2,000 at 10.7 - 2.7 a day), 4,000 never.
+    expect(early.paths[0].goals.map((g) => g.days)).toEqual([28, 0, 251])
+    expect(early.paths[0].goals[2].ceiling).toBe(3_911)
+    expect(early.paths[0].days).toBe(251)
+    expect(ads.paths[0].goals[1]).toMatchObject({ days: null, ceiling: 3_911 })
+    expect(ads.paths[0].days).toBeNull()
+    // 50,000 Shorts views every 28 days settle near 160,714 over 90 days: below where they are now.
+    expect(early.paths[1].goals[2]).toMatchObject({ days: null, ceiling: 160_714 })
+    expect(early.ready).toBe(false)
+  })
+
+  it('is ready when one way in is complete, and says when it cannot tell', () => {
+    const [early, ads] = monetizationTiers(numbers({ subscribers: 600, longHours: 3_200 }))
+    expect(early.ready).toBe(true)
+    expect(early.paths[0].ready).toBe(true)
+    expect(ads.ready).toBe(false)
+    const unknown = monetizationTiers(numbers({ longHours: null, pace: null, recentUploads: 1 }))
+    expect(unknown[0].paths[0].goals.map((g) => g.days)).toEqual([null, null, null])
+    expect(unknown[0].paths[0].days).toBeNull()
+    expect(monetizationTiers(numbers({ combined: true }))[1].paths[0].goals[1].label).toBe(
+      'Watch hours, last 12 months',
+    )
   })
 })

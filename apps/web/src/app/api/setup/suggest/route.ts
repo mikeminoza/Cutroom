@@ -8,15 +8,22 @@ import { getSettings } from '@/server/settings'
 
 export const maxDuration = 300
 
-/** The newest uploads to pick a trailer from; none when YouTube isn't connected or can't be read. */
-async function uploadsOf(refreshToken: string | null) {
-  if (!refreshToken) return []
+/**
+ * The newest uploads to pick a trailer from, and the channel's size; nothing when YouTube isn't
+ * connected or can't be read.
+ */
+async function channelNow(refreshToken: string | null) {
+  const nothing = { uploads: [], stats: null }
+  if (!refreshToken) return nothing
   try {
     const client = clientFromRefresh(refreshToken)
     const details = await channelDetails(client)
-    return details?.uploadsPlaylistId ? await recentUploads(client, details.uploadsPlaylistId, 30) : []
+    return {
+      uploads: details?.uploadsPlaylistId ? await recentUploads(client, details.uploadsPlaylistId, 30) : [],
+      stats: details ? { subscribers: details.subscribers, videos: details.videos } : null,
+    }
   } catch {
-    return []
+    return nothing
   }
 }
 
@@ -41,6 +48,7 @@ export const POST = route(async (request) => {
     market: niche.market,
     targetMinutes: niche.targetMinutes,
     schedule: scheduleLine(settings.slots),
-    uploads: await uploadsOf(channel?.refreshToken ?? null),
+    ...(await channelNow(channel?.refreshToken ?? null)),
+    current: { pillars: niche.pillars ?? [], rules: niche.rules ?? [] },
   })
 })

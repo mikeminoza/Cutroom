@@ -19,6 +19,7 @@ import { api, errorText } from '@/lib/api'
 import { keys, useSettings, useStatus } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
 import { AiSetup } from './ai-setup'
+import { RoadToMonetization } from './monetization'
 import { Button, ButtonLink, Panel, ProgressBar, Segmented, Select, StatusPill, useConfirm } from './ui'
 
 type State = 'done' | 'todo' | 'auto' | 'info'
@@ -196,6 +197,12 @@ export function SetupPage() {
   const categoryName =
     YOUTUBE_CATEGORIES.find((c) => c.id === defaults.categoryId)?.name ?? `category ${defaults.categoryId}`
   const verified = yt?.longUploads === 'allowed' || ticked.has('verify')
+  const audienceDone = settings.niche.audience.trim().length >= 40
+  const nicheLink = (
+    <ButtonLink href="/settings#niche" size="sm">
+      Channel niche
+    </ButtonLink>
+  )
   const reference = settings.niche.reference ?? null
 
   const sections: Section[] = [
@@ -234,6 +241,34 @@ export function SetupPage() {
             yt ? ` (now ${yt.country || 'not set'}, ${yt.defaultLanguage || 'no language'})` : ''
           }. It doesn't limit who can watch; YouTube uses it for things like Partner Program eligibility and the channel's details.`,
           action: !countryDone && channelLink,
+        },
+        {
+          id: 'audience',
+          title: 'A specific target audience',
+          state: audienceDone ? 'done' : 'todo',
+          body: (
+            <>
+              {settings.niche.audience.trim() && `Now: ${settings.niche.audience.trim()}. `}
+              Not "everyone": an age range, what they are curious about and what else they watch. Scripts,
+              titles and ideas are written for them. Adults and teens are worth far more to advertisers than
+              kids.
+            </>
+          ),
+          action: nicheLink,
+        },
+        {
+          id: 'pillars',
+          title: '2–4 content pillars',
+          state: (settings.niche.pillars?.length ?? 0) >= 2 ? 'done' : 'todo',
+          body: (
+            <>
+              {(settings.niche.pillars?.length ?? 0) > 0 && `Now: ${settings.niche.pillars?.join('; ')}. `}
+              The kinds of video the channel keeps making, so viewers know what they subscribe for, while the
+              uploads stay varied enough that YouTube never sees them as copies of one template. New ideas fit
+              one of them.
+            </>
+          ),
+          action: nicheLink,
         },
       ],
     },
@@ -487,6 +522,26 @@ export function SetupPage() {
       title: 'Stay monetizable',
       items: [
         {
+          id: 'two-step',
+          title: 'Turn on 2-Step Verification',
+          state: ticked.has('two-step') ? 'done' : 'todo',
+          body: 'The Partner Program needs it on the Google account that owns the channel, and it keeps the channel from being taken over.',
+          action: (
+            <>
+              <ButtonLink
+                href="https://myaccount.google.com/signinoptions/twosv"
+                size="sm"
+                variant="ghost"
+                icon={<ExternalLink className="size-3.5" />}
+                {...external}
+              >
+                Google account
+              </ButtonLink>
+              {tick('two-step')}
+            </>
+          ),
+        },
+        {
           id: 'original',
           title: 'Make every video clearly your own',
           state: 'info',
@@ -551,6 +606,7 @@ export function SetupPage() {
 
       <div className="flex flex-col gap-6">
         <AiSetup settings={settings} channel={channel} yt={yt} geminiReady={geminiReady} confirm={confirm} />
+        <RoadToMonetization channel={channel} />
         {sections.map((section) => (
           <Panel key={section.title} title={section.title} description={section.description}>
             <ul className="divide-y divide-line">

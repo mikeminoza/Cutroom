@@ -807,6 +807,78 @@ export function retentionFromRows(
   return retention ? { retention, relative: relative >= 0 ? points(relative) : null } : null
 }
 
+/** A date `days` before today, as YouTube Analytics wants it. */
+const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
+
+/**
+ * Watch time and views split into long videos and Shorts over the last `days` days (needs
+ * ANALYTICS_SCOPE). Split by YouTube's creatorContentType; `combined` when it can't split them.
+ */
+async function watchByType(
+  client: OAuthClient,
+  days: number,
+): Promise<{ longMinutes: number; shortsViews: number; combined: boolean }> {
+  const range = { startDate: daysAgo(days - 1), endDate: daysAgo(0) }
+  try {
+    const { columns, rows } = await analyticsReport(client, {
+      ...range,
+      dimensions: 'creatorContentType',
+      metrics: 'estimatedMinutesWatched,views',
+    })
+    const type = columns.indexOf('creatorContentType')
+    const minutes = columns.indexOf('estimatedMinutesWatched')
+    const views = columns.indexOf('views')
+    let longMinutes = 0
+    let shortsViews = 0
+    for (const row of rows) {
+      const kind = String(row[type] ?? '').toLowerCase()
+      if (kind.includes('short')) shortsViews += Number(row[views] ?? 0)
+      else if (!kind.includes('story')) longMinutes += Number(row[minutes] ?? 0)
+    }
+    return { longMinutes, shortsViews, combined: false }
+  } catch (error) {
+    if (error instanceof AnalyticsUnavailable) throw error
+    // Without the split: all watch time, and no Shorts count.
+    const { columns, rows } = await analyticsReport(client, { ...range, metrics: 'estimatedMinutesWatched' })
+    const minutes = columns.indexOf('estimatedMinutesWatched')
+    return { longMinutes: Number(rows[0]?.[minutes] ?? 0), shortsViews: 0, combined: true }
+  }
+}
+
+/**
+ * The channel's numbers toward the Partner Program from YouTube Analytics: watch hours on long
+ * videos over a year, Shorts views over 90 days, and what it gained over the last 28 days.
+ * YouTube's own count (in Studio → Earn) leaves out private and deleted videos, so it can be lower.
+ */
+export async function channelGrowth(client: OAuthClient): Promise<{
+  longHours: number
+  shortsViews: number
+  combined: boolean
+  pace: { subscribers: number; longHours: number; shortsViews: number }
+}> {
+  const [year, quarter, month, subscribers] = await Promise.all([
+    watchByType(client, 365),
+    watchByType(client, 90),
+    watchByType(client, 28),
+    analyticsReport(client, {
+      startDate: daysAgo(27),
+      endDate: daysAgo(0),
+      metrics: 'subscribersGained,subscribersLost',
+    }),
+  ])
+  const value = (name: string) => Number(subscribers.rows[0]?.[subscribers.columns.indexOf(name)] ?? 0)
+  return {
+    longHours: Math.round(year.longMinutes / 60),
+    shortsViews: quarter.shortsViews,
+    combined: year.combined,
+    pace: {
+      subscribers: value('subscribersGained') - value('subscribersLost'),
+      longHours: Math.round(month.longMinutes / 60),
+      shortsViews: month.shortsViews,
+    },
+  }
+}
+
 /** The YouTube searches that led viewers to one video, most views first (up to 25). */
 export async function videoSearchTerms(
   client: OAuthClient,

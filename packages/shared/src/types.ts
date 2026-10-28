@@ -499,6 +499,13 @@ export interface ChannelNiche {
    * new titles and ideas until this channel has enough views of its own.
    */
   reference?: NicheReference | null
+  /**
+   * The 2–4 kinds of video the channel keeps making, e.g. "Sleep myths tested: one popular myth
+   * checked against the science". New ideas fit one of them, so viewers know what to expect.
+   */
+  pillars?: string[]
+  /** Rules every script follows, e.g. "Hook in the first 10 seconds" (Channel setup → AI). */
+  rules?: string[]
 }
 
 export interface NicheReference {

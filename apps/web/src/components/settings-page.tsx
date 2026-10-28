@@ -1294,6 +1294,34 @@ function ChannelNichePanel({
             placeholder="Funny, warm, silly"
           />
         </Field>
+        <Field
+          label="Content pillars"
+          htmlFor={`${id}-pillars`}
+          className="sm:col-span-2"
+          aside="One per line"
+          hint="The kinds of video the channel keeps making. New ideas fit one of them. Channel setup can draft these with AI."
+        >
+          <LinesInput
+            id={`${id}-pillars`}
+            values={niche.pillars ?? []}
+            onValues={(pillars) => onChange({ pillars: pillars.slice(0, 6) })}
+            placeholder="Sleep myths tested: one popular sleep myth checked against the science"
+          />
+        </Field>
+        <Field
+          label="Rules for every script"
+          htmlFor={`${id}-rules`}
+          className="sm:col-span-2"
+          aside="One per line"
+          hint="Gemini follows these whenever it writes a script."
+        >
+          <LinesInput
+            id={`${id}-rules`}
+            values={niche.rules ?? []}
+            onValues={(rules) => onChange({ rules: rules.slice(0, 10) })}
+            placeholder="Hook in the first 10 seconds: the question the video answers"
+          />
+        </Field>
         <Field label="Art style" htmlFor={`${id}-style`} className="sm:col-span-2">
           <Input
             id={`${id}-style`}
@@ -1350,5 +1378,48 @@ function ChannelNichePanel({
         </Field>
       </div>
     </Panel>
+  )
+}
+
+/** A textarea's lines as a list: trimmed, blank lines left out. */
+const toLines = (text: string) =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+/**
+ * A list edited as lines of text. The text is kept as typed (blank lines too) until the list
+ * changes from elsewhere, such as Channel setup applying an AI draft.
+ */
+function LinesInput({
+  id,
+  values,
+  onValues,
+  placeholder,
+}: {
+  id: string
+  values: string[]
+  onValues: (values: string[]) => void
+  placeholder: string
+}) {
+  const [text, setText] = useState(values.join('\n'))
+  const joined = values.join('\n')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only an outside change resets the text
+  useEffect(() => {
+    if (toLines(text).join('\n') !== joined) setText(joined)
+  }, [joined])
+  return (
+    <Textarea
+      id={id}
+      value={text}
+      rows={3}
+      onChange={(e) => {
+        setText(e.target.value)
+        onValues(toLines(e.target.value))
+      }}
+      placeholder={placeholder}
+      className="min-h-20 [field-sizing:content]"
+    />
   )
 }

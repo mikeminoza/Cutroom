@@ -181,3 +181,142 @@ export function formatChannelKeywords(keywords: string[]): string {
 export function parseChannelKeywords(text: string): string[] {
   return [...text.matchAll(/"([^"]+)"|(\S+)/g)].map((m) => (m[1] ?? m[2]).trim()).filter(Boolean)
 }
+
+// ---------------------------------------------------------------------------
+// The road to monetization: the YouTube Partner Program's thresholds and how close a channel is.
+
+/** What a channel has so far, toward the Partner Program. */
+export interface GrowthNumbers {
+  subscribers: number
+  /** Watch hours on long videos (not Shorts) over the last 365 days; null = unknown. */
+  longHours: number | null
+  /** Shorts views over the last 90 days; null = unknown. */
+  shortsViews: number | null
+  /** Uploads over the last 90 days. */
+  recentUploads: number
+  /** Gained over the last 28 days, for the pace; null = unknown. */
+  pace: { subscribers: number; longHours: number; shortsViews: number } | null
+  /** YouTube couldn't split long videos from Shorts: the hours include Shorts. */
+  combined: boolean
+}
+
+export interface Goal {
+  label: string
+  have: number | null
+  need: number
+  /** Days to reach it at the pace of the last 28 days: 0 = reached, null = not at this pace or can't tell. */
+  days: number | null
+  /**
+   * For a total over a rolling window (watch hours over 12 months, Shorts views over 90 days):
+   * where it levels off if the pace of the last 28 days holds, as old views drop out. null otherwise.
+   */
+  ceiling: number | null
+}
+
+export interface MonetizationPath {
+  label: string
+  goals: Goal[]
+  ready: boolean
+  /** Days until every goal is reached at the current pace, null when one can't tell. */
+  days: number | null
+}
+
+export interface MonetizationTier {
+  id: 'early' | 'ads'
+  name: string
+  unlocks: string
+  paths: MonetizationPath[]
+  ready: boolean
+}
+
+/** Days to go from `have` to `need` gaining `per28` every 28 days (0 when there, null when stuck). */
+function daysTo(have: number | null, need: number, per28: number | null | undefined): number | null {
+  if (have === null) return null
+  if (have >= need) return 0
+  if (!per28 || per28 <= 0) return null
+  return Math.ceil(((need - have) / per28) * 28)
+}
+
+/**
+ * The same for a total over the last `window` days. If the pace holds, each day adds the pace and
+ * drops one of the older days (taken as average days of the window so far), so the total moves
+ * toward pace × window and never passes it: below `need`, it isn't reached at this pace (null).
+ */
+function windowDays(have: number | null, need: number, per28: number | null | undefined, window: number) {
+  const ceiling =
+    have !== null && per28 !== null && per28 !== undefined ? Math.round((per28 / 28) * window) : null
+  if (have === null) return { days: null, ceiling }
+  if (have >= need) return { days: 0, ceiling }
+  if (ceiling === null || ceiling < need) return { days: null, ceiling }
+  const daily = (per28 as number) / 28 - have / window
+  return { days: daily > 0 ? Math.ceil((need - have) / daily) : null, ceiling }
+}
+
+/**
+ * The Partner Program's two levels and their two ways in each (long videos or Shorts), as YouTube
+ * sets them: 1,000 subscribers with 4,000 public watch hours in a year or 10 million Shorts views in
+ * 90 days for ad revenue; 500 subscribers, 3 uploads in 90 days and 3,000 hours or 3 million Shorts
+ * views for memberships, Super Thanks and Shopping.
+ */
+export function monetizationTiers(n: GrowthNumbers): MonetizationTier[] {
+  const subscribers = (need: number): Goal => ({
+    label: 'Subscribers',
+    have: n.subscribers,
+    need,
+    days: daysTo(n.subscribers, need, n.pace?.subscribers),
+    ceiling: null,
+  })
+  const hours = (need: number): Goal => ({
+    label: n.combined ? 'Watch hours, last 12 months' : 'Watch hours on long videos, last 12 months',
+    have: n.longHours,
+    need,
+    ...windowDays(n.longHours, need, n.pace?.longHours, 365),
+  })
+  const shorts = (need: number): Goal => ({
+    label: 'Shorts views, last 90 days',
+    have: n.shortsViews,
+    need,
+    ...windowDays(n.shortsViews, need, n.pace?.shortsViews, 90),
+  })
+  const uploads: Goal = {
+    label: 'Uploads, last 90 days',
+    have: n.recentUploads,
+    need: 3,
+    days: n.recentUploads >= 3 ? 0 : null,
+    ceiling: null,
+  }
+  const path = (label: string, goals: Goal[]): MonetizationPath => {
+    const ready = goals.every((g) => g.have !== null && g.have >= g.need)
+    const days = goals.some((g) => g.days === null)
+      ? null
+      : Math.max(0, ...goals.map((g) => g.days as number))
+    return { label, goals, ready, days }
+  }
+  const tier = (id: MonetizationTier['id'], name: string, unlocks: string, paths: MonetizationPath[]) => ({
+    id,
+    name,
+    unlocks,
+    paths,
+    ready: paths.some((p) => p.ready),
+  })
+  return [
+    tier(
+      'early',
+      'Early access',
+      'Channel memberships, Super Thanks, Super Chat and Shopping. No ad money yet.',
+      [
+        path('With long videos', [subscribers(500), uploads, hours(3_000)]),
+        path('With Shorts', [subscribers(500), uploads, shorts(3_000_000)]),
+      ],
+    ),
+    tier(
+      'ads',
+      'Ad revenue',
+      'A share of the ads on your videos and of YouTube Premium, plus everything above.',
+      [
+        path('With long videos', [subscribers(1_000), hours(4_000)]),
+        path('With Shorts', [subscribers(1_000), shorts(10_000_000)]),
+      ],
+    ),
+  ]
+}

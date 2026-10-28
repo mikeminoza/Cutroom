@@ -48,6 +48,7 @@ export async function writeProjectScript(id: string, notes = ''): Promise<void> 
       .map((c) => ({ name: c.name.trim(), description: c.description })),
     market: settings.niche.market,
     lessons: await retentionLessons(project.channelId, project.channelYoutubeId, project.format),
+    rules: settings.niche.rules ?? [],
   })
   await updateProject(id, { script: result.script, title: project.title.trim() || result.title })
 }
@@ -205,6 +206,8 @@ export async function addIdeas(input: {
     searchTerms: (await searchTermsFor(template?.channelId ?? null, template?.channelYoutubeId ?? null)).map(
       (t) => t.term,
     ),
+    // A series has its own focus; the channel's pillars guide everything else.
+    pillars: series ? [] : (settings.niche.pillars ?? []),
     market: settings.niche.market,
   })
   if (generated.length) {

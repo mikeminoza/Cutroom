@@ -244,6 +244,8 @@ export interface ScriptBrief {
   market?: string
   /** Where viewers stopped watching the channel's recent videos (retentionLesson), one per video. */
   lessons?: string[]
+  /** Rules every script on the channel follows (Channel setup). */
+  rules?: string[]
 }
 
 export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
@@ -261,9 +263,11 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
       `Recurring characters (use these exact names):\n${brief.characters
         .map((c) => `- ${c.name}${c.description.trim() ? `: ${c.description.trim()}` : ''}`)
         .join('\n')}`,
+    brief.rules?.length &&
+      `Rules for every script on this channel:\n${brief.rules.map((r) => `- ${r}`).join('\n')}`,
     brief.lessons?.length &&
       `Where viewers stopped watching this channel's recent videos. Learn from it: get to the point faster in the opening, and keep moments like the ones where they left shorter, livelier or cut:\n${brief.lessons.map((l) => `- ${l}`).join('\n')}`,
-    'Open with a hook in the first sentence. Use short, spoken sentences. Plain text only: no headings, no stage directions, no emoji, no scene labels, no markdown. Separate paragraphs with a blank line.',
+    'Open with a hook in the first sentence. Give the video its own angle: the narrator explains, reacts and takes a view, never just reads facts out, so no two videos on the channel sound like the same template. Keep it advertiser-friendly: no swearing, slurs or graphic detail. Use short, spoken sentences. Plain text only: no headings, no stage directions, no emoji, no scene labels, no markdown. Separate paragraphs with a blank line.',
   ]
     .filter(Boolean)
     .join('\n')
@@ -998,6 +1002,8 @@ export interface IdeaRequest {
   market?: string
   /** YouTube searches that already bring viewers to the channel, most views first. */
   searchTerms?: string[]
+  /** The kinds of video the channel keeps making (Channel setup): each idea fits one. */
+  pillars?: string[]
 }
 
 export async function generateIdeas(input: IdeaRequest): Promise<{ title: string; angle: string }[]> {
@@ -1014,6 +1020,8 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     `Language: ${input.language || 'English'}`,
     marketNote(input.market),
     input.direction && `Direction from the creator: ${input.direction}`,
+    input.pillars?.length &&
+      `The channel's content pillars. Each idea fits one of them, and the ideas spread across them:\n${input.pillars.map((p) => `- ${p}`).join('\n')}`,
     topTitlesNote(input.topTitles).trim(),
     searchTermsNote(
       input.searchTerms,
@@ -1128,10 +1136,30 @@ export interface ChannelSetupDraft {
   cadence: { perWeek: Cadence; why: string }
   /** The upload to show people who haven't subscribed, picked from `uploads`; null when none fits. */
   trailer: { id: string; title: string; why: string } | null
+  /** Who the videos are for, specifically enough to write for. */
+  audience: { text: string; why: string }
+  /** The usual length of a long video, in whole minutes. */
+  length: { minutes: number; why: string }
+  /** The 2–4 kinds of video the channel keeps making ("Name: what each one is"). */
+  pillars: string[]
+  /** Rules every script follows, for growth and for staying monetizable. */
+  rules: string[]
+  /** How well the channel can earn, and what could stop it. */
+  monetization: { rates: 'high' | 'medium' | 'low'; why: string; risks: string[] }
 }
 
-/** Drafts the whole channel setup from the niche: YouTube's About text and keywords, the tags,
- * footer, category and made-for-kids default for every video, a posting rhythm, and a trailer. */
+/** What the setup knows about the channel's growth so far (null when YouTube isn't connected). */
+export interface SetupStats {
+  subscribers: number | null
+  videos: number | null
+}
+
+/**
+ * Drafts the whole channel setup from the niche, aimed at growing it and getting it into the
+ * Partner Program: who it's for, its formats and length, the rules every script follows, YouTube's
+ * About text and keywords, the tags, footer, category and made-for-kids default for every video, a
+ * posting rhythm and a trailer, with an honest word on how well it can earn.
+ */
 export async function suggestChannelSetup(input: {
   channel: string
   niche: string
@@ -1145,25 +1173,43 @@ export async function suggestChannelSetup(input: {
   schedule: string
   /** The channel's newest uploads, to pick a trailer from. */
   uploads: { id: string; title: string; seconds: number; views: number }[]
+  stats?: SetupStats | null
+  /** What the channel already has, so the draft improves on it rather than starting over. */
+  current?: { pillars: string[]; rules: string[] }
 }): Promise<ChannelSetupDraft> {
   const uploads = input.uploads.slice(0, 30)
+  const stats = input.stats
   const prompt = [
-    'Plan the YouTube channel setup for this channel.',
+    'Plan the YouTube channel setup for this channel. The goal is a channel that keeps growing and gets into the YouTube Partner Program: for ad revenue it needs 1,000 subscribers plus 4,000 public watch hours in 12 months (or 10 million Shorts views in 90 days), and it must follow the monetization policies, above all the inauthentic-content rule, which demonetizes channels whose videos look mass-produced, templated or repetitive. AI voices and AI pictures are allowed; sameness is not.',
     `Channel name: ${input.channel || '(not set)'}`,
     `What the channel is about: ${input.niche || '(not described)'}`,
     input.narration && `Narration: ${input.narration}`,
-    input.audience && `Audience: ${input.audience}`,
+    input.audience && `Audience so far: ${input.audience}`,
     input.tone && `Tone: ${input.tone}`,
     marketNote(input.market),
-    `Usual video length: about ${input.targetMinutes} minutes`,
+    `Usual video length so far: about ${input.targetMinutes} minutes`,
     input.schedule && `Current posting schedule: ${input.schedule}`,
+    stats && (stats.subscribers !== null || stats.videos !== null)
+      ? `Now: ${stats.subscribers ?? 'unknown'} subscribers, ${stats.videos ?? 'unknown'} videos.`
+      : '',
+    input.current?.pillars.length
+      ? `Content pillars so far:\n${input.current.pillars.map((p) => `- ${p}`).join('\n')}`
+      : '',
+    input.current?.rules.length
+      ? `Script rules so far:\n${input.current.rules.map((r) => `- ${r}`).join('\n')}`
+      : '',
     uploads.length
       ? `Newest uploads (id | title | length | views):\n${uploads
           .map((u) => `${u.id} | ${u.title.slice(0, 100)} | ${Math.round(u.seconds)}s | ${u.views}`)
           .join('\n')}`
       : 'The channel has no uploads yet.',
     `Return:
-- description: the channel's About text, 2–3 short paragraphs, under 900 characters. The first sentence says plainly what viewers get, in the words people search for. Don't name posting days (they can change). No hashtags, no links, no emoji.
+- audience: who the videos are for, in 1–2 sentences under 300 characters, specific enough to write for: age range, where they live, what they are curious about, what else they watch on YouTube, and why they would click. Never "everyone". Adults or teens unless children truly are the main audience: advertisers pay far less for kids' videos and made-for-kids videos lose comments and personalised ads. With why, one short sentence.
+- length: the usual length of a long video in whole minutes, 5 to 20. Prefer 8 or more when the format can hold attention that long: from 8 minutes YouTube can place ads in the middle, and longer videos earn the watch hours the Partner Program needs faster. Never pad: a tight 6 minutes beats a slow 10. With why, one short sentence.
+- pillars: 3 content pillars, the repeatable kinds of video this channel makes, each as "Name: what one video of it is, in one sentence". Different enough from each other that the uploads never look like copies of one template, close enough that one audience wants all three. Improve on the ones it has, if any.
+- rules: 5 short rules every script follows, specific to this channel, for growth and for staying monetizable. Cover: an original angle or opinion in every video rather than facts read out (the inauthentic-content rule), the hook in the first 10 seconds, keeping it advertiser-friendly (no swearing, slurs or graphic detail, gentle on sensitive topics), and ending on a reason to watch the next video. Each under 160 characters.
+- monetization: rates "high", "medium" or "low": how much advertisers usually pay for this niche and audience (finance, tech, business and education pay most; kids, gaming and pure comedy less; US, UK, Canadian and Australian viewers more than most); why, one sentence; and risks: 1–3 specific things that could stop this channel from being monetized or earning well, each one sentence with what to do about it.
+- description: the channel's About text, 2–3 short paragraphs, under 900 characters. The first sentence says plainly what viewers get, in the words people search for. Say who it is for and why to subscribe. Don't name posting days (they can change). No hashtags, no links, no emoji.
 - keywords: 8–12 channel keywords, short search phrases people type, most important first.
 - tags: 5–8 broad tags that fit every video on the channel (its subject, format and main character), no "#".
 - subscribeLine: one short sentence for the end of every video description, giving a reason to subscribe in the channel's voice. No emoji.
@@ -1199,8 +1245,30 @@ export async function suggestChannelSetup(input: {
           required: ['perWeek', 'why'],
         },
         trailer: { type: 'object', properties: { id: str, why: str }, required: ['id', 'why'] },
+        audience: { type: 'object', properties: { text: str, why: str }, required: ['text', 'why'] },
+        length: {
+          type: 'object',
+          properties: { minutes: { type: 'integer' }, why: str },
+          required: ['minutes', 'why'],
+        },
+        pillars: { type: 'array', items: str },
+        rules: { type: 'array', items: str },
+        monetization: {
+          type: 'object',
+          properties: {
+            rates: { type: 'string', enum: ['high', 'medium', 'low'] },
+            why: str,
+            risks: { type: 'array', items: str },
+          },
+          required: ['rates', 'why', 'risks'],
+        },
       },
       required: [
+        'audience',
+        'length',
+        'pillars',
+        'rules',
+        'monetization',
         'description',
         'keywords',
         'tags',
@@ -1223,8 +1291,17 @@ export async function suggestChannelSetup(input: {
         .object({ id: z.string(), why: z.string().default('') })
         .nullable()
         .default(null),
+      audience: z.object({ text: z.string(), why: z.string().default('') }),
+      length: z.object({ minutes: z.number(), why: z.string().default('') }),
+      pillars: z.array(z.string()).default([]),
+      rules: z.array(z.string()).default([]),
+      monetization: z.object({
+        rates: z.string(),
+        why: z.string().default(''),
+        risks: z.array(z.string()).default([]),
+      }),
     }),
-    'You are a YouTube strategist who sets up channels so the right viewers find them.',
+    'You are a YouTube growth strategist who sets up channels so the right viewers find them, keep watching and the channel gets monetized. You know the Partner Program and its policies well, and you are honest about what earns.',
   )
   const clean = (values: string[], max: number) =>
     dedupe(values.map((v) => v.replace(/^#/, '').replace(/"/g, '').trim()).filter(Boolean)).slice(0, max)
@@ -1248,7 +1325,34 @@ export async function suggestChannelSetup(input: {
       trailerUpload && result.trailer
         ? { id: trailerUpload.id, title: trailerUpload.title, why: why(result.trailer.why) }
         : null,
+    audience: { text: result.audience.text.trim().slice(0, 500), why: why(result.audience.why) },
+    length: {
+      minutes: Math.min(20, Math.max(3, Math.round(result.length.minutes) || 8)),
+      why: why(result.length.why),
+    },
+    pillars: lines(result.pillars, 4, 200),
+    rules: lines(result.rules, 6, 300),
+    monetization: {
+      rates: (['high', 'medium', 'low'] as const).find((r) => r === result.monetization.rates) ?? 'medium',
+      why: why(result.monetization.why),
+      risks: lines(result.monetization.risks, 3, 300),
+    },
   }
+}
+
+/** Trimmed, distinct, non-empty lines: at most `max` of them, each at most `length` characters. */
+function lines(values: string[], max: number, length: number): string[] {
+  // List markers only ("- ", "• ", "2. "), so "3 AM facts" keeps its number.
+  return dedupe(
+    values
+      .map((v) =>
+        v
+          .replace(/^\s*(?:[-•*]|\d+[.)])\s+/, '')
+          .trim()
+          .slice(0, length),
+      )
+      .filter(Boolean),
+  ).slice(0, max)
 }
 
 /** A profile picture or banner for the channel, drawn in its art style around its main character. */

@@ -166,6 +166,8 @@ export const settingsSchema = z.object({
       })
       .nullable()
       .optional(),
+    pillars: z.array(z.string().trim().min(1).max(200)).max(6).default([]),
+    rules: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
   }),
   shorts: z.object({
     count: z.number().int().min(0).max(3),

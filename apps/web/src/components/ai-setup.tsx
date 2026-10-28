@@ -12,7 +12,7 @@ import {
 } from '@cutroom/shared/setup'
 import { type AppSettings, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { Sparkles } from 'lucide-react'
+import { CircleDollarSign, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
@@ -23,6 +23,10 @@ import { Button, ButtonLink, Input, Panel, Textarea, type useConfirm } from './u
 
 type Confirm = ReturnType<typeof useConfirm>['confirm']
 type Key =
+  | 'audience'
+  | 'length'
+  | 'pillars'
+  | 'rules'
   | 'description'
   | 'keywords'
   | 'country'
@@ -47,6 +51,13 @@ const SLOT_TIME = '15:00'
 const categoryName = (id: string) => YOUTUBE_CATEGORIES.find((c) => c.id === id)?.name ?? `category ${id}`
 const list = (items: string[]) =>
   items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : (items[0] ?? '')
+/** One item per line, as typed in a textarea. */
+const lines = (text: string) =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+const RATES = { high: 'High', medium: 'Medium', low: 'Low' } as const
 
 /**
  * "Set up with AI": one Gemini draft of the whole setup, shown as proposals to tick and edit.
@@ -72,11 +83,14 @@ export function AiSetup({
   const [description, setDescription] = useState('')
   const [keywords, setKeywords] = useState('')
   const [footer, setFooter] = useState<string | null>(null)
+  const [audience, setAudience] = useState('')
+  const [pillars, setPillars] = useState('')
+  const [rules, setRules] = useState('')
 
   const market = marketOf(settings.niche.market)
   const zone = market ?? MARKETS[0]
   const nicheReady = Boolean(settings.niche.description.trim())
-  const { defaults } = settings
+  const { defaults, niche } = settings
 
   const newSlots = draft ? presetSlots(draft.cadence.perWeek, SLOT_TIME) : []
   const footerSlots = picked.has('schedule') ? newSlots : settings.slots
@@ -91,11 +105,17 @@ export function AiSetup({
       setDescription(next.description)
       setKeywords(next.keywords.join(', '))
       setFooter(null)
+      setAudience(next.audience.text)
+      setPillars(next.pillars.join('\n'))
+      setRules(next.rules.join('\n'))
       // What is already set up stays unticked: tick it to replace it.
       const alreadySet: Partial<Record<Key, boolean>> = {
         description: (yt?.description.trim().length ?? 0) >= 100,
         keywords: (yt?.keywords.length ?? 0) >= 3,
         footer: Boolean(defaults.descriptionFooter.trim()),
+        audience: niche.audience.trim().length >= 40,
+        pillars: (niche.pillars?.length ?? 0) >= 2,
+        rules: (niche.rules?.length ?? 0) >= 3,
       }
       setPicked(
         new Set(
@@ -115,6 +135,42 @@ export function AiSetup({
   function proposalsFor(d: ChannelSetupDraft): Proposal[] {
     const out: Proposal[] = []
     const slots = presetSlots(d.cadence.perWeek, SLOT_TIME)
+    if (d.audience.text && d.audience.text !== niche.audience) {
+      out.push({
+        key: 'audience',
+        where: 'cutroom',
+        title: 'Target audience',
+        now: niche.audience.trim() || 'not set',
+        why: `${d.audience.why} Scripts, titles and ideas are written for them.`,
+      })
+    }
+    if (d.length.minutes !== niche.targetMinutes) {
+      out.push({
+        key: 'length',
+        where: 'cutroom',
+        title: `Videos of about ${d.length.minutes} minutes`,
+        now: `${niche.targetMinutes} minutes`,
+        why: d.length.why,
+      })
+    }
+    if (d.pillars.length) {
+      out.push({
+        key: 'pillars',
+        where: 'cutroom',
+        title: `${d.pillars.length} content pillars`,
+        now: niche.pillars?.length ? `${niche.pillars.length} pillars` : 'none',
+        why: 'The kinds of video the channel keeps making: viewers know what to expect, and the uploads never look like copies of one template. New ideas fit one of them.',
+      })
+    }
+    if (d.rules.length) {
+      out.push({
+        key: 'rules',
+        where: 'cutroom',
+        title: 'Rules for every script',
+        now: niche.rules?.length ? `${niche.rules.length} rules` : 'none',
+        why: 'Gemini follows them whenever it writes a script, to hold viewers and keep the channel monetizable.',
+      })
+    }
     if (yt) {
       out.push({
         key: 'description',
@@ -233,6 +289,13 @@ export function AiSetup({
         const next: AppSettings = {
           ...settings,
           ...(has('schedule') ? { timezone: zone.timezone, slots: newSlots } : {}),
+          niche: {
+            ...niche,
+            ...(has('audience') && audience.trim() ? { audience: audience.trim().slice(0, 500) } : {}),
+            ...(has('length') ? { targetMinutes: draft.length.minutes } : {}),
+            ...(has('pillars') ? { pillars: lines(pillars).slice(0, 6) } : {}),
+            ...(has('rules') ? { rules: lines(rules).slice(0, 10) } : {}),
+          },
           defaults: {
             ...defaults,
             ...(has('tags') ? { tags: [...new Set([...defaults.tags, ...draft.tags])].slice(0, 30) } : {}),
@@ -282,6 +345,31 @@ export function AiSetup({
   }
 
   const editors: Partial<Record<Key, React.ReactNode>> = {
+    audience: (
+      <Textarea
+        aria-label="Target audience"
+        rows={3}
+        maxLength={500}
+        value={audience}
+        onChange={(e) => setAudience(e.target.value)}
+      />
+    ),
+    pillars: (
+      <Textarea
+        aria-label="Content pillars, one per line"
+        rows={4}
+        value={pillars}
+        onChange={(e) => setPillars(e.target.value)}
+      />
+    ),
+    rules: (
+      <Textarea
+        aria-label="Rules for every script, one per line"
+        rows={5}
+        value={rules}
+        onChange={(e) => setRules(e.target.value)}
+      />
+    ),
     description: (
       <Textarea
         aria-label="Channel description"
@@ -317,7 +405,7 @@ export function AiSetup({
   return (
     <Panel
       title="Set up with AI"
-      description="Gemini reads your channel niche and drafts the whole setup: the channel's description, keywords and trailer on YouTube, and the schedule, footer, tags and upload settings in Cutroom. Pick what to keep; nothing changes until you apply it."
+      description="Gemini reads your channel niche and drafts a setup built to grow and get monetized: who the videos are for, their length and formats, the rules every script follows, the channel's description, keywords and trailer on YouTube, and the schedule, footer, tags and upload settings in Cutroom. Pick what to keep; nothing changes until you apply it."
       actions={
         <Button
           variant={draft ? 'plain' : 'go'}
@@ -352,6 +440,24 @@ export function AiSetup({
         </p>
       ) : (
         <>
+          <div className="flex gap-3 border-b border-line bg-sunk/60 px-5 py-3.5">
+            <CircleDollarSign className="mt-0.5 size-4 shrink-0 text-ink-2" aria-hidden />
+            <div className="min-w-0 text-[13px] leading-snug">
+              <p>
+                <span className="font-semibold">
+                  Earning outlook: {RATES[draft.monetization.rates]} ad rates.
+                </span>{' '}
+                <span className="text-ink-2">{draft.monetization.why}</span>
+              </p>
+              {draft.monetization.risks.length > 0 && (
+                <ul className="mt-1.5 list-disc pl-4 text-ink-2">
+                  {draft.monetization.risks.map((risk) => (
+                    <li key={risk}>{risk}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
           <ul className="divide-y divide-line">
             {proposals.map((p) => {
               const on = picked.has(p.key)

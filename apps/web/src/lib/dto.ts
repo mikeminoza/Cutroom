@@ -1,5 +1,6 @@
 // Shapes the browser receives from the API.
 import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/protocol'
+import type { GrowthNumbers } from '@cutroom/shared/setup'
 import type {
   CaptionStyle,
   CharacterInput,
@@ -208,6 +209,17 @@ export interface BreakoutsDTO {
   /** What the search looks for. */
   queries: string[]
   scannedAt: string | null
+}
+
+/** How close a channel is to the Partner Program (Channel setup). */
+export interface MonetizationDTO {
+  numbers: GrowthNumbers
+  /** Watch time and Shorts views could be read (the analytics permission, and the API turned on). */
+  analytics: boolean
+  /** Why they couldn't, when they couldn't. */
+  note: string | null
+  /** YouTube's id of the channel, for links into Studio. */
+  youtubeId: string | null
 }
 
 export interface PerformanceVideo {

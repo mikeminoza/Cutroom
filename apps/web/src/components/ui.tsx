@@ -312,7 +312,8 @@ export function ProgressBar({
   className,
 }: {
   value: number | null
-  tone?: 'run' | 'you'
+  /** run: blue (work in progress), you: Kodak yellow (your move), ok: green (reached). */
+  tone?: 'run' | 'you' | 'ok'
   className?: string
 }) {
   const indeterminate = value === null
@@ -327,7 +328,7 @@ export function ProgressBar({
       <div
         className={cn(
           'absolute inset-y-0 left-0 rounded-full transition-[width] duration-500',
-          tone === 'you' ? 'bg-kodak' : 'bg-run',
+          tone === 'you' ? 'bg-kodak' : tone === 'ok' ? 'bg-ok' : 'bg-run',
           indeterminate && 'w-1/3 animate-pulse-soft',
         )}
         style={indeterminate ? undefined : { width: `${Math.max(2, Math.min(100, value * 100))}%` }}
