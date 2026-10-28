@@ -62,15 +62,15 @@ describe('transitions in the render plan', () => {
     )
     expect(segments).toHaveLength(3)
     expect(segments.map((s) => s.frames)).toEqual([90, 180, 90])
-    expect(segments[0].plan).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, tail: 15 })
-    expect(segments[1].plan).toEqual({ fadeIn: 0, fadeOut: 7, crossfade: 15, tail: 0 })
-    expect(segments[2].plan).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, tail: 0 })
+    expect(segments[0].plan).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, whip: 0, tail: 15 })
+    expect(segments[1].plan).toEqual({ fadeIn: 0, fadeOut: 7, crossfade: 15, whip: 0, tail: 0 })
+    expect(segments[2].plan).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, whip: 0, tail: 0 })
   })
 
   it('continues the outgoing move from where its clip ended', () => {
     const offset = motionFilter('zoom-in', 105, 1280, 720, 640, 360, 90)
-    expect(offset).toContain('((in+90)/104)')
-    expect(motionFilter('zoom-in', 90, 1280, 720, 640, 360)).toContain('(in/89)')
+    expect(offset).toContain('(((in-1)+90)/104)')
+    expect(motionFilter('zoom-in', 90, 1280, 720, 640, 360)).toContain('((in-1)/89)')
   })
 
   it('builds a crossfade graph with both pictures and unique pad names', () => {
@@ -101,7 +101,7 @@ describe('transitions in the render plan', () => {
     expect(graph).toContain('fade=t=out:s=0:n=15:alpha=1')
     expect(graph).toContain('[cur][old]overlay=eof_action=pass')
     // The old picture continues its 90 + 15 frame move.
-    expect(graph).toContain('((in+90)/104)')
+    expect(graph).toContain('(((in-1)+90)/104)')
     expect(graph).toContain('setpts=N+90,ass=captions.ass,setpts=N[v]')
   })
 

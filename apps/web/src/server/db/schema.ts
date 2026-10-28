@@ -1,5 +1,6 @@
 import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/protocol'
 import type {
+  Accent,
   AppSettings,
   CaptionStyle,
   CharacterPose,
@@ -59,6 +60,8 @@ export const projects = pgTable('projects', {
   archived: boolean('archived').notNull().default(false),
   /** Burn each scene's on-screen text into the video. */
   textOverlays: boolean('text_overlays').notNull().default(true),
+  /** Whooshes and impacts under whips and accents. */
+  soundEffects: boolean('sound_effects').notNull().default(true),
   /** AI voice for this project; null = the default from Settings. */
   voice: jsonb('voice').$type<VoiceSettings>(),
   seriesId: text('series_id').references(() => series.id, { onDelete: 'set null' }),
@@ -109,6 +112,9 @@ export const scenes = pgTable('scenes', {
   motion: text('motion').$type<Motion>().notNull().default('zoom-in'),
   onScreenText: text('on_screen_text').notNull().default(''),
   transition: text('transition').notNull().default('cut'),
+  /** A zoom-cut or a shake, on `accentWord` of the narration. */
+  accent: text('accent').$type<Accent>().notNull().default('none'),
+  accentWord: text('accent_word').notNull().default(''),
   notes: text('notes').notNull().default(''),
   imageUrl: text('image_url'),
   imageWidth: integer('image_width'),

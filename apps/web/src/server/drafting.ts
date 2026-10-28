@@ -1,10 +1,18 @@
 // Drafting with AI as server functions: the buttons' routes call them, and so does the weekly
 // autopilot, which turns ideas into ready drafts on its own (script, scenes, and pictures from
 // the Library), so all that is left is recording the voice-over and checking.
-import { generateIdeas, hasGeminiKey, pickSceneLayers, splitScript, writeScript } from '@cutroom/shared/ai'
+import { spaceEffects } from '@cutroom/shared/accents'
+import {
+  generateIdeas,
+  hasGeminiKey,
+  pickSceneLayers,
+  splitScript,
+  suggestEffects,
+  writeScript,
+} from '@cutroom/shared/ai'
 import { alignScenes } from '@cutroom/shared/align'
 import { layoutByEstimate } from '@cutroom/shared/timing'
-import type { SceneLayer, SeriesTemplate } from '@cutroom/shared/types'
+import { normalizeTransition, type SceneLayer, type SeriesTemplate } from '@cutroom/shared/types'
 import { and, desc, eq, gte } from 'drizzle-orm'
 import { topTitles } from './analytics'
 import { db, schema } from './db'
@@ -65,7 +73,41 @@ export async function storyboardProject(id: string): Promise<void> {
     )
     placed = placed.map((s, i) => ({ ...s, start: times[i].start, end: times[i].end }))
   }
-  await replaceScenes(id, placed)
+  // The AI's whips and accents, kept rare.
+  await replaceScenes(id, spaceEffects(placed))
+}
+
+/**
+ * Gemini picks the edit for scenes that are already split: whips at new sections, zoom-cuts on
+ * key words and shakes on punchlines, spaced out like a split's. Every scene's accent is set;
+ * transitions only switch between cut and whip, so crossfades and dips stay. Returns how many
+ * effects there are now.
+ */
+export async function addProjectEffects(id: string): Promise<number> {
+  const scenes = await getScenes(id)
+  if (scenes.length === 0) badRequest('Split the script into scenes first.')
+  const picks = await suggestEffects(
+    scenes.map((s) => ({ narration: s.narration, seconds: Math.max(0, s.end - s.start) })),
+  )
+  const edited = spaceEffects(
+    scenes.map((scene, i) => {
+      const current = normalizeTransition(scene.transition)
+      const kept = current === 'crossfade' || current === 'fade-black'
+      return { ...picks[i], start: scene.start, transition: kept ? current : picks[i].transition }
+    }),
+  )
+  const database = await db()
+  for (const [i, scene] of scenes.entries()) {
+    const { transition, accent, accentWord } = edited[i]
+    const word = accent === 'none' ? '' : accentWord
+    if (scene.transition === transition && scene.accent === accent && scene.accentWord === word) continue
+    await database
+      .update(schema.scenes)
+      .set({ transition, accent, accentWord: word })
+      .where(eq(schema.scenes.id, scene.id))
+  }
+  await touchProject(id)
+  return edited.reduce((n, e) => n + Number(e.transition === 'whip') + Number(e.accent !== 'none'), 0)
 }
 
 /**

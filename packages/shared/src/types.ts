@@ -23,18 +23,35 @@ export type ProjectStatus =
 
 export const MOTIONS: Motion[] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'none']
 
-/** How a scene's picture comes in: a hard cut, a crossfade from the previous picture, or a dip through black. */
-export type Transition = 'cut' | 'crossfade' | 'fade-black'
+/**
+ * How a scene's picture comes in: a hard cut, a crossfade from the previous picture, a dip
+ * through black, or a whip (both pictures slide sideways with a motion blur, for a new section).
+ */
+export type Transition = 'cut' | 'crossfade' | 'fade-black' | 'whip'
 
-export const TRANSITIONS: Transition[] = ['cut', 'crossfade', 'fade-black']
+export const TRANSITIONS: Transition[] = ['cut', 'crossfade', 'fade-black', 'whip']
 
 /** Scenes written before transitions were rendered hold free text ("dissolve", "fade"...). */
 export function normalizeTransition(value: string | null | undefined): Transition {
   const v = (value ?? '').trim().toLowerCase()
   if ((TRANSITIONS as string[]).includes(v)) return v as Transition
+  if (/whip|swipe|slide/.test(v)) return 'whip'
   if (/black|dip/.test(v)) return 'fade-black'
   if (/cross|dissolve|fade|blend|mix/.test(v)) return 'crossfade'
   return 'cut'
+}
+
+/**
+ * A moment of emphasis in a scene: a zoom-cut to a detail of the picture on a key word, or a
+ * short camera shake on a punchline. See accents.ts for when and how they play.
+ */
+export type Accent = 'none' | 'zoom' | 'shake'
+
+export const ACCENTS: Accent[] = ['none', 'zoom', 'shake']
+
+export function normalizeAccent(value: string | null | undefined): Accent {
+  const v = (value ?? '').trim().toLowerCase()
+  return (ACCENTS as string[]).includes(v) ? (v as Accent) : 'none'
 }
 
 export type TtsProvider = 'gemini' | 'elevenlabs'
@@ -117,6 +134,8 @@ export interface SeriesTemplate {
   pace: number
   notes: string
   textOverlays: boolean
+  /** Whooshes and impacts under transitions and accents. Missing in series made before them: on. */
+  soundEffects?: boolean
   musicUrl: string | null
   musicName: string | null
   musicVolume: number
@@ -222,6 +241,28 @@ export function poseBox(format: VideoFormat): {
     : { width: 0.6, height: 0.8, margin: 0.06, sink: 0.035 }
 }
 
+/**
+ * Where a pose's head is, as fractions of the frame: the middle of the top third of the pose as
+ * it stands in its box. `aspect` is the pose picture's width / height (null: unknown, so the box's
+ * own shape). A zoom-cut on a layered scene zooms in on this point.
+ */
+export function poseHead(
+  format: VideoFormat,
+  side: LayerSide,
+  aspect: number | null,
+): { x: number; y: number } {
+  const box = poseBox(format)
+  const frame = format === 'portrait' ? 9 / 16 : 16 / 9
+  const boxAspect = (box.width / box.height) * frame
+  const shape = aspect && aspect > 0 ? aspect : boxAspect
+  // Fitted inside the box, keeping its shape (fractions of the frame).
+  const height = shape > boxAspect ? (box.height * boxAspect) / shape : box.height
+  const width = (height * shape) / frame
+  const left = side === 'left' ? box.margin : side === 'right' ? 1 - box.margin - width : (1 - width) / 2
+  const top = 1 - height * (1 - box.sink)
+  return { x: left + width / 2, y: top + height / 6 }
+}
+
 /** An empty layer to start picking from. */
 export const EMPTY_LAYER: SceneLayer = {
   backgroundUrl: null,
@@ -246,6 +287,10 @@ export interface SceneInput {
   motion: Motion
   onScreenText: string
   transition: string
+  /** A zoom-cut or shake in this scene (see Accent). */
+  accent: Accent
+  /** The narration word it lands on; '' = the scene's start (shake) or middle (zoom). */
+  accentWord: string
   notes: string
   imageUrl: string | null
   imageWidth: number | null

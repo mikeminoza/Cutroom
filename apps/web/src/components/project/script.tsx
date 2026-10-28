@@ -9,6 +9,8 @@ import {
   WORDS_PER_SECOND,
 } from '@cutroom/shared/timing'
 import {
+  ACCENTS,
+  type Accent,
   MOTIONS,
   type Motion,
   normalizeTransition,
@@ -42,6 +44,13 @@ export const TRANSITION_LABEL: Record<Transition, string> = {
   cut: 'Cut',
   crossfade: 'Crossfade',
   'fade-black': 'Dip to black',
+  whip: 'Whip',
+}
+
+export const ACCENT_LABEL: Record<Accent, string> = {
+  none: 'None',
+  zoom: 'Zoom-cut',
+  shake: 'Shake',
 }
 
 export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepProps) {
@@ -441,6 +450,27 @@ function SceneCard({
               ))}
             </Select>
           </Field>
+          <Field label="Accent" hint="A zoom-cut to a detail, or a shake on a punchline.">
+            <Select value={scene.accent} onChange={(e) => set({ accent: e.target.value as Accent }, 0)}>
+              {ACCENTS.map((a) => (
+                <option key={a} value={a}>
+                  {ACCENT_LABEL[a]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {scene.accent !== 'none' && (
+            <Field
+              label="On the word"
+              hint={`From the narration. Empty: ${scene.accent === 'zoom' ? 'the middle' : 'the start'} of the scene.`}
+            >
+              <SyncedInput
+                value={scene.accentWord}
+                maxLength={100}
+                onValue={(accentWord) => set({ accentWord })}
+              />
+            </Field>
+          )}
           {characters.length > 0 && (
             <Field label="Characters in the picture" className="sm:col-span-2">
               <div className="flex flex-wrap gap-1.5">

@@ -68,4 +68,12 @@ export const migrations: { tag: string; statements: string[] }[] = [
     tag: '0006_autopilot',
     statements: ['ALTER TABLE "projects" ADD COLUMN "autopilot" boolean DEFAULT false NOT NULL;'],
   },
+  {
+    tag: '0007_scene_effects',
+    statements: [
+      'ALTER TABLE "projects" ADD COLUMN "sound_effects" boolean DEFAULT true NOT NULL;',
+      'ALTER TABLE "scenes" ADD COLUMN "accent" text DEFAULT \'none\' NOT NULL;',
+      'ALTER TABLE "scenes" ADD COLUMN "accent_word" text DEFAULT \'\' NOT NULL;',
+    ],
+  },
 ]

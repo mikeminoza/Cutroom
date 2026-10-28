@@ -125,6 +125,8 @@ export interface JobPayloadProject {
   scheduledAt: string | null
   driveFolderId: string | null
   textOverlays: boolean
+  /** Whooshes and impacts under the edit; missing from a web app older than the worker: on. */
+  soundEffects?: boolean
   voice: VoiceSettings | null
 }
 

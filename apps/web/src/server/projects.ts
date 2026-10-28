@@ -1,10 +1,12 @@
 import type { JobType } from '@cutroom/shared/protocol'
 import { copyStoredFile, deleteFile, isStoredUnder } from '@cutroom/shared/storage'
 import {
+  type Accent,
   type ChannelNiche,
   EMPTY_POST,
   hasPicture,
   type Motion,
+  normalizeAccent,
   normalizeTransition,
   type ProjectStatus,
   type SeriesTemplate,
@@ -105,6 +107,7 @@ export async function createProject(input: {
     targetMinutes: t?.targetMinutes ?? (format === 'portrait' ? 1 : (niche?.targetMinutes ?? 5)),
     pace: t?.pace ?? (format === 'portrait' ? 3 : (niche?.pace ?? 3)),
     textOverlays: t?.textOverlays ?? true,
+    soundEffects: t?.soundEffects ?? true,
     voice: t?.voice ?? null,
     musicVolume: t?.musicVolume ?? 0.15,
     seriesId: input.series?.id ?? null,
@@ -426,6 +429,8 @@ export interface SceneDraftInput {
   motion?: Motion
   onScreenText?: string
   transition?: string
+  accent?: Accent
+  accentWord?: string
   notes?: string
 }
 
@@ -450,6 +455,8 @@ export async function replaceScenes(projectId: string, drafts: SceneDraftInput[]
         motion: d.motion ?? 'zoom-in',
         onScreenText: d.onScreenText ?? '',
         transition: normalizeTransition(d.transition),
+        accent: normalizeAccent(d.accent),
+        accentWord: d.accentWord ?? '',
         notes: d.notes ?? '',
       })),
     )

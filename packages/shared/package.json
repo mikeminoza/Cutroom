@@ -16,6 +16,8 @@
     "./storage": "./src/storage.ts",
     "./google": "./src/google.ts",
     "./transitions": "./src/transitions.ts",
+    "./accents": "./src/accents.ts",
+    "./sfx": "./src/sfx.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

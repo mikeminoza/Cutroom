@@ -80,6 +80,7 @@ export async function createShort(input: ShortInput): Promise<string> {
     musicName: musicUrl ? source.musicName : null,
     musicVolume: source.musicVolume,
     textOverlays: source.textOverlays,
+    soundEffects: source.soundEffects,
     voice: source.voice,
     seriesId: source.seriesId,
     channelId: source.channelId,

@@ -31,7 +31,7 @@ describe('transitions', () => {
     expect(normalizeTransition('Dissolve')).toBe('crossfade')
     expect(normalizeTransition('fade')).toBe('crossfade')
     expect(normalizeTransition('fade to black')).toBe('fade-black')
-    expect(normalizeTransition('whip pan')).toBe('cut')
+    expect(normalizeTransition('whip pan')).toBe('whip')
     expect(normalizeTransition('')).toBe('cut')
     expect(normalizeTransition(null)).toBe('cut')
   })
@@ -47,10 +47,10 @@ describe('transitions', () => {
       30,
       true,
     )
-    expect(plans[0]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, tail: 15 })
-    expect(plans[1]).toEqual({ fadeIn: 0, fadeOut: 7, crossfade: 15, tail: 0 })
-    expect(plans[2]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, tail: 0 })
-    expect(plans[3]).toEqual({ fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 })
+    expect(plans[0]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, whip: 0, tail: 15 })
+    expect(plans[1]).toEqual({ fadeIn: 0, fadeOut: 7, crossfade: 15, whip: 0, tail: 0 })
+    expect(plans[2]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, whip: 0, tail: 0 })
+    expect(plans[3]).toEqual({ fadeIn: 0, fadeOut: 0, crossfade: 0, whip: 0, tail: 0 })
   })
 
   it('shortens fades for short pictures and drops tiny ones', () => {
@@ -78,7 +78,7 @@ describe('transitions', () => {
       30,
       true,
     )
-    expect(plans[1]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, tail: 0 })
+    expect(plans[1]).toEqual({ fadeIn: 7, fadeOut: 0, crossfade: 0, whip: 0, tail: 0 })
     expect(plans[0].tail).toBe(0)
   })
 
@@ -93,9 +93,9 @@ describe('transitions', () => {
     )
     expect(plans[1].crossfade).toBe(0.5)
     expect(plans[0].tail).toBe(0.5)
-    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, tail: 0 }, 0, 3)).toBe(1)
-    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, tail: 0 }, 1, 2)).toBe(0)
-    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, tail: 0 }, 1, 0.125)).toBe(0.5)
+    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, whip: 0, tail: 0 }, 0, 3)).toBe(1)
+    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, whip: 0, tail: 0 }, 1, 2)).toBe(0)
+    expect(blackLevel({ fadeIn: 0.25, fadeOut: 0.25, crossfade: 0, whip: 0, tail: 0 }, 1, 0.125)).toBe(0.5)
   })
 })
 

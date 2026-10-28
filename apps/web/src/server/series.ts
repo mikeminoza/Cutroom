@@ -61,6 +61,7 @@ async function templateFromProject(projectId: string, seriesId: string): Promise
     pace: project.pace,
     notes: project.notes,
     textOverlays: project.textOverlays,
+    soundEffects: project.soundEffects,
     musicUrl,
     musicName: musicUrl ? project.musicName : null,
     musicVolume: project.musicVolume,

@@ -1,4 +1,4 @@
-import { MOTIONS, TRANSITIONS } from '@cutroom/shared/types'
+import { ACCENTS, MOTIONS, TRANSITIONS } from '@cutroom/shared/types'
 import { z } from 'zod'
 
 const url = z.string().max(2000)
@@ -65,6 +65,7 @@ export const projectPatchSchema = z
     thumbnailUrl: nullableUrl,
     post: postSchema,
     textOverlays: z.boolean(),
+    soundEffects: z.boolean(),
     voice: voiceSchema.nullable(),
     channelId: z.string().max(100).nullable(),
     seriesId: z.string().max(100).nullable(),
@@ -83,6 +84,8 @@ export const scenePatchSchema = z
     motion: z.enum(MOTIONS as [string, ...string[]]),
     onScreenText: z.string().max(200),
     transition: z.enum(TRANSITIONS as [string, ...string[]]),
+    accent: z.enum(ACCENTS),
+    accentWord: z.string().max(100),
     notes: z.string().max(1000),
     imageUrl: nullableUrl,
     imageWidth: z.number().int().positive().nullable(),

@@ -191,6 +191,6 @@ describe('quick cuts on one background', () => {
     expect(segments[3].visual?.motion).toBe('zoom-out')
     const sizes = new Map([[segments[0].visual!.path!, { width: 640, height: 360 }]])
     const args = segmentArgs(segments[2], segments[1], 'c.mp4', { width: 1280, height: 720 }, sizes, false, 1)
-    expect(args[args.indexOf('-filter_complex') + 1]).toContain('((in+90)/149)')
+    expect(args[args.indexOf('-filter_complex') + 1]).toContain('(((in-1)+90)/149)')
   })
 })

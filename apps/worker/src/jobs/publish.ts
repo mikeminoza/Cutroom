@@ -28,7 +28,7 @@ import {
   storageDriver,
 } from '@cutroom/shared/storage'
 import { formatTimecode, refreshChapters, totalDuration } from '@cutroom/shared/timing'
-import { hasPicture, normalizeTransition } from '@cutroom/shared/types'
+import { hasPicture, normalizeAccent, normalizeTransition } from '@cutroom/shared/types'
 import { nextSlot } from '../api'
 import { runFfmpeg } from '../render/ffmpeg'
 import { type RenderLayer, renderVideo } from '../render/render'
@@ -121,6 +121,8 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       focusX: scene.focusX,
       focusY: scene.focusY,
       transition: normalizeTransition(scene.transition),
+      accent: normalizeAccent(scene.accent),
+      accentWord: scene.accentWord ?? '',
     }))
     const started = Date.now()
     const output = await renderVideo({
@@ -135,6 +137,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       overlays: project.textOverlays ? overlayEvents(scenes, duration) : [],
       musicPath,
       musicVolume: project.musicVolume,
+      soundEffects: project.soundEffects !== false,
       signal: ctx.signal,
       onProgress: (fraction, detail) => ctx.progress('render', fraction, detail),
     })

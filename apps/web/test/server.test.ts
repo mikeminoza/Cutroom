@@ -20,6 +20,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     // Real unless a test says otherwise.
     writeScript: vi.fn(actual.writeScript),
     splitScript: vi.fn(actual.splitScript),
+    suggestEffects: vi.fn(actual.suggestEffects),
     generateIdeas: vi.fn(actual.generateIdeas),
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
   }
@@ -102,6 +103,7 @@ const setupSuggestRoute = await import('../src/app/api/setup/suggest/route')
 const channelRoute = await import('../src/app/api/channel/route')
 const watermarkRoute = await import('../src/app/api/channel/watermark/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
+const effectsRoute = await import('../src/app/api/projects/[id]/ai/effects/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1415,6 +1417,8 @@ describe('weekly drafts', () => {
           motion: 'zoom-in',
           onScreenText: '',
           transition: 'cut',
+          accent: 'none',
+          accentWord: '',
           notes: '',
         },
         {
@@ -1426,6 +1430,8 @@ describe('weekly drafts', () => {
           motion: 'pan-left',
           onScreenText: '',
           transition: 'cut',
+          accent: 'none',
+          accentWord: '',
           notes: '',
         },
       ])
@@ -1722,5 +1728,101 @@ describe('AI for the channel', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+describe('the edit', () => {
+  const patch = (body: unknown) =>
+    new Request('http://localhost/api', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+
+  it('keeps accents and the sound-effects switch, and goes with series and Shorts', async () => {
+    const id = await newProject()
+    expect((await projects.getProjectRow(id)).soundEffects).toBe(true)
+    await projects.replaceScenes(id, [
+      {
+        start: 0,
+        end: 4,
+        narration: 'It went boom.',
+        accent: 'shake',
+        accentWord: 'boom',
+        transition: 'whip',
+      },
+    ])
+    const [scene] = await projects.getScenes(id)
+    expect(scene).toMatchObject({ accent: 'shake', accentWord: 'boom', transition: 'whip' })
+    expect(
+      (await sceneRoute.PATCH(patch({ accent: 'zoom', accentWord: 'went' }), ctx(scene.id))).status,
+    ).toBe(200)
+    expect((await sceneRoute.PATCH(patch({ accent: 'bounce' }), ctx(scene.id))).status).toBe(400)
+    expect((await projectRoute.PATCH(patch({ soundEffects: false }), ctx(id))).status).toBe(200)
+    expect((await projects.getProjectFull(id)).project.soundEffects).toBe(false)
+    expect((await projects.getScenes(id))[0]).toMatchObject({ accent: 'zoom', accentWord: 'went' })
+  })
+
+  it('lets Gemini pick the effects, spaced out, keeping crossfades and dips', async () => {
+    const id = await newProject()
+    await projects.replaceScenes(id, [
+      { start: 0, end: 3, narration: 'First things first.' },
+      { start: 3, end: 6, narration: 'Then a big change.', transition: 'crossfade' },
+      { start: 6, end: 9, narration: 'And it went boom.' },
+      { start: 9, end: 12, narration: 'Boom again.' },
+      { start: 12, end: 15, narration: 'A new part.', accent: 'zoom', accentWord: 'part' },
+    ])
+    vi.mocked(ai.suggestEffects).mockResolvedValueOnce([
+      { transition: 'cut', accent: 'zoom', accentWord: 'things' },
+      { transition: 'whip', accent: 'zoom', accentWord: 'change' },
+      { transition: 'whip', accent: 'shake', accentWord: 'boom' },
+      { transition: 'whip', accent: 'shake', accentWord: 'Boom' },
+      { transition: 'cut', accent: 'none', accentWord: '' },
+    ])
+    const response = await effectsRoute.POST(new Request('http://localhost/api', { method: 'POST' }), ctx(id))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(
+      body.scenes.map((s: { transition: string; accent: string; accentWord: string }) => [
+        s.transition,
+        s.accent,
+        s.accentWord,
+      ]),
+    ).toEqual([
+      ['cut', 'zoom', 'things'],
+      // The crossfade stays, and no zoom-cut right after another.
+      ['crossfade', 'none', ''],
+      ['whip', 'shake', 'boom'],
+      // Too soon after the last whip and shake.
+      ['cut', 'none', ''],
+      ['cut', 'none', ''],
+    ])
+    expect(body.effects).toBe(3)
+  })
+
+  it('spaces out the effects of an AI split too', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'One. Two. Three.' })
+    const draft = (narration: string) => ({
+      narration,
+      visual: '',
+      imagePrompt: '',
+      characters: [],
+      shot: '',
+      motion: 'zoom-in' as const,
+      onScreenText: '',
+      transition: 'whip' as const,
+      accent: 'zoom' as const,
+      accentWord: '',
+      notes: '',
+    })
+    vi.mocked(ai.splitScript).mockResolvedValueOnce([draft('One.'), draft('Two.'), draft('Three.')])
+    await drafting.storyboardProject(id)
+    expect((await projects.getScenes(id)).map((s) => [s.transition, s.accent])).toEqual([
+      ['whip', 'zoom'],
+      ['cut', 'none'],
+      ['cut', 'zoom'],
+    ])
   })
 })

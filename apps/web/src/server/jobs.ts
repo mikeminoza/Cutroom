@@ -720,6 +720,7 @@ export async function buildPayload(jobId: string, request: Request): Promise<Job
       scheduledAt: project.scheduledAt,
       driveFolderId: project.driveFolderId,
       textOverlays: project.textOverlays,
+      soundEffects: project.soundEffects,
       voice: project.voice,
     },
     scenes: scenes.map(toSceneDTO),

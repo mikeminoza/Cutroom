@@ -1,6 +1,6 @@
 # Scene editing: from slideshow to explainer-channel edit
 
-Date: 2026-10-27. Status: proposed.
+Date: 2026-10-27. Status: built (2026-10-28).
 
 ## Why
 
@@ -40,7 +40,8 @@ new section, instead of "vary it between scenes".
 ### 2. Zoom-cut to a detail (accent `zoom`)
 
 At the accent moment the framing jumps to 1.4× around the scene's focus point and keeps moving
-until the scene ends. For a layered scene (Library background and pose), the zoom centres on the
+until its picture leaves (through a crossfade or whip too, so the outgoing picture never snaps
+back). For a layered scene (Library background and pose), the zoom centres on the
 pose's head (the top third of its box, on its side).
 
 - Rules: dropped for scenes shorter than 1.2 s; the moment is kept at least 0.4 s after the cut
@@ -54,6 +55,7 @@ At the accent moment the frame shakes and settles over 0.4 s:
 - `dx = A·sin(2π·11·t)·e^(−8t)` and `dy = 0.6·A·cos(2π·8.5·t)·e^(−8t)`, with `A` = 1.8% of the width.
 - The framing is enlarged by `1 + 0.04·e^(−8t)` during the shake, so the edges never show: the
   margin shrinks at the same rate as the shake.
+- Rules: dropped for scenes shorter than 0.5 s; the shake ends at least 0.4 s before the scene does.
 - Sound: a thud (a low sine drop with a short noise click) at the start of the shake.
 
 ### 4. Whip transition (transition `whip`)
@@ -93,7 +95,7 @@ default, carried by series and Shorts like `textOverlays`).
 The accent moment comes from a shared `accentTime(scene, words)`. It takes the start of the first
 caption word inside the scene that matches `accentWord`, ignoring case and punctuation. With no
 word or no match, it uses the scene start for a shake and the middle of the scene for a zoom. The
-clamps above then apply. Without a transcript, the estimated caption words (`wordsFromScenes`) are
+rules above then apply. Without a transcript, the estimated caption words (`wordsFromScenes`) are
 used, as captions already do.
 
 ## Who picks the effects

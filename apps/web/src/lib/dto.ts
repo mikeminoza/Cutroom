@@ -54,6 +54,7 @@ export interface ProjectDTO {
   srtUrl: string | null
   archived: boolean
   textOverlays: boolean
+  soundEffects: boolean
   voice: VoiceSettings | null
   seriesId: string | null
   channelId: string | null

@@ -1,5 +1,6 @@
 'use client'
 
+import { type AccentEvent, accentEvents, accentWindow, SHAKE_SECONDS } from '@cutroom/shared/accents'
 import {
   activeChunk,
   captionWords,
@@ -9,24 +10,43 @@ import {
   speechSpans,
   toSrt,
 } from '@cutroom/shared/captions'
+import { SFX_LEVEL, SFX_RATE, type SoundName, sfxEvents, synthesize } from '@cutroom/shared/sfx'
 import { formatTimecode, totalDuration } from '@cutroom/shared/timing'
-import { blackLevel, planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
+import {
+  blackLevel,
+  NO_TRANSITION,
+  planTransitions,
+  type TransitionPlan,
+  whipFrame,
+  whipProgress,
+} from '@cutroom/shared/transitions'
 import {
   type CaptionStyle,
   hasPicture,
   type Motion,
   normalizeTransition,
+  poseHead,
   type Transition,
   type VideoFormat,
 } from '@cutroom/shared/types'
-import { ArrowRight, Download, Music, Pause, Play, SkipBack, SkipForward, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowRight,
+  Download,
+  Music,
+  Pause,
+  Play,
+  SkipBack,
+  SkipForward,
+  Sparkles,
+  Trash2,
+} from 'lucide-react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button, DropZone, Field, Panel, ProgressBar, Segmented, Switch } from '@/components/ui'
 import { errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { SceneDTO } from '@/lib/dto'
-import { useSaver } from '@/lib/hooks'
+import { useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { useUploader } from './fields'
 import { poseStyle } from './layered-picture'
 import type { StepProps } from './workspace'
@@ -34,7 +54,7 @@ import type { StepProps } from './workspace'
 /**
  * The exact motion curve the worker renders with (see apps/worker/src/render/render.ts):
  * zoom up to 12% (0.05 per second for short scenes) around the focus point, or a pan of the
- * viewing window across up to 10% of the width (0.04 per second), half-linear/half-cosine eased.
+ * viewing window across up to 10% of the width (0.04 per second), at a steady speed.
  */
 export function motionStyle(
   motion: Motion,
@@ -44,17 +64,16 @@ export function motionStyle(
   focusX: number,
 ): { transform: string; origin: string } {
   const p = Math.min(1, Math.max(0, progress))
-  const eased = 0.5 * p + 0.25 * (1 - Math.cos(Math.PI * p))
   if (motion === 'zoom-in' || motion === 'zoom-out') {
     const amount = Math.min(0.12, 0.05 * seconds)
     const k = Math.log(1 + amount)
-    const scale = Math.exp(k * (motion === 'zoom-in' ? eased : 1 - eased))
+    const scale = Math.exp(k * (motion === 'zoom-in' ? p : 1 - p))
     return { transform: `scale(${scale})`, origin: `${focusX * 100}% ${focusY * 100}%` }
   }
   if (motion === 'pan-left' || motion === 'pan-right') {
     const travel = Math.min(0.1, 0.04 * seconds)
     const scale = 1 / (1 - travel)
-    const offset = travel * (motion === 'pan-right' ? eased : 1 - eased)
+    const offset = travel * (motion === 'pan-right' ? p : 1 - p)
     return {
       transform: `translateX(${-offset * scale * 100}%) scale(${scale})`,
       origin: `0% ${focusY * 100}%`,
@@ -93,6 +112,9 @@ export interface PictureSegment {
    * share one move, like the render, so only the pose changes at the cut.
    */
   move: { start: number; length: number }
+  /** When its zoom-cut lands (it then holds), and when its shakes start: timeline seconds. */
+  zoom: number | null
+  shakes: number[]
 }
 
 /** Same Library background, and a pose on at least one side: the same place, a new pose. */
@@ -111,8 +133,13 @@ function sameShot(a: SceneDTO | null, b: SceneDTO | null): boolean {
 /**
  * Scenes without an image extend the previous picture (it keeps moving), like the render.
  * Each scene runs from its start until the next scene starts; the first from 0, the last to the end.
+ * `accents` (from accentEvents) go to the picture on screen at their moment, one zoom-cut each.
  */
-export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSegment[] {
+export function pictureSegments(
+  scenes: SceneDTO[],
+  duration: number,
+  accents: AccentEvent[] = [],
+): PictureSegment[] {
   // Cut points are rounded to whole frames exactly like the render (planSegments in
   // apps/worker/src/render/render.ts), so a scene shorter than one frame vanishes in both.
   const totalFrames = Math.max(1, Math.round(duration * FPS))
@@ -140,9 +167,22 @@ export function pictureSegments(scenes: SceneDTO[], duration: number): PictureSe
       end,
       scene: lastVisual,
       transition: hasPicture(scene) ? normalizeTransition(scene.transition) : 'cut',
-      plan: { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 },
+      plan: NO_TRANSITION,
+      zoom: null,
+      shakes: [],
     })
   })
+  // Inside one shot (same background, new pose) the cut stays the shot's continuous cut.
+  segments.forEach((segment, i) => {
+    if (segment.transition === 'whip' && i > 0 && sameShot(segments[i - 1].scene, segment.scene))
+      segment.transition = 'cut'
+  })
+  for (const event of accents) {
+    const segment = segments.find((s) => event.time >= s.start && event.time < s.end)
+    if (!segment?.scene) continue
+    if (event.kind === 'zoom') segment.zoom ??= event.time
+    else segment.shakes = [...segment.shakes, event.time]
+  }
   const plans = planTransitions(
     segments.map((s) => ({
       length: Math.max(0, s.end - s.start),
@@ -274,6 +314,7 @@ export function PreviewStep({ data, goTo }: StepProps) {
             />
           </div>
         </Panel>
+        <EditingPanel data={data} />
         <Panel title="Background music">
           <div className="flex flex-col gap-4 px-5 py-4">
             {project.musicUrl ? (
@@ -361,13 +402,132 @@ export function PreviewStep({ data, goTo }: StepProps) {
   )
 }
 
+/** "3 whips, 8 zoom-cuts and 1 shake", or '' for none. */
+function effectsSummary(scenes: SceneDTO[]): string {
+  const count = (n: number, one: string, many: string) => (n ? `${n} ${n === 1 ? one : many}` : '')
+  const parts = [
+    count(
+      scenes.filter((s, i) => i > 0 && normalizeTransition(s.transition) === 'whip').length,
+      'whip',
+      'whips',
+    ),
+    count(scenes.filter((s) => s.accent === 'zoom').length, 'zoom-cut', 'zoom-cuts'),
+    count(scenes.filter((s) => s.accent === 'shake').length, 'shake', 'shakes'),
+  ].filter(Boolean)
+  return parts.length > 1
+    ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+    : (parts[0] ?? '')
+}
+
+/** The edit's effects: Gemini picks them for a split video, and their sounds can be switched off. */
+function EditingPanel({ data }: { data: StepProps['data'] }) {
+  const { project, scenes } = data
+  const { saver } = useSaver(project.id)
+  const action = useProjectAction(project.id)
+  const { data: status } = useStatus()
+  const [busy, setBusy] = useState(false)
+  const summary = effectsSummary(scenes)
+
+  const addEffects = async () => {
+    setBusy(true)
+    const full = await action(`/api/projects/${project.id}/ai/effects`, {})
+    setBusy(false)
+    if (full) {
+      const now = effectsSummary(full.scenes)
+      toast.success(now ? `Gemini picked ${now}` : 'Gemini picked no effects for this video')
+    }
+  }
+
+  return (
+    <Panel
+      title="Editing"
+      actions={
+        status?.gemini.configured !== false && (
+          <Button
+            variant="plain"
+            size="sm"
+            busy={busy}
+            onClick={addEffects}
+            icon={<Sparkles className="size-3.5" />}
+          >
+            {summary ? 'Pick again with AI' : 'Add effects with AI'}
+          </Button>
+        )
+      }
+    >
+      <div className="flex flex-col gap-4 px-5 py-4">
+        <p className="text-[12.5px] leading-snug text-ink-3">
+          {summary
+            ? `${summary[0].toUpperCase()}${summary.slice(1)}. Change any scene under Picture details on the Script step.`
+            : 'Every picture drifts at a steady speed. Gemini can add whips at new sections, zoom-cuts on key words and shakes on punchlines, kept rare so each one lands.'}
+        </p>
+        <Switch
+          checked={project.soundEffects}
+          onCheckedChange={(soundEffects) => saver.project({ soundEffects }, 0)}
+          label="Sound effects"
+          description="A whoosh on each whip, a swish on each zoom-cut and a thud on each shake, under the voice."
+        />
+      </div>
+    </Panel>
+  )
+}
+
+/** The sounds as audio buffers, made once. */
+let soundBuffers: Map<SoundName, AudioBuffer> | null = null
+function buffersFor(context: AudioContext): Map<SoundName, AudioBuffer> {
+  if (soundBuffers) return soundBuffers
+  soundBuffers = new Map()
+  for (const name of ['whoosh', 'swish', 'thud'] as const) {
+    const samples = synthesize(name)
+    const buffer = context.createBuffer(1, samples.length, SFX_RATE)
+    buffer.copyToChannel(new Float32Array(samples), 0)
+    soundBuffers.set(name, buffer)
+  }
+  return soundBuffers
+}
+
+/**
+ * The accents of `segment` at `t`, as a CSS transform for the layer holding its picture (and
+ * pose): the same window accentWindow gives the render. `pose` is the pose picture, for the
+ * zoom-cut's anchor on its head.
+ */
+function accentTransform(
+  segment: PictureSegment,
+  t: number,
+  size: { width: number; height: number },
+  format: VideoFormat,
+  pose: HTMLImageElement | null,
+): string {
+  const zoomOn = segment.zoom !== null && t >= segment.zoom
+  const shakes = segment.shakes.map((start) => t - start).filter((d) => d >= 0 && d < SHAKE_SECONDS)
+  if (!zoomOn && shakes.length === 0) return ''
+  const scene = segment.scene
+  let anchor = { x: (scene?.focusX ?? 0.5) * size.width, y: (scene?.focusY ?? 0.5) * size.height }
+  if (scene && !scene.imageUrl && scene.layer?.poseUrl) {
+    const aspect = pose?.naturalWidth ? pose.naturalWidth / pose.naturalHeight : null
+    const head = poseHead(format, scene.layer.side, aspect)
+    anchor = { x: head.x * size.width, y: head.y * size.height }
+  }
+  const view = accentWindow(zoomOn ? anchor : null, shakes, size.width, size.height)
+  return `translate(${-view.left / view.scale}px, ${-view.top / view.scale}px) scale(${1 / view.scale})`
+}
+
 function Player({ data, duration }: { data: StepProps['data']; duration: number }) {
   const { project, scenes } = data
   const audio = useRef<HTMLAudioElement>(null)
   const music = useRef<HTMLAudioElement>(null)
+  const stage = useRef<HTMLDivElement>(null)
+  // The pictures (blurred during a whip), the current picture's layer (moved by its accents and
+  // the whip) and its image (moved by the camera), the same for the outgoing picture, and poses.
+  const pictures = useRef<HTMLDivElement>(null)
+  const currentLayer = useRef<HTMLDivElement>(null)
   const current = useRef<HTMLImageElement>(null)
+  const currentPose = useRef<HTMLImageElement>(null)
   const outgoing = useRef<HTMLDivElement>(null)
   const outgoingImage = useRef<HTMLImageElement>(null)
+  const outgoingPose = useRef<HTMLImageElement>(null)
+  const whipBlur = useRef<SVGFEGaussianBlurElement>(null)
+  const blurId = `whip${useId().replace(/[^\w-]/g, '')}`
   const black = useRef<HTMLDivElement>(null)
   const textBox = useRef<HTMLDivElement>(null)
   const clock = useRef({ playing: false, base: 0, startedAt: 0 })
@@ -377,11 +537,33 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   const [segmentIndex, setSegmentIndex] = useState(0)
   const [overlayIndex, setOverlayIndex] = useState(-1)
   const portrait = project.format === 'portrait'
+  const format = project.format
 
   const words = useMemo(() => captionWords(project.transcript, scenes), [project.transcript, scenes])
   const chunks = useMemo(() => chunkCaptions(words, project.format), [words, project.format])
   const speech = useMemo(() => speechSpans(words), [words])
-  const segments = useMemo(() => pictureSegments(scenes, duration), [scenes, duration])
+  const segments = useMemo(
+    () => pictureSegments(scenes, duration, accentEvents(scenes, words, duration)),
+    [scenes, duration, words],
+  )
+  // The sound effects of the edit, as the render mixes them.
+  const sounds = useMemo(
+    () =>
+      project.soundEffects
+        ? sfxEvents(
+            segments.filter((s) => s.plan.whip > 0).map((s) => s.start),
+            segments.flatMap((s, i) => [
+              ...(s.zoom !== null ? [{ kind: 'zoom' as const, time: s.zoom, scene: i }] : []),
+              ...s.shakes.map((time) => ({ kind: 'shake' as const, time, scene: i })),
+            ]),
+          )
+        : [],
+    [segments, project.soundEffects],
+  )
+  const soundContext = useRef<AudioContext | null>(null)
+  // Sounds are scheduled up to here; a seek moves it, so jumping past a sound never plays it.
+  const soundsUntil = useRef(0)
+  const playingRef = useRef(false)
   const overlays = useMemo(
     () => (project.textOverlays ? overlayEvents(scenes, duration) : []),
     [project.textOverlays, scenes, duration],
@@ -402,8 +584,12 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       const segment = segments[s]
       if (!segment) return
       const elapsed = t - segment.start
-      // A picture keeps moving through the next picture's crossfade (plan.tail), as rendered, and
-      // on across the scenes of one shot.
+      const size = {
+        width: stage.current?.clientWidth || 1,
+        height: stage.current?.clientHeight || 1,
+      }
+      // A picture keeps moving through the next picture's crossfade or whip (plan.tail), as
+      // rendered, and on across the scenes of one shot.
       const { move } = segment
       if (segment.scene && current.current) {
         const style = motionStyle(
@@ -418,9 +604,28 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       }
       const previous = segments[s - 1]
       const fading = segment.plan.crossfade > 0 && elapsed < segment.plan.crossfade && previous?.scene
-      if (outgoing.current)
-        outgoing.current.style.opacity = fading ? String(1 - elapsed / segment.plan.crossfade) : '0'
-      if (fading && previous?.scene && outgoingImage.current) {
+      const whipping = segment.plan.whip > 0 && elapsed < segment.plan.whip && previous?.scene
+      const whip = whipping
+        ? whipFrame(whipProgress(elapsed * FPS, segment.plan.whip * FPS), size.width)
+        : null
+      if (currentLayer.current) {
+        const accent = accentTransform(segment, t, size, format, currentPose.current)
+        const slide = whip ? `translateX(${(1 - whip.shift) * size.width}px) ` : ''
+        currentLayer.current.style.transform = `${slide}${accent}` || 'none'
+      }
+      if (outgoing.current) {
+        outgoing.current.style.opacity = fading
+          ? String(1 - elapsed / segment.plan.crossfade)
+          : whipping
+            ? '1'
+            : '0'
+        if ((fading || whipping) && previous) {
+          const accent = accentTransform(previous, t, size, format, outgoingPose.current)
+          const slide = whip ? `translateX(${-whip.shift * size.width}px) ` : ''
+          outgoing.current.style.transform = `${slide}${accent}` || 'none'
+        }
+      }
+      if ((fading || whipping) && previous?.scene && outgoingImage.current) {
         const style = motionStyle(
           previous.scene.motion,
           (t - previous.move.start) / previous.move.length,
@@ -431,10 +636,37 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
         outgoingImage.current.style.transform = style.transform
         outgoingImage.current.style.transformOrigin = style.origin
       }
+      if (pictures.current) {
+        const blur = whip && whip.blur >= 0.5 ? whip.blur : 0
+        whipBlur.current?.setAttribute('stdDeviation', `${blur} 0`)
+        pictures.current.style.filter = blur ? `url(#${blurId})` : 'none'
+      }
       if (black.current)
         black.current.style.opacity = String(blackLevel(segment.plan, elapsed, segment.end - t))
     },
-    [segments],
+    [segments, format, blurId],
+  )
+
+  /** Plays the sound effects starting by `t` (plus a little ahead, timed exactly). */
+  const playSounds = useCallback(
+    (t: number) => {
+      const context = soundContext.current
+      const from = soundsUntil.current
+      const until = t + 0.05
+      soundsUntil.current = until
+      if (!context || !playingRef.current || sounds.length === 0) return
+      const buffers = buffersFor(context)
+      for (const event of sounds) {
+        if (event.start < from || event.start >= until) continue
+        const source = context.createBufferSource()
+        source.buffer = buffers.get(event.sound) ?? null
+        const gain = context.createGain()
+        gain.gain.value = SFX_LEVEL
+        source.connect(gain).connect(context.destination)
+        source.start(context.currentTime + Math.max(0, event.start - t), Math.max(0, t - event.start))
+      }
+    },
+    [sounds],
   )
 
   // The segment whose pictures are in the DOM right now. Set after React commits a new one,
@@ -457,6 +689,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
         if (clock.current.playing) {
           clock.current = { playing: false, base: duration, startedAt: 0 }
           music.current?.pause()
+          playingRef.current = false
           setPlaying(false)
         }
       }
@@ -465,6 +698,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       const s = indexAt(segments, t)
       setSegmentIndex((prev) => (prev === s ? prev : s))
       if (mounted.current === s) paintPictures(t, s)
+      playSounds(t)
       const o = overlays.length ? indexAt(overlays, t) : -1
       const overlay = o >= 0 && t >= overlays[o].start && t < overlays[o].end ? overlays[o] : null
       setOverlayIndex((prev) => (prev === (overlay ? o : -1) ? prev : overlay ? o : -1))
@@ -477,7 +711,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [now, scenes, segments, overlays, duration, paintPictures])
+  }, [now, scenes, segments, overlays, duration, paintPictures, playSounds])
 
   useEffect(() => {
     if (music.current) music.current.volume = Math.min(1, project.musicVolume)
@@ -495,6 +729,17 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
       clock.current = { playing: true, base: clock.current.base, startedAt: performance.now() }
     }
     void music.current?.play().catch(() => {})
+    // Made on the click: browsers only start audio from a gesture.
+    if (sounds.length > 0 && !soundContext.current) {
+      try {
+        soundContext.current = new AudioContext()
+      } catch {
+        // No Web Audio: the preview plays without its sound effects.
+      }
+    }
+    void soundContext.current?.resume().catch(() => {})
+    soundsUntil.current = now()
+    playingRef.current = true
     setPlaying(true)
   }
 
@@ -502,11 +747,13 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
     audio.current?.pause()
     music.current?.pause()
     if (!project.voiceoverUrl) clock.current = { playing: false, base: now(), startedAt: 0 }
+    playingRef.current = false
     setPlaying(false)
   }
 
   const seek = (t: number) => {
     const target = Math.max(0, Math.min(duration, t))
+    soundsUntil.current = target
     if (audio.current && project.voiceoverUrl) audio.current.currentTime = target
     else clock.current = { ...clock.current, base: target, startedAt: performance.now() }
     if (music.current?.duration) music.current.currentTime = target % music.current.duration
@@ -516,7 +763,10 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
   const scene = scenes[index]
   const segment = segments[segmentIndex]
   const shown = segment?.scene ?? null
-  const previous = segment && segment.plan.crossfade > 0 ? (segments[segmentIndex - 1]?.scene ?? null) : null
+  const previous =
+    segment && (segment.plan.crossfade > 0 || segment.plan.whip > 0)
+      ? (segments[segmentIndex - 1]?.scene ?? null)
+      : null
   const chunk = project.captionStyle === 'off' ? null : activeChunk(chunks, time)
   const overlay = overlayIndex >= 0 ? overlays[overlayIndex] : null
   // A layered scene's character bounces while the narrator speaks.
@@ -539,35 +789,48 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
             if (e.key === 'ArrowLeft') seek(time - 5)
           }}
           onClick={() => (playing ? pause() : void play())}
+          ref={stage}
           className={cn(
             'relative mx-auto overflow-hidden rounded-[6px] bg-[#14171f] [container-type:size]',
             portrait ? 'aspect-[9/16] max-h-[70vh]' : 'aspect-video w-full',
           )}
         >
-          {shown && hasPicture(shown) ? (
-            <Picture
-              key={`cur-${segmentIndex}`}
-              scene={shown}
-              imageRef={current}
-              format={project.format}
-              talking={talking}
-            />
-          ) : (
-            <div className="absolute inset-0 grid place-items-center text-[13px] text-film-ink/50">
-              Scene {(scene?.index ?? 0) + 1} has no picture yet
-            </div>
-          )}
-          {previous && hasPicture(previous) && (
-            <div ref={outgoing} className="absolute inset-0" style={{ opacity: 0 }}>
-              <Picture
-                key={`old-${segmentIndex}`}
-                scene={previous}
-                imageRef={outgoingImage}
-                format={project.format}
-                talking={false}
-              />
-            </div>
-          )}
+          {/* The whip's sideways blur, its strength set every frame. */}
+          <svg aria-hidden className="absolute size-0">
+            <filter id={blurId} x="-5%" y="0" width="110%" height="100%">
+              <feGaussianBlur ref={whipBlur} stdDeviation="0 0" />
+            </filter>
+          </svg>
+          <div ref={pictures} className="absolute inset-0">
+            {shown && hasPicture(shown) ? (
+              <div ref={currentLayer} className="absolute inset-0 origin-top-left">
+                <Picture
+                  key={`cur-${segmentIndex}`}
+                  scene={shown}
+                  imageRef={current}
+                  poseRef={currentPose}
+                  format={project.format}
+                  talking={talking}
+                />
+              </div>
+            ) : (
+              <div className="absolute inset-0 grid place-items-center text-[13px] text-film-ink/50">
+                Scene {(scene?.index ?? 0) + 1} has no picture yet
+              </div>
+            )}
+            {previous && hasPicture(previous) && (
+              <div ref={outgoing} className="absolute inset-0 origin-top-left" style={{ opacity: 0 }}>
+                <Picture
+                  key={`old-${segmentIndex}`}
+                  scene={previous}
+                  imageRef={outgoingImage}
+                  poseRef={outgoingPose}
+                  format={project.format}
+                  talking={false}
+                />
+              </div>
+            )}
+          </div>
           <div
             ref={black}
             aria-hidden
@@ -640,6 +903,7 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
           onEnded={() => {
             // The music loops on its own: stop it with the voice-over.
             music.current?.pause()
+            playingRef.current = false
             setPlaying(false)
           }}
         />
@@ -717,11 +981,13 @@ function Player({ data, duration }: { data: StepProps['data']; duration: number 
 function Picture({
   scene,
   imageRef,
+  poseRef,
   format,
   talking,
 }: {
   scene: SceneDTO
   imageRef: React.RefObject<HTMLImageElement | null>
+  poseRef: React.RefObject<HTMLImageElement | null>
   format: VideoFormat
   talking: boolean
 }) {
@@ -754,6 +1020,7 @@ function Picture({
       {layer?.poseUrl && (
         // biome-ignore lint/performance/noImgElement: user uploads
         <img
+          ref={poseRef}
           src={layer.poseUrl}
           alt={[layer.character, layer.pose].filter(Boolean).join(', ')}
           className={cn(

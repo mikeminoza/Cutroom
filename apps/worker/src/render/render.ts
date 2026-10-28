@@ -16,11 +16,31 @@
 // A layered scene (a Library background with a character's pose in front) is built in its clip:
 // the background moves like any picture, the pose stands still in front of it, breathing, bouncing
 // while the narrator speaks, and blinking when it has an eyes-closed twin.
+//
+// The edit: every picture drifts at a steady speed, accents (a zoom-cut on a key word, a shake on
+// a punchline) are part of the same camera transform, a whip slides the previous picture out and
+// this one in with a motion blur, and the final pass mixes a whoosh, swish or thud under each.
 import { rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { type AccentEvent, accentEvents, SHAKE, SHAKE_SECONDS, ZOOM_CUT } from '@cutroom/shared/accents'
 import { chunkCaptions, type Overlay, speechSpans, toSrt } from '@cutroom/shared/captions'
-import { planTransitions, type TransitionPlan } from '@cutroom/shared/transitions'
+import {
+  SFX_LEVEL,
+  type SoundEvent,
+  type SoundName,
+  sfxEvents,
+  synthesize,
+  wavBytes,
+} from '@cutroom/shared/sfx'
+import {
+  NO_TRANSITION,
+  planTransitions,
+  type TransitionPlan,
+  whipFrame,
+  whipProgress,
+} from '@cutroom/shared/transitions'
 import type {
+  Accent,
   CaptionStyle,
   ImageFit,
   LayerSide,
@@ -30,7 +50,7 @@ import type {
   VideoFormat,
   Word,
 } from '@cutroom/shared/types'
-import { outputSize, poseBox } from '@cutroom/shared/types'
+import { outputSize, poseBox, poseHead } from '@cutroom/shared/types'
 import { buildAss } from './ass'
 import {
   defaultThreads,
@@ -56,6 +76,9 @@ export interface RenderScene {
   focusY: number
   /** How this scene's picture comes in. Ignored for scenes without an image. */
   transition: Transition
+  /** A zoom-cut or shake in this scene, on `accentWord` (see accentEvents). */
+  accent?: Accent
+  accentWord?: string
 }
 
 export interface RenderLayer {
@@ -85,6 +108,8 @@ export interface RenderInput {
   musicPath: string | null
   /** 0..1, background music level under the voice. */
   musicVolume: number
+  /** A whoosh under each whip, a swish under each zoom-cut, a thud under each shake (default on). */
+  soundEffects?: boolean
   /** Fraction 0..1 over the whole render, plus a human-readable step. */
   onProgress?: (fraction: number, detail: string) => void
   /** Kills ffmpeg when aborted; renderVideo then rejects with an AbortError. */
@@ -103,6 +128,10 @@ const ASS_NAME = 'captions.ass'
 const SRT_NAME = 'captions.srt'
 const LIST_NAME = 'scenes.ffconcat'
 const OUTPUT_NAME = 'video.mp4'
+/** A shake lasts this many frames. */
+const SHAKE_FRAMES = Math.round(SHAKE_SECONDS * FPS)
+/** The frame number from 0 in `perspective` expressions (its `in` counts from 1). */
+const FRAME = '(in-1)'
 /**
  * Share of the progress bar for the scene clips. They hold all of the video work (motion,
  * captions, x264); the final pass only copies video and encodes audio, so it gets the rest.
@@ -166,9 +195,21 @@ export interface Segment {
    * layered scenes on the same background share one move, so only the pose changes at the cut.
    */
   move: { frames: number; offset: number }
+  /** The zoom-cut and shakes in this clip, in frames from its start. */
+  accents: CameraAccents
 }
 
-const NO_FADES: TransitionPlan = { fadeIn: 0, fadeOut: 0, crossfade: 0, tail: 0 }
+/** Accents of one clip, in frames from its first frame (negative: before it). */
+export interface CameraAccents {
+  /** The zoom-cut's first frame; it holds to the end of the clip. null = none. */
+  zoom: number | null
+  /** Where it zooms in, in pixels; the picture's own anchor (its focus point) when missing. */
+  zoomAnchor?: { x: number; y: number }
+  /** Each shake's first frame. */
+  shakes: number[]
+}
+
+const NO_ACCENTS: CameraAccents = { zoom: null, shakes: [] }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
 const clamp01 = (n: number) => (Number.isFinite(n) ? clamp(n, 0, 1) : 0.5)
@@ -178,9 +219,14 @@ const clamp01 = (n: number) => (Number.isFinite(n) ? clamp(n, 0, 1) : 0.5)
  * absolute timeline (not per scene), so rounding never accumulates and the frames always add up
  * to round(duration * FPS). A scene without an image extends the previous clip — the previous
  * image keeps moving with the same motion instead of jumping back to its first frame. Before
- * the first image there's a solid dark frame.
+ * the first image there's a solid dark frame. `accents` (from accentEvents) go to the clip on
+ * screen at their moment: one zoom-cut per picture, and none on the dark frame.
  */
-export function planSegments(scenes: RenderScene[], totalFrames: number): Segment[] {
+export function planSegments(
+  scenes: RenderScene[],
+  totalFrames: number,
+  accents: AccentEvent[] = [],
+): Segment[] {
   const sorted = [...scenes].sort((a, b) => a.start - b.start)
   const bounds: number[] = []
   sorted.forEach((scene, i) => {
@@ -229,8 +275,9 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
       visual: lastVisual,
       sceneIndex: i,
       transition: lastTransition,
-      plan: NO_FADES,
+      plan: NO_TRANSITION,
       move: { frames: 0, offset: 0 },
+      accents: NO_ACCENTS,
     })
   })
   if (segments.length === 0)
@@ -240,9 +287,25 @@ export function planSegments(scenes: RenderScene[], totalFrames: number): Segmen
       visual: null,
       sceneIndex: 0,
       transition: 'cut',
-      plan: NO_FADES,
+      plan: NO_TRANSITION,
       move: { frames: 0, offset: 0 },
+      accents: NO_ACCENTS,
     })
+  // Inside one shot (same background, new pose) the cut stays the shot's continuous cut.
+  segments.forEach((segment, i) => {
+    if (segment.transition === 'whip' && i > 0 && sameShot(segments[i - 1].visual, segment.visual))
+      segment.transition = 'cut'
+  })
+  for (const event of accents) {
+    const frame = Math.round(event.time * FPS)
+    const segment = segments.find((s) => frame >= s.startFrame && frame < s.startFrame + s.frames)
+    if (!segment?.visual) continue
+    const local = frame - segment.startFrame
+    if (event.kind === 'zoom' && segment.accents.zoom === null)
+      segment.accents = { ...segment.accents, zoom: local }
+    if (event.kind === 'shake')
+      segment.accents = { ...segment.accents, shakes: [...segment.accents.shakes, local] }
+  }
   const plans = planTransitions(
     segments.map((s) => ({ length: s.frames, hasVisual: s.visual !== null, transition: s.transition })),
     FPS,
@@ -308,10 +371,14 @@ const num = (n: number) => {
  * works on the small output-size frame (~3 ms/frame at 720p on one core).
  *
  * The rectangle keeps the focus point fixed while zooming (zoom "into" the subject); pans
- * travel horizontally at a fixed 1/(1-f) zoom. Easing is half linear / half cosine: it starts
- * and ends at half speed, so the motion doesn't snap at cuts but never fully stops either.
- * `frames` is the whole move; `offset` starts this clip part-way through it (the previous
- * picture continuing its move while it crossfades out). Returns null when nothing animates.
+ * travel horizontally at a fixed 1/(1-f) zoom. The speed is steady: a picture arrives already
+ * moving, and two pictures with the same move cut together smoothly. `frames` is the whole move;
+ * `offset` starts this clip part-way through it (the previous picture continuing its move while
+ * it crossfades or whips out).
+ *
+ * `accents` narrow the moving rectangle further, as accentWindow in @cutroom/shared/accents does
+ * for the preview: from the zoom-cut's frame it shows 1/ZOOM_CUT of the view around the anchor,
+ * and during a shake it is offset and slightly enlarged. Returns null when nothing animates.
  */
 export function motionFilter(
   motion: Motion,
@@ -321,38 +388,102 @@ export function motionFilter(
   anchorX: number,
   anchorY: number,
   offset = 0,
+  accents: CameraAccents = NO_ACCENTS,
 ): string | null {
-  if (motion === 'none' || frames < 2) return null
-  const seconds = frames / FPS
-  const p = offset > 0 ? `((in+${offset})/${frames - 1})` : `(in/${frames - 1})`
-  const eased = `(0.5*${p}+0.25*(1-cos(PI*${p})))`
+  const moving = motion !== 'none' && frames >= 2
+  const accented = accents.zoom !== null || accents.shakes.length > 0
+  if (!moving && !accented) return null
   const ax = num(clamp(anchorX, 0, width))
   const ay = num(clamp(anchorY, 0, height))
   const W = num(width)
   const H = num(height)
 
-  let r: string // visible fraction of the frame (1/zoom), as an expression of `in`
-  let x0: string
-  if (motion === 'zoom-in' || motion === 'zoom-out') {
-    // Subtle and capped in speed: short scenes zoom less instead of lurching.
-    const amount = Math.min(0.12, 0.05 * seconds)
-    const k = num(Math.log(1 + amount))
-    // exp() makes the zoom change at a constant perceived rate.
-    r = motion === 'zoom-in' ? `exp(-${k}*${eased})` : `exp(-${k}*(1-${eased}))`
-    x0 = `(${ax}-${ax}*${r})`
-  } else {
-    // Pan across up to 10% of the frame width (slower for short scenes).
-    const travel = Math.min(0.1, 0.04 * seconds)
-    r = num(1 - travel)
-    const span = num(travel * width)
-    x0 = motion === 'pan-right' ? `(${span}*${eased})` : `(${span}*(1-${eased}))`
+  let r = '1' // visible fraction of the frame (1/zoom), as an expression of `in`
+  let x0 = '0'
+  let y0 = '0'
+  if (moving) {
+    const seconds = frames / FPS
+    const p = offset > 0 ? `((${FRAME}+${offset})/${frames - 1})` : `(${FRAME}/${frames - 1})`
+    if (motion === 'zoom-in' || motion === 'zoom-out') {
+      // Subtle and capped in speed: short scenes zoom less instead of lurching.
+      const amount = Math.min(0.12, 0.05 * seconds)
+      const k = num(Math.log(1 + amount))
+      // exp() makes the zoom change at a constant perceived rate.
+      r = motion === 'zoom-in' ? `exp(-${k}*${p})` : `exp(-${k}*(1-${p}))`
+      x0 = `(${ax}-${ax}*${r})`
+    } else {
+      // Pan across up to 10% of the frame width (slower for short scenes).
+      const travel = Math.min(0.1, 0.04 * seconds)
+      r = num(1 - travel)
+      const span = num(travel * width)
+      x0 = motion === 'pan-right' ? `(${span}*${p})` : `(${span}*(1-${p}))`
+    }
+    y0 = `(${ay}-${ay}*${r})`
   }
-  const x1 = `(${x0}+${W}*${r})`
-  const y0 = `(${ay}-${ay}*${r})`
-  const y2 = `(${ay}+(${H}-${ay})*${r})`
-  const opts = { x0, y0, x1, y1: y0, x2: x0, y2, x3: x1, y3: y2 }
+  let opts: Record<string, string>
+  if (!accented) {
+    const x1 = `(${x0}+${W}*${r})`
+    const y2 = `(${ay}+(${H}-${ay})*${r})`
+    opts = { x0, y0, x1, y1: y0, x2: x0, y2, x3: x1, y3: y2 }
+  } else {
+    const view = accentExpressions(accents, width, height, accents.zoomAnchor ?? { x: anchorX, y: anchorY })
+    const left = `(${x0}+${view.left}*${r})`
+    const top = `(${y0}+${view.top}*${r})`
+    const right = `(${left}+${W}*${r}*${view.scale})`
+    const bottom = `(${top}+${H}*${r}*${view.scale})`
+    opts = { x0: left, y0: top, x1: right, y1: top, x2: left, y2: bottom, x3: right, y3: bottom }
+  }
   const parts = Object.entries(opts).map(([key, expr]) => `${key}='${expr}'`)
   return `perspective=${parts.join(':')}:interpolation=linear:sense=source:eval=frame`
+}
+
+/**
+ * accentWindow as ffmpeg expressions of the frame number: the shown part of the moving view, in
+ * its own pixels (left, top) and as a share of its size (scale).
+ */
+function accentExpressions(
+  accents: CameraAccents,
+  width: number,
+  height: number,
+  anchor: { x: number; y: number },
+): { left: string; top: string; scale: string } {
+  const W = num(width)
+  const H = num(height)
+  const s = accents.zoom !== null ? `if(gte(${FRAME},${accents.zoom}),${num(1 / ZOOM_CUT)},1)` : '1'
+  const shakes = accents.shakes.map((first) => {
+    const t = `((${FRAME}-${first})/${FPS})`
+    return {
+      on: `between(${FRAME},${first},${first + SHAKE_FRAMES - 1})`,
+      t,
+      fade: `exp(-${num(SHAKE.decay)}*${t})`,
+    }
+  })
+  if (shakes.length === 0) {
+    return {
+      left: `(${num(clamp(anchor.x, 0, width))}*(1-${s}))`,
+      top: `(${num(clamp(anchor.y, 0, height))}*(1-${s}))`,
+      scale: s,
+    }
+  }
+  const sum = (terms: string[]) => `(${terms.join('+')})`
+  const grow = `(1+${sum(shakes.map((k) => `${k.on}*${num(SHAKE.grow)}*${k.fade}`))})`
+  const dx = sum(
+    shakes.map((k) => `${k.on}*${num(SHAKE.amplitude)}*sin(${num(2 * Math.PI * SHAKE.fx)}*${k.t})*${k.fade}`),
+  )
+  const dy = sum(
+    shakes.map(
+      (k) =>
+        `${k.on}*${num(SHAKE.ratioY * SHAKE.amplitude)}*cos(${num(2 * Math.PI * SHAKE.fy)}*${k.t})*${k.fade}`,
+    ),
+  )
+  const scale = `(${s}/${grow})`
+  const ax = num(clamp(anchor.x, 0, width))
+  const ay = num(clamp(anchor.y, 0, height))
+  return {
+    left: `(${ax}*(1-${s})+${W}*${s}/2*(1-1/${grow})-${dx}*${W}*${scale})`,
+    top: `(${ay}*(1-${s})+${H}*${s}/2*(1-1/${grow})-${dy}*${W}*${scale})`,
+    scale,
+  }
 }
 
 /** RGB -> BT.709 limited-range yuv420p, tagged, so libass and players agree on colours. */
@@ -457,7 +588,8 @@ const blinkAt = (at: number) => `lt(mod(t+${num(at + 1.3)},4.1),0.13)`
  * then the move; for a layered scene, the pose standing in front. Statements the pose needs go
  * into `graph` first. `label` keeps pad names unique when two pictures share one graph; `move` is
  * the whole move and how far into it this clip starts (the previous picture continuing its move
- * while it crossfades out).
+ * while it crossfades or whips out). `accents` are in frames of this clip: on a plain picture
+ * they join its move; on a pose they act on the whole scene, zooming in on the pose's head.
  */
 function pictureChain(
   visual: Visual | null,
@@ -468,18 +600,29 @@ function pictureChain(
   label: string,
   move: { frames: number; offset: number },
   time: { at: number; seconds: number; speech: Span[] },
+  accents: CameraAccents = NO_ACCENTS,
 ): string {
   const { width: W, height: H } = size
   const nextInput = () => inputs.filter((arg) => arg === '-i').length
   const image = visual?.path ? (sizes.get(visual.path) ?? null) : null
   const index = nextInput()
+  const pose = visual?.pose
   let chain: string
   let motion: string | null = null
   if (visual?.path && image) {
     const base = baseFrame(visual, size, image, label)
     inputs.push('-i', visual.path)
     chain = base.chain
-    motion = motionFilter(visual.motion, move.frames, W, H, base.anchorX, base.anchorY, move.offset)
+    motion = motionFilter(
+      visual.motion,
+      move.frames,
+      W,
+      H,
+      base.anchorX,
+      base.anchorY,
+      move.offset,
+      pose ? NO_ACCENTS : accents,
+    )
   } else {
     inputs.push('-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`)
     chain = `format=rgb24,${TO_YUV}`
@@ -491,11 +634,11 @@ function pictureChain(
     'setpts=N',
     ...(motion ? [motion] : []),
   ].join(',')
-  const pose = visual?.pose
   if (!pose) return picture
 
   // The pose (and its blink) fitted into its box once, colour-converted with alpha, repeated.
-  const box = poseBox(H > W ? 'portrait' : 'landscape')
+  const format = H > W ? 'portrait' : 'landscape'
+  const box = poseBox(format)
   const even = (n: number) => Math.max(2, 2 * Math.round(n / 2))
   const fit =
     `scale=w=${even(W * box.width)}:h=${even(H * box.height)}:force_original_aspect_ratio=decrease:` +
@@ -508,12 +651,29 @@ function pictureChain(
   const poseInput = nextInput()
   inputs.push('-i', pose.path)
   graph.push(`${picture}[${label}scene]`, `[${poseInput}:v]${fit}[${label}pose]`)
+  // Accents move the background and the pose together.
+  const poseSize = sizes.get(pose.path)
+  const head = poseHead(format, pose.side, poseSize ? poseSize.width / poseSize.height : null)
+  const accent = motionFilter('none', 0, W, H, 0, 0, 0, {
+    ...accents,
+    zoomAnchor: { x: head.x * W, y: head.y * H },
+  })
   const standing = `[${label}scene][${label}pose]overlay=${place}`
-  if (!pose.blinkPath) return standing
+  if (!pose.blinkPath) return accent ? `${standing},${accent}` : standing
   const blinkInput = nextInput()
   inputs.push('-i', pose.blinkPath)
   graph.push(`${standing}[${label}posed]`, `[${blinkInput}:v]${fit}[${label}blink]`)
-  return `[${label}posed][${label}blink]overlay=${place}:enable='${blinkAt(time.at)}'`
+  const blinking = `[${label}posed][${label}blink]overlay=${place}:enable='${blinkAt(time.at)}'`
+  return accent ? `${blinking},${accent}` : blinking
+}
+
+/** Accents of the previous clip, counted from this clip's first frame (its zoom-cut still holds). */
+function carried(previous: Segment): CameraAccents {
+  const { zoom, shakes } = previous.accents
+  return {
+    zoom: zoom === null ? null : zoom - previous.frames,
+    shakes: shakes.map((first) => first - previous.frames).filter((first) => first + SHAKE_FRAMES > 0),
+  }
 }
 
 export function segmentArgs(
@@ -533,11 +693,17 @@ export function segmentArgs(
   // The picture, its move running on through the next picture's crossfade (plan.tail) so it
   // never stalls, then any dip through black.
   const picture = [
-    pictureChain(segment.visual, size, sizes, inputs, graph, 'a', segment.move, {
-      at,
-      seconds: segment.frames / FPS,
-      speech,
-    }),
+    pictureChain(
+      segment.visual,
+      size,
+      sizes,
+      inputs,
+      graph,
+      'a',
+      segment.move,
+      { at, seconds: segment.frames / FPS, speech },
+      segment.accents,
+    ),
     ...(plan.fadeIn > 0 ? [`fade=t=in:s=0:n=${plan.fadeIn}`] : []),
     ...(plan.fadeOut > 0 ? [`fade=t=out:s=${segment.frames - plan.fadeOut}:n=${plan.fadeOut}`] : []),
   ]
@@ -545,28 +711,36 @@ export function segmentArgs(
   const finish = [`setpts=N+${segment.startFrame}`, ...(burn ? [`ass=${ASS_NAME}`] : []), 'setpts=N[v]']
 
   const outgoing = previous?.visual ?? null
+  // The previous picture, continuing its move (and its zoom-cut) from where its own clip ended.
+  const old = (frames: number) =>
+    previous && outgoing
+      ? pictureChain(
+          outgoing,
+          size,
+          sizes,
+          inputs,
+          graph,
+          'b',
+          { frames: previous.move.frames, offset: previous.move.offset + previous.frames },
+          { at, seconds: frames / FPS, speech },
+          carried(previous),
+        )
+      : ''
   if (plan.crossfade > 0 && previous && outgoing && drawable(outgoing, sizes)) {
-    // The previous picture, continuing its move from where its own clip ended, fades out on top.
-    const old = [
-      pictureChain(
-        outgoing,
-        size,
-        sizes,
-        inputs,
-        graph,
-        'b',
-        { frames: previous.move.frames, offset: previous.move.offset + previous.frames },
-        { at, seconds: plan.crossfade / FPS, speech },
-      ),
+    // It fades out on top.
+    const fading = [
+      old(plan.crossfade),
       `trim=end_frame=${plan.crossfade}`,
       'format=yuva420p',
       `fade=t=out:s=0:n=${plan.crossfade}:alpha=1`,
     ]
     graph.push(
       `${picture.join(',')}[cur]`,
-      `${old.join(',')}[old]`,
+      `${fading.join(',')}[old]`,
       `[cur][old]overlay=eof_action=pass:format=yuv420,${finish.join(',')}`,
     )
+  } else if (plan.whip > 0 && previous && outgoing && drawable(outgoing, sizes)) {
+    graph.push(...whipGraph(picture.join(','), old(plan.whip), plan.whip, size, inputs, finish.join(',')))
   } else {
     graph.push([...picture, ...finish].join(','))
   }
@@ -590,6 +764,50 @@ export function segmentArgs(
   ]
 }
 
+/**
+ * A whip over the first `frames` frames: on a dark canvas the previous picture (`old`, already
+ * moving) slides out to the left while this one (`picture`) slides in from the right, both on the
+ * shared whipFrame curve and blurred sideways by its speed (one blur per frame, each on for its
+ * own frame only). The result covers the clip until it ends, like a crossfade's old picture.
+ * Frames are told apart by their time, not by the filters' frame counters (which count from 1 in
+ * some ffmpeg versions).
+ */
+function whipGraph(
+  picture: string,
+  old: string,
+  frames: number,
+  size: { width: number; height: number },
+  inputs: string[],
+  finish: string,
+): string[] {
+  const { width: W, height: H } = size
+  const canvas = inputs.filter((arg) => arg === '-i').length
+  inputs.push('-f', 'lavfi', '-i', `color=c=${BACKGROUND}:s=${W}x${H}:r=${FPS}`)
+  const steps = Array.from({ length: frames }, (_, k) => whipFrame(whipProgress(k, frames), W))
+  // Exact positions per frame, from the shared curve (overlay places whole pixels).
+  const before = (k: number) => num((k + 0.5) / FPS)
+  const perFrame = (values: number[]) =>
+    values.reduceRight(
+      (rest, value, k) => `if(lt(t,${before(k)}),${value},${rest})`,
+      String(values[values.length - 1]),
+    )
+  const shifts = steps.map((s) => Math.round(s.shift * W))
+  const blurs = steps.flatMap((s, k) =>
+    s.blur >= 0.5
+      ? [`gblur=sigma=${num(s.blur)}:sigmaV=0:enable='between(t,${before(k - 1)},${before(k)})'`]
+      : [],
+  )
+  return [
+    `${picture},split=2[cur][curw]`,
+    `${old},trim=end_frame=${frames}[old]`,
+    `[${canvas}:v]format=rgb24,${TO_YUV},trim=end_frame=${frames}[canvas]`,
+    `[curw]trim=end_frame=${frames}[new]`,
+    `[canvas][old]overlay=x='${perFrame(shifts.map((x) => -x))}':y=0:eval=frame:format=yuv420[half]`,
+    `[half][new]overlay=x='${perFrame(shifts.map((x) => W - x))}':y=0:eval=frame:format=yuv420${blurs.length ? `,${blurs.join(',')}` : ''}[whip]`,
+    `[cur][whip]overlay=eof_action=pass:format=yuv420,${finish}`,
+  ]
+}
+
 interface AudioPlan {
   inputs: string[]
   graph: string
@@ -597,8 +815,38 @@ interface AudioPlan {
   detail: string
 }
 
-/** Voice (or silence) + optional looped music, ducked under the voice and faded out at the end. */
-function audioPlan(input: RenderInput, duration: number): AudioPlan {
+/**
+ * The sound effects the edit plays: a whoosh from each whip's cut, and a swish or thud on each
+ * zoom-cut and shake that made it into a clip, at the frame it lands on.
+ */
+export function editSounds(segments: Segment[]): SoundEvent[] {
+  const time = (segment: Segment, frame: number) => (segment.startFrame + frame) / FPS
+  return sfxEvents(
+    segments.filter((s) => s.plan.whip > 0).map((s) => s.startFrame / FPS),
+    segments.flatMap((s) => [
+      ...(s.accents.zoom !== null
+        ? [{ kind: 'zoom' as const, time: time(s, s.accents.zoom), scene: s.sceneIndex }]
+        : []),
+      ...s.accents.shakes.map((frame) => ({
+        kind: 'shake' as const,
+        time: time(s, frame),
+        scene: s.sceneIndex,
+      })),
+    ]),
+  )
+}
+
+/**
+ * Voice (or silence) + optional looped music, ducked under the voice and faded out at the end,
+ * plus the sound effects: each effect file (one per sound) is split into one copy per event,
+ * delayed to its moment and mixed in at SFX_LEVEL. Without effects the graph is unchanged.
+ */
+export function audioPlan(
+  input: Pick<RenderInput, 'voiceoverPath' | 'musicPath' | 'musicVolume'>,
+  duration: number,
+  sounds: SoundEvent[] = [],
+  soundFiles: Partial<Record<SoundName, string>> = {},
+): AudioPlan {
   const D = num(duration)
   const inputs: string[] = []
   const graph: string[] = []
@@ -624,22 +872,61 @@ function audioPlan(input: RenderInput, duration: number): AudioPlan {
     )
   }
 
+  // What gets mixed: the voice with the ducked music, or whichever there is, or silence.
+  let beds: string[]
+  let detail: string
   if (voice && music) {
     graph.push(
       '[voice]asplit=2[vmix][vkey]',
       // Duck the music ~12 dB while the voice speaks; release slowly so it doesn't pump.
       '[music][vkey]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=450:knee=4[ducked]',
-      '[vmix][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,' +
-        'alimiter=limit=0.97:level=false:latency=true[aout]',
     )
-    return { inputs, graph: graph.join(';'), label: '[aout]', detail: 'Mixing voice-over and music' }
+    beds = ['[vmix]', '[ducked]']
+    detail = 'Mixing voice-over and music'
+  } else if (voice) {
+    beds = ['[voice]']
+    detail = 'Adding voice-over'
+  } else if (music) {
+    beds = ['[music]']
+    detail = 'Adding music'
+  } else {
+    inputs.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo')
+    graph.push(`[${next++}:a]atrim=end=${D}[silence]`)
+    beds = ['[silence]']
+    detail = 'Adding audio track'
   }
-  if (voice) return { inputs, graph: graph.join(';'), label: '[voice]', detail: 'Adding voice-over' }
-  if (music) return { inputs, graph: graph.join(';'), label: '[music]', detail: 'Adding music' }
 
-  inputs.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo')
-  graph.push(`[${next}:a]atrim=end=${D}[silence]`)
-  return { inputs, graph: graph.join(';'), label: '[silence]', detail: 'Adding audio track' }
+  const effects: string[] = []
+  for (const sound of ['whoosh', 'swish', 'thud'] as const) {
+    const file = soundFiles[sound]
+    const starts = sounds.filter((e) => e.sound === sound).map((e) => e.start)
+    if (!file || starts.length === 0) continue
+    inputs.push('-i', resolve(file))
+    const copies = starts.map((_, i) => `[${sound}${i}]`)
+    graph.push(
+      `[${next++}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=mono` +
+        (copies.length > 1 ? `,asplit=${copies.length}${copies.join('')}` : copies[0]),
+      ...starts.map(
+        (start, i) => `${copies[i]}adelay=delays=${Math.round(start * 1000)}:all=1[${sound}d${i}]`,
+      ),
+    )
+    effects.push(...starts.map((_, i) => `[${sound}d${i}]`))
+  }
+  if (effects.length > 0) {
+    graph.push(
+      `${effects.join('')}${effects.length > 1 ? `amix=inputs=${effects.length}:duration=longest:dropout_transition=0:normalize=0,` : ''}` +
+        `volume=${num(SFX_LEVEL)},pan=stereo|c0=c0|c1=c0[sfx]`,
+    )
+    beds.push('[sfx]')
+    detail = `${detail} and sound effects`
+  }
+
+  if (beds.length === 1) return { inputs, graph: graph.join(';'), label: beds[0], detail }
+  graph.push(
+    `${beds.join('')}amix=inputs=${beds.length}:duration=first:dropout_transition=0:normalize=0,` +
+      'alimiter=limit=0.97:level=false:latency=true[aout]',
+  )
+  return { inputs, graph: graph.join(';'), label: '[aout]', detail }
 }
 
 export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
@@ -681,7 +968,17 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
   }
 
   // Probe each distinct image once (also fails early with a clear message on a broken file).
-  const segments = planSegments(input.scenes, totalFrames)
+  const accents = accentEvents(
+    input.scenes.map((s) => ({
+      start: s.start,
+      end: s.end,
+      accent: s.accent ?? 'none',
+      accentWord: s.accentWord ?? '',
+    })),
+    input.words,
+    totalFrames / FPS,
+  )
+  const segments = planSegments(input.scenes, totalFrames, accents)
   const sizes = new Map<string, ImageSize>()
   const files = segments.flatMap((segment) =>
     [segment.visual?.path, segment.visual?.pose?.path, segment.visual?.pose?.blinkPath].map((path) => ({
@@ -771,7 +1068,15 @@ export async function renderVideo(input: RenderInput): Promise<RenderOutput> {
   await writeFile(join(workDir, LIST_NAME), `${list.join('\n')}\n`, 'utf8')
 
   const exactDuration = totalFrames / FPS
-  const audio = audioPlan(input, exactDuration)
+  // The sound effects, written once per sound that plays.
+  const sounds = input.soundEffects === false ? [] : editSounds(segments)
+  const soundFiles: Partial<Record<SoundName, string>> = {}
+  for (const sound of new Set(sounds.map((e) => e.sound))) {
+    const name = `sfx-${sound}.wav`
+    await writeFile(join(workDir, name), wavBytes(synthesize(sound)))
+    soundFiles[sound] = join(workDir, name)
+  }
+  const audio = audioPlan(input, exactDuration, sounds, soundFiles)
   const finalDetail = audio.detail
   report(SCENES_WEIGHT, finalDetail)
   await runFfmpeg(

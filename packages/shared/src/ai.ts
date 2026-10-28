@@ -2,12 +2,16 @@
 // and by the worker for the voice-over transcription.
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
+import { narrationHas } from './accents'
 import { CADENCES, type Cadence, marketNote } from './setup'
 import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
 import {
+  ACCENTS,
+  type Accent,
   type CommentInsights,
   MOTIONS,
   type Motion,
+  normalizeAccent,
   normalizeTransition,
   TRANSITIONS,
   type TranscriptSegment,
@@ -276,6 +280,8 @@ export interface SceneDraft {
   motion: Motion
   onScreenText: string
   transition: Transition
+  accent: Accent
+  accentWord: string
   notes: string
 }
 
@@ -288,6 +294,8 @@ const sceneSchema = z.object({
   motion: z.string().default('zoom-in'),
   onScreenText: z.string().default(''),
   transition: z.string().default('cut'),
+  accent: z.string().default('none'),
+  accentWord: z.string().default(''),
   notes: z.string().default(''),
 })
 
@@ -360,9 +368,10 @@ Rules:
 - imagePrompt: a self-contained prompt for an image generator describing that picture, under 40 words. Do not mention the art style or aspect ratio (added later). Refer to recurring characters by name.
 - characters: names of recurring characters visible in the image (from the list below), or [].
 - shot: camera framing, e.g. "wide establishing shot", "medium shot", "close-up", "over-the-shoulder", "top-down".
-- motion: one of ${MOTIONS.join(', ')}: pick what suits the shot; vary it between scenes.
+- motion: one of ${MOTIONS.join(', ')}: keep the same move through a run of scenes within a section, and change it when the script moves on to a new section or idea. Every picture moves at the same steady speed, so a run of the same move cuts together smoothly.
 - onScreenText: a short optional title shown at the top of the frame (max 5 words), or "". Use it sparingly: key numbers, names, chapter-like moments.
-- transition: how this scene's picture replaces the previous one: "cut" (the default, nearly every scene, and always for quick cuts), "crossfade" for a soft change of place or time, "fade-black" only for a big jump${parts > 1 && part < parts - 1 ? '' : ' or the closing scene'}.
+- transition: how this scene's picture replaces the previous one: "cut" (the default, nearly every scene, and always for quick cuts), "whip" (a fast sideways slide with a whoosh) when the script moves on to a new section or idea, "crossfade" for a soft change of place or time, "fade-black" only for a big jump${parts > 1 && part < parts - 1 ? '' : ' or the closing scene'}.
+${EFFECT_RULES}
 - notes: optional sound-effect or music cue, or "".
 
 Format: ${input.format === 'portrait' ? 'vertical 9:16' : 'horizontal 16:9'}
@@ -392,6 +401,8 @@ ${script.trim()}
               motion: { type: 'string', enum: MOTIONS },
               onScreenText: str,
               transition: { type: 'string', enum: TRANSITIONS },
+              accent: { type: 'string', enum: ACCENTS },
+              accentWord: str,
               notes: str,
             },
             required: ['narration', 'visual', 'imagePrompt', 'characters', 'shot', 'motion'],
@@ -407,6 +418,7 @@ ${script.trim()}
     ...s,
     motion: (MOTIONS as string[]).includes(s.motion) ? (s.motion as Motion) : 'zoom-in',
     transition: normalizeTransition(s.transition),
+    ...checkedAccent(s.accent, s.accentWord, s.narration),
     onScreenText: s.onScreenText.trim().slice(0, 200),
   }))
   const original = countWords(script)
@@ -418,6 +430,121 @@ ${script.trim()}
     )
   }
   return scenes
+}
+
+/** When the storyboard and "Add effects with AI" use an accent (the code spaces them out after). */
+const EFFECT_RULES = `- accent: "zoom" (the picture jumps closer to a detail, with a swish) on the key word of an important line, in about 1 scene in 6; "shake" (a short camera shake with a thud) on a punchline or a big reveal, rarely; otherwise "none". Never a zoom on two scenes in a row.
+- accentWord: the one word of the narration the accent lands on, copied exactly from the scene's narration, or "" for none.`
+
+/** An accent the AI picked, with its word dropped when the narration doesn't have it. */
+function checkedAccent(
+  accent: string,
+  word: string,
+  narration: string,
+): { accent: Accent; accentWord: string } {
+  const picked = normalizeAccent(accent)
+  const clean = word.trim().slice(0, 100)
+  return { accent: picked, accentWord: picked !== 'none' && narrationHas(narration, clean) ? clean : '' }
+}
+
+export interface SceneEffects {
+  /** 'whip' or 'cut': only these two are picked here (crossfades and dips are left alone). */
+  transition: 'cut' | 'whip'
+  accent: Accent
+  accentWord: string
+}
+
+/**
+ * Picks whips and accents for scenes that are already split (and maybe already have pictures):
+ * one Gemini call per part of the script, a few at a time. Returns one entry per scene, in order.
+ * The caller spaces them out (spaceEffects) and keeps crossfades and dips.
+ */
+export async function suggestEffects(
+  scenes: { narration: string; seconds: number }[],
+): Promise<SceneEffects[]> {
+  // Parts of about STORYBOARD_PART_WORDS words, of whole scenes.
+  const parts: number[][] = []
+  let words = 0
+  scenes.forEach((scene, i) => {
+    const n = countWords(scene.narration)
+    if (parts.length === 0 || words + n > STORYBOARD_PART_WORDS) {
+      parts.push([])
+      words = 0
+    }
+    parts[parts.length - 1].push(i)
+    words += n
+  })
+  const results: SceneEffects[] = scenes.map(() => ({ transition: 'cut', accent: 'none', accentWord: '' }))
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(3, parts.length) }, async () => {
+      while (next < parts.length) {
+        const part = parts[next++]
+        const picks = await effectsPart(part.map((i) => ({ number: i + 1, ...scenes[i] })))
+        for (const pick of picks) {
+          const i = pick.scene - 1
+          if (!part.includes(i)) continue
+          results[i] = {
+            transition: pick.transition === 'whip' && i > 0 ? 'whip' : 'cut',
+            ...checkedAccent(pick.accent, pick.accentWord, scenes[i].narration),
+          }
+        }
+      }
+    }),
+  )
+  return results
+}
+
+async function effectsPart(
+  scenes: { number: number; narration: string; seconds: number }[],
+): Promise<{ scene: number; transition: string; accent: string; accentWord: string }[]> {
+  const list = scenes
+    .map((s) => `${s.number}. (${s.seconds.toFixed(1)} s) ${s.narration.trim() || '(no narration)'}`)
+    .join('\n')
+  const prompt = `These are the scenes of an explainer video, in order: one picture each, with its narration and how long it is on screen. Pick the editing effects, like a YouTube editor for an explainer channel would. Effects are rare: most scenes get none.
+
+Rules:
+- transition: "whip" (a fast sideways slide with a whoosh) on the first scene of a new section or idea, otherwise "cut".
+${EFFECT_RULES}
+
+Return one entry for every scene, by its number.
+
+Scenes:
+${list}`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        scenes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              scene: { type: 'integer' },
+              transition: { type: 'string', enum: ['cut', 'whip'] },
+              accent: { type: 'string', enum: ACCENTS },
+              accentWord: str,
+            },
+            required: ['scene', 'transition', 'accent', 'accentWord'],
+          },
+        },
+      },
+      required: ['scenes'],
+    },
+    z.object({
+      scenes: z.array(
+        z.object({
+          scene: z.number().int(),
+          transition: z.string().default('cut'),
+          accent: z.string().default('none'),
+          accentWord: z.string().default(''),
+        }),
+      ),
+    }),
+    'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
+  )
+  return result.scenes
 }
 
 // ---------------------------------------------------------------------------
