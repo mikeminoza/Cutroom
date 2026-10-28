@@ -64,6 +64,13 @@
       "when": 1793155307640,
       "tag": "0008_video_insights",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793155774805,
+      "tag": "0009_breakouts",
+      "breakpoints": true
     }
   ]
 }

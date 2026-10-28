@@ -17,6 +17,7 @@ export async function getSettings(): Promise<AppSettings> {
     shorts: { ...DEFAULT_SETTINGS.shorts, ...row.data.shorts },
     autopilot: { ...DEFAULT_SETTINGS.autopilot, ...row.data.autopilot },
     setup: { ...DEFAULT_SETTINGS.setup, ...row.data.setup },
+    breakouts: { ...DEFAULT_SETTINGS.breakouts, ...row.data.breakouts },
   }
 }
 

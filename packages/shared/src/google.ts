@@ -532,6 +532,72 @@ function isoSeconds(duration: string | null | undefined): number {
   return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3] ?? 0) * 60 + Number(m[4] ?? 0)
 }
 
+/** A public video found on YouTube, with its numbers and its channel's. */
+export interface FoundVideo {
+  id: string
+  title: string
+  channelId: string
+  channelTitle: string
+  publishedAt: string | null
+  thumbnail: string | null
+  views: number
+  seconds: number
+  /** The channel's views per video (all its views over all its videos), 0 when hidden. */
+  channelAverage: number
+  channelSubscribers: number
+}
+
+/**
+ * Videos published since `after` that match `query`, most viewed first, with their numbers and
+ * their channels' (one search, 100 quota units, plus 2 for the details).
+ */
+export async function searchRecentVideos(
+  client: OAuthClient,
+  query: string,
+  options: { after: Date; regionCode?: string; language?: string; max?: number },
+): Promise<FoundVideo[]> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const found = await yt.search.list({
+    part: ['id'],
+    q: query,
+    type: ['video'],
+    order: 'viewCount',
+    publishedAfter: options.after.toISOString(),
+    maxResults: Math.min(50, options.max ?? 25),
+    ...(options.regionCode ? { regionCode: options.regionCode } : {}),
+    ...(options.language ? { relevanceLanguage: options.language } : {}),
+  })
+  const ids = (found.data.items ?? []).map((i) => i.id?.videoId).filter((v): v is string => Boolean(v))
+  if (ids.length === 0) return []
+  const videos =
+    (await yt.videos.list({ part: ['snippet', 'contentDetails', 'statistics'], id: ids, maxResults: 50 }))
+      .data.items ?? []
+  const channelIds = [
+    ...new Set(videos.map((v) => v.snippet?.channelId).filter((c): c is string => Boolean(c))),
+  ]
+  const channels = channelIds.length
+    ? ((await yt.channels.list({ part: ['statistics'], id: channelIds, maxResults: 50 })).data.items ?? [])
+    : []
+  const stats = new Map(channels.map((c) => [c.id ?? '', c.statistics]))
+  return videos.map((v) => {
+    const channel = stats.get(v.snippet?.channelId ?? '')
+    const uploads = Number(channel?.videoCount ?? 0)
+    const thumbs = v.snippet?.thumbnails
+    return {
+      id: v.id ?? '',
+      title: v.snippet?.title ?? '',
+      channelId: v.snippet?.channelId ?? '',
+      channelTitle: v.snippet?.channelTitle ?? '',
+      publishedAt: v.snippet?.publishedAt ?? null,
+      thumbnail: thumbs?.medium?.url ?? thumbs?.high?.url ?? thumbs?.default?.url ?? null,
+      views: Number(v.statistics?.viewCount ?? 0),
+      seconds: isoSeconds(v.contentDetails?.duration),
+      channelAverage: uploads > 0 ? Math.round(Number(channel?.viewCount ?? 0) / uploads) : 0,
+      channelSubscribers: channel?.hiddenSubscriberCount ? 0 : Number(channel?.subscriberCount ?? 0),
+    }
+  })
+}
+
 /** A public channel's title, description and newest uploads (3 quota units). */
 export async function channelUploads(
   client: OAuthClient,

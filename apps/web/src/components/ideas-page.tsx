@@ -10,6 +10,7 @@ import { cn } from '@/lib/cn'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
+import { Breakouts } from './breakouts'
 import {
   Button,
   ButtonLink,
@@ -23,7 +24,7 @@ import {
   Textarea,
 } from './ui'
 
-type Tab = 'new' | 'used' | 'dismissed'
+type Tab = 'new' | 'used' | 'dismissed' | 'breakouts'
 
 export function IdeasPage() {
   const { data: ideas, isLoading, error } = useIdeas()
@@ -205,7 +206,8 @@ export function IdeasPage() {
         <h1 className="display text-[34px]">Ideas</h1>
         <p className="mt-2 max-w-[64ch] text-[14.5px] text-ink-2">
           A backlog of video ideas. Gemini suggests them from your niche or series, avoiding what you have
-          already made. Pick the good ones and turn them into drafts.
+          already made, and Breakouts finds videos taking off in your niche. Pick the good ones and turn them
+          into drafts.
         </p>
       </header>
 
@@ -337,9 +339,12 @@ export function IdeasPage() {
               { value: 'new', label: `New (${counts.new})` },
               { value: 'used', label: `Made (${counts.used})` },
               { value: 'dismissed', label: `Dismissed (${counts.dismissed})` },
+              { value: 'breakouts', label: 'Breakouts' },
             ]}
             className="self-start"
           />
+
+          {tab === 'breakouts' && <Breakouts />}
 
           {tab === 'new' && (picked.length > 0 || creating) && (
             <div className="sticky top-2 z-10 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper">
@@ -379,7 +384,9 @@ export function IdeasPage() {
           )}
 
           {error && <p className="text-[14px] text-bad">Could not load ideas: {errorText(error)}</p>}
-          {isLoading && <div className="h-48 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />}
+          {isLoading && tab !== 'breakouts' && (
+            <div className="h-48 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
+          )}
           {tab === 'new' && suggesting && (
             <div
               aria-live="polite"
@@ -398,7 +405,7 @@ export function IdeasPage() {
               ))}
             </div>
           )}
-          {ideas && list.length === 0 && !(tab === 'new' && suggesting) && (
+          {ideas && tab !== 'breakouts' && list.length === 0 && !(tab === 'new' && suggesting) && (
             <div className="flex flex-col items-center gap-2 rounded-[var(--radius-panel)] border border-line bg-panel px-6 py-12 text-center">
               <Lightbulb className="size-6 text-ink-3" aria-hidden />
               <p className="max-w-[46ch] text-[14px] text-ink-2">

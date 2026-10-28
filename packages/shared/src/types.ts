@@ -402,6 +402,15 @@ export interface AppSettings {
   autopilot: Autopilot
   /** Channel setup tips ticked off by hand (the ones only YouTube Studio can do). */
   setup: { done: string[] }
+  /** The weekly search for videos breaking out in the niche (Ideas → Breakouts). */
+  breakouts: BreakoutSettings
+}
+
+export interface BreakoutSettings {
+  /** What to search YouTube for; empty = worked out from the niche on the first search. */
+  queries: string[]
+  /** When the last search ran (ISO), null = never. */
+  scannedAt: string | null
 }
 
 export interface Autopilot {
@@ -497,6 +506,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shorts: { count: 2, maxSeconds: 60 },
   autopilot: { perWeek: 0 },
   setup: { done: [] },
+  breakouts: { queries: [], scannedAt: null },
 }
 
 // YouTube video categories most creators use. Ids are YouTube's own.

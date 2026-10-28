@@ -970,6 +970,65 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     .slice(0, input.count)
 }
 
+/**
+ * Short YouTube searches that find videos in the niche, for the weekly breakout search: what a
+ * viewer of this channel types, not the channel's own name.
+ */
+export async function breakoutQueries(input: {
+  niche: string
+  audience: string
+  market?: string
+}): Promise<string[]> {
+  const prompt = [
+    'Write 3 short YouTube searches (2–5 words each) that find popular videos in this niche, the way its viewers would type them. Different angles, no channel names, no quotes.',
+    `Niche: ${input.niche}`,
+    input.audience && `Audience: ${input.audience}`,
+    marketNote(input.market),
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const result = await generateJson(
+    prompt,
+    { type: 'object', properties: { queries: { type: 'array', items: str } }, required: ['queries'] },
+    z.object({ queries: z.array(z.string()).min(1) }),
+    'You are a YouTube strategist who knows what people search for.',
+  )
+  return [
+    ...new Set(result.queries.map((q) => q.replace(/["“”]/g, '').trim().slice(0, 100)).filter(Boolean)),
+  ].slice(0, 3)
+}
+
+/**
+ * An idea for this channel from a video breaking out elsewhere: the same pull (the question, the
+ * hook, the surprise) made the channel's own, never a copy of the video.
+ */
+export async function ideaFromBreakout(input: {
+  niche: string
+  narration: string
+  language: string
+  market?: string
+  video: { title: string; channel: string; views: number; usual: number }
+}): Promise<{ title: string; angle: string }> {
+  const prompt = [
+    `A video is breaking out on YouTube: "${input.video.title}" by ${input.video.channel}, with ${input.video.views.toLocaleString('en-US')} views on a channel that usually gets about ${input.video.usual.toLocaleString('en-US')}.`,
+    `Turn what makes people click it (its question, hook or surprise) into one idea for this channel, in its own style. Never copy the title or the video.`,
+    `Channel niche: ${input.niche || 'general interest'}`,
+    input.narration && `Narration: ${input.narration}`,
+    `Language: ${input.language || 'English'}`,
+    marketNote(input.market),
+    'Return a working title (max 60 characters with the hook in the first 40, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const result = await generateJson(
+    prompt,
+    { type: 'object', properties: { title: str, angle: str }, required: ['title', 'angle'] },
+    z.object({ title: z.string().min(1), angle: z.string() }),
+    'You are a YouTube strategist who finds video ideas that people search for and click on.',
+  )
+  return { title: result.title.trim().slice(0, 200), angle: result.angle.trim().slice(0, 1000) }
+}
+
 // ---------------------------------------------------------------------------
 // Channel setup
 

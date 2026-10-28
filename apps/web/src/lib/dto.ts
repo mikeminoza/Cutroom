@@ -185,6 +185,31 @@ export interface IdeaDTO {
   createdAt: string
 }
 
+/** A video breaking out in the niche (server/breakouts.ts). */
+export interface BreakoutDTO {
+  id: string
+  title: string
+  channelTitle: string
+  youtubeChannelId: string
+  views: number
+  channelAverage: number
+  score: number
+  seconds: number
+  thumbnailUrl: string | null
+  publishedAt: string | null
+  query: string
+  status: 'new' | 'used' | 'dismissed'
+  ideaId: string | null
+  foundAt: string
+}
+
+export interface BreakoutsDTO {
+  breakouts: BreakoutDTO[]
+  /** What the search looks for. */
+  queries: string[]
+  scannedAt: string | null
+}
+
 export interface PerformanceVideo {
   id: string
   title: string

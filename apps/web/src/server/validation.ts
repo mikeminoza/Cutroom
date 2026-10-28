@@ -161,4 +161,10 @@ export const settingsSchema = z.object({
   }),
   autopilot: z.object({ perWeek: z.number().int().min(0).max(7) }).default({ perWeek: 0 }),
   setup: z.object({ done: z.array(z.string().max(60)).max(100) }).default({ done: [] }),
+  breakouts: z
+    .object({
+      queries: z.array(z.string().trim().min(1).max(100)).max(5),
+      scannedAt: z.string().max(40).nullable(),
+    })
+    .default({ queries: [], scannedAt: null }),
 })

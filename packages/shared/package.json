@@ -19,6 +19,7 @@
     "./accents": "./src/accents.ts",
     "./sfx": "./src/sfx.ts",
     "./retention": "./src/retention.ts",
+    "./breakouts": "./src/breakouts.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

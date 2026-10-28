@@ -1,10 +1,12 @@
 // Daily Vercel cron: wakes the worker, nudges any job that stalled while nobody was watching,
-// tells you about jobs that have been stuck for an hour, refreshes YouTube stats, and once a week
-// per channel has Gemini read what viewers say in the comments.
+// tells you about jobs that have been stuck for an hour, refreshes YouTube stats, once a week
+// searches YouTube for videos breaking out in the niche, and once a week per channel has Gemini
+// read what viewers say in the comments.
 
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { refreshStats } from '@/server/analytics'
+import { scanDueBreakouts } from '@/server/breakouts'
 import { postDueComments, readDueComments } from '@/server/comments'
 import { cronDenied } from '@/server/cron'
 import { db, schema } from '@/server/db'
@@ -51,6 +53,9 @@ export async function GET(request: Request): Promise<Response> {
   }
   // Comments for viewers on videos that went public since yesterday.
   stats.notes.push(...(await postDueComments().catch((error) => [String(error)])))
+  const breakouts = await scanDueBreakouts().catch((error) =>
+    error instanceof Error ? error.message : String(error),
+  )
   // A new draft for the week, if one is due. It and the weekly comment summary both use Gemini for
   // a while, so a day that drafted leaves the comments for tomorrow.
   const autopilot = await runAutopilot().catch((error) =>
@@ -59,5 +64,13 @@ export async function GET(request: Request): Promise<Response> {
   const comments = autopilot
     ? null
     : await readDueComments().catch((error) => (error instanceof Error ? error.message : String(error)))
-  return NextResponse.json({ worker, nudged: active.length, stuck: stuck.length, stats, autopilot, comments })
+  return NextResponse.json({
+    worker,
+    nudged: active.length,
+    stuck: stuck.length,
+    stats,
+    breakouts,
+    autopilot,
+    comments,
+  })
 }

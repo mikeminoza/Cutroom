@@ -35,6 +35,7 @@ vi.mock('@cutroom/shared/google', async (original) => {
     ...actual,
     videoComments,
     postComment,
+    searchRecentVideos: vi.fn(),
     videoStatistics: vi.fn(actual.videoStatistics),
     channelUploads: vi.fn(actual.channelUploads),
   }
@@ -104,6 +105,8 @@ const channelRoute = await import('../src/app/api/channel/route')
 const watermarkRoute = await import('../src/app/api/channel/watermark/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 const effectsRoute = await import('../src/app/api/projects/[id]/ai/effects/route')
+const breakoutsModule = await import('../src/server/breakouts')
+const breakoutsRoute = await import('../src/app/api/breakouts/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1889,5 +1892,79 @@ describe('what viewers watch and search for', () => {
     vi.mocked(ai.generateIdeas).mockResolvedValueOnce([])
     await drafting.addIdeas({ count: 1 })
     expect(vi.mocked(ai.generateIdeas).mock.lastCall?.[0].searchTerms?.[0]).toBe('why cant i sleep')
+  })
+})
+
+describe('videos breaking out in the niche', () => {
+  const found = (id: string, views: number, channelAverage: number, channelId = `UC-${id}`) => ({
+    id,
+    title: `Video ${id}`,
+    channelId,
+    channelTitle: `Channel ${id}`,
+    publishedAt: '2026-10-20T12:00:00Z',
+    thumbnail: null,
+    views,
+    seconds: 240,
+    channelAverage,
+    channelSubscribers: 1000,
+  })
+
+  it('searches, keeps the breakouts with their status, and turns one into an idea', async () => {
+    const database = await db()
+    if (!(await connections.defaultChannel())) {
+      await database.insert(schema.channels).values({
+        id: 'breakout-channel',
+        youtubeId: 'UC-own',
+        title: 'Own',
+        refreshToken: 't',
+        isDefault: true,
+      })
+    }
+    const own = (await connections.defaultChannel())?.youtubeId ?? 'UC-own'
+    // The search itself is stubbed; the client just needs to be made.
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    const settings = await settingsModule.getSettings()
+    await settingsModule.saveSettings({
+      ...settings,
+      breakouts: { queries: ['sleep science'], scannedAt: null },
+    })
+    vi.mocked(google.searchRecentVideos).mockResolvedValueOnce([
+      found('b1', 90_000, 6_000),
+      found('b2', 9_000, 8_000),
+      found('b3', 4_000, 100),
+      found('b4', 500_000, 1_000, own),
+    ])
+    expect(await breakoutsModule.scanBreakouts()).toBe(1)
+    expect(vi.mocked(google.searchRecentVideos).mock.lastCall?.[1]).toBe('sleep science')
+    const first = await (
+      await breakoutsRoute.GET(new Request('http://localhost/api/breakouts'), undefined)
+    ).json()
+    expect(first.queries).toEqual(['sleep science'])
+    expect(first.scannedAt).toBeTruthy()
+    expect(first.breakouts.map((b: { id: string; score: number }) => [b.id, b.score])).toEqual([['b1', 15]])
+
+    // Found again: new numbers, the same status, nothing new.
+    await breakoutsModule.setBreakoutStatus('b1', 'dismissed')
+    vi.mocked(google.searchRecentVideos).mockResolvedValueOnce([found('b1', 120_000, 6_000)])
+    expect(await breakoutsModule.scanBreakouts()).toBe(0)
+    const [again] = await breakoutsModule.listBreakouts()
+    expect(again).toMatchObject({ status: 'dismissed', views: 120_000, score: 20 })
+    // Searched this week already.
+    expect(await breakoutsModule.scanDueBreakouts()).toBeNull()
+
+    // Without Gemini the idea keeps the video's title as a starting point.
+    vi.stubEnv('GEMINI_API_KEY', '')
+    try {
+      const ideaId = await breakoutsModule.ideaFromBreakoutRow('b1')
+      const [idea] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, ideaId))
+      expect(idea).toMatchObject({ title: 'Video b1', status: 'new' })
+      expect(idea.angle).toMatch(/120,000 views on a channel that usually gets 6,000/)
+      expect((await breakoutsModule.listBreakouts())[0]).toMatchObject({ status: 'used', ideaId })
+      // Asking twice gives the same idea.
+      expect(await breakoutsModule.ideaFromBreakoutRow('b1')).toBe(ideaId)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

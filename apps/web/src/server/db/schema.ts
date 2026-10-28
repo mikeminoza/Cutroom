@@ -198,6 +198,31 @@ export const series = pgTable('series', {
   updatedAt: updated(),
 })
 
+/**
+ * Videos breaking out in the niche: recent YouTube videos with far more views than their channel
+ * usually gets, found by the weekly search (server/breakouts.ts). The id is YouTube's video id.
+ */
+export const breakouts = pgTable('breakouts', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull().default(''),
+  channelTitle: text('channel_title').notNull().default(''),
+  youtubeChannelId: text('youtube_channel_id').notNull().default(''),
+  views: integer('views').notNull().default(0),
+  /** The channel's usual views per video. */
+  channelAverage: integer('channel_average').notNull().default(0),
+  /** Views over the channel's usual views. */
+  score: real('score').notNull().default(0),
+  seconds: integer('seconds').notNull().default(0),
+  thumbnailUrl: text('thumbnail_url'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  /** The search that found it. */
+  query: text('query').notNull().default(''),
+  status: text('status').$type<'new' | 'used' | 'dismissed'>().notNull().default('new'),
+  /** The idea made from it. */
+  ideaId: text('idea_id').references(() => ideas.id, { onDelete: 'set null' }),
+  foundAt: timestamp('found_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 export const libraryCharacters = pgTable('library_characters', {
   id: text('id').primaryKey(),
   name: text('name').notNull().default(''),

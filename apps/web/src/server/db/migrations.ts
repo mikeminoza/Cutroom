@@ -80,4 +80,11 @@ export const migrations: { tag: string; statements: string[] }[] = [
     tag: '0008_video_insights',
     statements: ['ALTER TABLE "projects" ADD COLUMN "video_insights" jsonb;'],
   },
+  {
+    tag: '0009_breakouts',
+    statements: [
+      'CREATE TABLE "breakouts" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"title" text DEFAULT \'\' NOT NULL,\n\t"channel_title" text DEFAULT \'\' NOT NULL,\n\t"youtube_channel_id" text DEFAULT \'\' NOT NULL,\n\t"views" integer DEFAULT 0 NOT NULL,\n\t"channel_average" integer DEFAULT 0 NOT NULL,\n\t"score" real DEFAULT 0 NOT NULL,\n\t"seconds" integer DEFAULT 0 NOT NULL,\n\t"thumbnail_url" text,\n\t"published_at" timestamp with time zone,\n\t"query" text DEFAULT \'\' NOT NULL,\n\t"status" text DEFAULT \'new\' NOT NULL,\n\t"idea_id" text,\n\t"found_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'ALTER TABLE "breakouts" ADD CONSTRAINT "breakouts_idea_id_ideas_id_fk" FOREIGN KEY ("idea_id") REFERENCES "public"."ideas"("id") ON DELETE set null ON UPDATE no action;',
+    ],
+  },
 ]
