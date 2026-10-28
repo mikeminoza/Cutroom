@@ -348,6 +348,49 @@ export interface PostDetails {
    * answer. '' = none.
    */
   comment?: string
+  /** The title and description in other languages: YouTube shows viewers their own. */
+  translations?: PostTranslation[]
+}
+
+export interface PostTranslation {
+  /** A YouTube language code, e.g. "es". */
+  language: string
+  title: string
+  description: string
+  /** translationBasis of the title and description it was made from, to spot it going stale. */
+  basis?: string
+}
+
+/** A short fingerprint of a title and description: a translation of other text is out of date. */
+export function translationBasis(title: string, description: string): string {
+  let hash = 5381
+  for (const char of `${title}\n${description}`) hash = (Math.imul(hash, 33) + char.charCodeAt(0)) | 0
+  return (hash >>> 0).toString(36)
+}
+
+/** Languages viewers most often watch English-language YouTube in, with YouTube's codes. */
+export const TRANSLATION_LANGUAGES: { code: string; name: string }[] = [
+  { code: 'es', name: 'Spanish' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'hi', name: 'Hindi' },
+  { code: 'id', name: 'Indonesian' },
+  { code: 'fr', name: 'French' },
+  { code: 'de', name: 'German' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'ko', name: 'Korean' },
+  { code: 'it', name: 'Italian' },
+  { code: 'ru', name: 'Russian' },
+  { code: 'tr', name: 'Turkish' },
+  { code: 'vi', name: 'Vietnamese' },
+  { code: 'fil', name: 'Filipino' },
+  { code: 'th', name: 'Thai' },
+  { code: 'pl', name: 'Polish' },
+  { code: 'nl', name: 'Dutch' },
+]
+
+export function languageName(code: string): string {
+  return TRANSLATION_LANGUAGES.find((l) => l.code === code)?.name ?? code
 }
 
 export const EMPTY_POST: PostDetails = {
@@ -388,6 +431,8 @@ export interface AppSettings {
     mode: PostingMode
     resolution: Resolution
     captionStyle: CaptionStyle
+    /** Languages every video's title and description are translated into (YouTube codes). */
+    translateTo: string[]
   }
   freeBlobAfterPosting: boolean
   /** Default voice for AI voice-overs. */
@@ -498,6 +543,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     mode: 'review',
     resolution: '720p',
     captionStyle: 'highlight',
+    translateTo: [],
   },
   freeBlobAfterPosting: true,
   voice: DEFAULT_VOICE,

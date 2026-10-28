@@ -10,7 +10,7 @@ import {
   presetSlots,
   slotDays,
 } from '@cutroom/shared/setup'
-import { type AppSettings, type PostingSlot, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
+import { type AppSettings, languageName, type PostingSlot, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
@@ -393,6 +393,21 @@ export function SetupPage() {
           title: 'A caption track on every upload',
           state: 'auto',
           body: 'Cutroom uploads captions timed to the voice-over with each video, for people who watch muted and for search.',
+        },
+        {
+          id: 'languages',
+          title: 'Titles and descriptions in other languages',
+          state: defaults.translateTo.length ? 'done' : 'todo',
+          body: (
+            <>
+              {defaults.translateTo.length > 0 &&
+                `Now: ${defaults.translateTo.map(languageName).join(', ')}. `}
+              YouTube shows viewers who watch in Spanish, Portuguese or Hindi a title and description in their
+              own language, so the video turns up in their searches too. Gemini translates them as each video
+              posts.
+            </>
+          ),
+          action: defaultsLink,
         },
       ],
     },

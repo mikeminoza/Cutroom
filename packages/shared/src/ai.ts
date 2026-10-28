@@ -9,13 +9,16 @@ import {
   ACCENTS,
   type Accent,
   type CommentInsights,
+  languageName,
   MOTIONS,
   type Motion,
   normalizeAccent,
   normalizeTransition,
+  type PostTranslation,
   TRANSITIONS,
   type TranscriptSegment,
   type Transition,
+  translationBasis,
   type VideoFormat,
 } from './types'
 
@@ -757,6 +760,78 @@ Return:
     thumbnailText: draft.thumbnailText,
     comment: draft.comment.trim().slice(0, 500),
   }
+}
+
+/**
+ * The title and description in other languages, for viewers who watch YouTube in them. Timestamps,
+ * links, @handles and #hashtags stay as written, so chapters and links still work. A few
+ * languages per Gemini call, a few calls at a time; languages it leaves out are just missing.
+ */
+export async function translatePost(input: {
+  title: string
+  description: string
+  /** The language they are written in. */
+  from: string
+  to: string[]
+}): Promise<PostTranslation[]> {
+  const wanted = [...new Set(input.to.filter((code) => code && code !== input.from))]
+  const groups: string[][] = []
+  for (let i = 0; i < wanted.length; i += 4) groups.push(wanted.slice(i, i + 4))
+  const basis = translationBasis(input.title, input.description)
+  const results: PostTranslation[][] = new Array(groups.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(3, groups.length) }, async () => {
+      while (next < groups.length) {
+        const i = next++
+        const codes = groups[i]
+        const prompt = `Translate this YouTube title and description from ${languageName(input.from)} into each of these languages: ${codes.map((c) => `${c} (${languageName(c)})`).join(', ')}.
+
+Write like a native YouTuber in each language, not word for word: keep the meaning and the hook. Each title max 100 characters, ideally under 60 with the hook first. In the description keep every timestamp (like 0:00), link, @handle and #hashtag exactly as written, and the line breaks; translate the words around them.
+
+Title:
+${input.title}
+
+Description:
+"""
+${input.description}
+"""`
+        const result = await generateJson(
+          prompt,
+          {
+            type: 'object',
+            properties: {
+              translations: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { language: { type: 'string', enum: codes }, title: str, description: str },
+                  required: ['language', 'title', 'description'],
+                },
+              },
+            },
+            required: ['translations'],
+          },
+          z.object({
+            translations: z.array(
+              z.object({ language: z.string(), title: z.string(), description: z.string() }),
+            ),
+          }),
+          'You translate YouTube titles and descriptions for creators, so they read as if written in each language.',
+        )
+        results[i] = result.translations
+          .filter((t) => codes.includes(t.language) && t.title.trim())
+          .map((t) => ({
+            language: t.language,
+            title: t.title.trim().slice(0, 100),
+            description: t.description.trim().slice(0, 5000),
+            basis,
+          }))
+      }
+    }),
+  )
+  const seen = new Set<string>()
+  return results.flat().filter((t) => !seen.has(t.language) && seen.add(t.language))
 }
 
 export function composeDescription(

@@ -7,6 +7,7 @@ import {
   type ChannelNiche,
   GEMINI_VOICES,
   type NicheReference,
+  TRANSLATION_LANGUAGES,
   YOUTUBE_CATEGORIES,
 } from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -794,6 +795,39 @@ function PreferencesForm() {
                   { value: 'off', label: 'Off' },
                 ]}
               />
+            </Field>
+            <Field
+              label="Titles and descriptions in other languages"
+              className="sm:col-span-2"
+              hint="Gemini translates each video's title and description when it posts, and YouTube shows viewers the one in their language."
+            >
+              <div className="flex flex-wrap gap-1.5">
+                {TRANSLATION_LANGUAGES.filter((l) => l.code !== settings.defaults.language).map((l) => {
+                  const on = settings.defaults.translateTo.includes(l.code)
+                  return (
+                    <button
+                      key={l.code}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() =>
+                        updateDefaults({
+                          translateTo: on
+                            ? settings.defaults.translateTo.filter((c) => c !== l.code)
+                            : [...settings.defaults.translateTo, l.code],
+                        })
+                      }
+                      className={cn(
+                        'rounded-full border px-2.5 py-1 text-[12.5px]',
+                        on
+                          ? 'border-ink bg-ink text-paper'
+                          : 'border-line text-ink-2 hover:border-line-strong',
+                      )}
+                    >
+                      {l.name}
+                    </button>
+                  )
+                })}
+              </div>
             </Field>
             <Field label="Tags added to every video" className="sm:col-span-2" hint="Separate with commas.">
               <Input

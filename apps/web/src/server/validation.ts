@@ -34,6 +34,17 @@ export const postSchema = z.object({
   playlistId: z.string().max(100),
   language: z.string().max(20),
   comment: z.string().max(500).optional(),
+  translations: z
+    .array(
+      z.object({
+        language: z.string().max(20),
+        title: z.string().max(100),
+        description: z.string().max(5000),
+        basis: z.string().max(20).optional(),
+      }),
+    )
+    .max(20)
+    .optional(),
 })
 
 export const projectPatchSchema = z
@@ -132,6 +143,7 @@ export const settingsSchema = z.object({
     mode: z.enum(['autopilot', 'review']),
     resolution: z.enum(['720p', '1080p']),
     captionStyle: z.enum(['highlight', 'line', 'off']),
+    translateTo: z.array(z.string().max(20)).max(20).default([]),
   }),
   freeBlobAfterPosting: z.boolean(),
   voice: voiceSchema,

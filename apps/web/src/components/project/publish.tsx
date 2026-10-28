@@ -2,7 +2,13 @@
 
 import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
 import { formatChapterTime, totalDuration } from '@cutroom/shared/timing'
-import { type PostDetails, type PostingMode, YOUTUBE_CATEGORIES } from '@cutroom/shared/types'
+import {
+  languageName,
+  type PostDetails,
+  type PostingMode,
+  translationBasis,
+  YOUTUBE_CATEGORIES,
+} from '@cutroom/shared/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CalendarClock,
@@ -12,6 +18,7 @@ import {
   ExternalLink,
   FolderOpen,
   ImagePlus,
+  Languages,
   Palette,
   RotateCcw,
   Send,
@@ -56,6 +63,7 @@ export function PublishStep({ data, goTo }: StepProps) {
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="flex flex-col gap-5">
         <PostDetailsPanel data={data} />
+        <TranslationsPanel data={data} />
         <ThumbnailPanel data={data} />
       </div>
       <div className="flex flex-col gap-5 xl:sticky xl:top-4">
@@ -379,6 +387,148 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[
         className="min-w-32 flex-1 bg-transparent px-1 text-[14px] placeholder:text-ink-3 focus:outline-none"
       />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------- other languages
+
+/**
+ * The title and description in other languages. YouTube shows each viewer the one in their own
+ * language. Translated when the video posts (for the languages in Settings), or here, and
+ * editable like the details themselves.
+ */
+function TranslationsPanel({ data }: { data: ProjectFull }) {
+  const { project } = data
+  const post = project.post
+  const setPost = usePost(data)
+  const client = useQueryClient()
+  const { data: status } = useStatus()
+  const { data: settings } = useSettings()
+  const [busy, setBusy] = useState(false)
+  const languages = settings?.defaults.translateTo ?? []
+  const translations = post.translations ?? []
+  const locked = Boolean(project.youtubeVideoId)
+  const basis = translationBasis(post.title, post.description)
+  const stale = translations.some((t) => t.basis && t.basis !== basis)
+
+  const translate = async () => {
+    setBusy(true)
+    try {
+      const next = await api.post<PostDetails>(`/api/projects/${project.id}/ai/translate`, {})
+      client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
+        prev ? { ...prev, project: { ...prev.project, post: next } } : prev,
+      )
+      toast.success(`Translated into ${next.translations?.length ?? 0} languages`)
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // From the latest saved state, so quick edits to two languages never undo each other.
+  const latest = () =>
+    client.getQueryData<ProjectFull>(keys.project(project.id))?.project.post.translations ?? translations
+  const change = (language: string, patch: { title?: string; description?: string }) =>
+    setPost({ translations: latest().map((t) => (t.language === language ? { ...t, ...patch } : t)) })
+
+  if (languages.length === 0 && translations.length === 0) {
+    return (
+      <Panel
+        title="Other languages"
+        description="YouTube can show viewers the title and description in their own language."
+      >
+        <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+          <p className="flex-1 text-[13.5px] text-ink-2">
+            Pick the languages in Settings, and every video gets them when it posts.
+          </p>
+          <ButtonLink
+            href="/settings#defaults"
+            size="sm"
+            icon={<Languages className="size-3.5" aria-hidden />}
+          >
+            Pick languages
+          </ButtonLink>
+        </div>
+      </Panel>
+    )
+  }
+
+  return (
+    <Panel
+      title="Other languages"
+      description={
+        locked
+          ? 'Sent to YouTube with the video. Change them in YouTube Studio now.'
+          : `YouTube shows viewers the one in their language. ${
+              languages.length
+                ? `Gemini translates into ${languages.map(languageName).join(', ')} when the video posts, if not done here.`
+                : ''
+            }`
+      }
+      actions={
+        !locked &&
+        status?.gemini.configured !== false &&
+        languages.length > 0 && (
+          <Button
+            variant="plain"
+            size="sm"
+            busy={busy}
+            disabled={!post.title.trim()}
+            onClick={translate}
+            icon={<Languages className="size-3.5" />}
+          >
+            {translations.length ? 'Translate again' : 'Translate now'}
+          </Button>
+        )
+      }
+    >
+      {stale && !locked && (
+        <p className="border-b border-line bg-kodak-wash px-5 py-2.5 text-[13px] text-kodak-ink">
+          The title or description changed after translating. Translate again to bring them up to date.
+        </p>
+      )}
+      {translations.length === 0 ? (
+        <p className="px-5 py-4 text-[13.5px] text-ink-3">Not translated yet.</p>
+      ) : (
+        <ul className="divide-y divide-line">
+          {translations.map((t) => (
+            <li key={t.language} className="flex flex-col gap-2 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[13.5px] font-medium">{languageName(t.language)}</span>
+                <span className="tc text-[12px] text-ink-3">{t.language}</span>
+                {!locked && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Remove ${languageName(t.language)}`}
+                    className="ml-auto"
+                    onClick={() =>
+                      setPost({ translations: latest().filter((x) => x.language !== t.language) }, 0)
+                    }
+                    icon={<X className="size-3.5" />}
+                  />
+                )}
+              </div>
+              <SyncedInput
+                aria-label={`Title in ${languageName(t.language)}`}
+                value={t.title}
+                maxLength={100}
+                disabled={locked}
+                onValue={(title) => change(t.language, { title })}
+              />
+              <SyncedTextarea
+                aria-label={`Description in ${languageName(t.language)}`}
+                value={t.description}
+                disabled={locked}
+                onValue={(description) => change(t.language, { description })}
+                className="min-h-20 [field-sizing:content] text-[13.5px]"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   )
 }
 

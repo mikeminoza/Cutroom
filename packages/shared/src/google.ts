@@ -366,16 +366,35 @@ export interface UploadVideoInput {
   publishAt: string | null
   madeForKids: boolean
   language: string
+  /** The title and description in other languages (not the video's own). */
+  localizations?: { language: string; title: string; description: string }[]
   onProgress?: (fraction: number) => void
+}
+
+/** YouTube's localizations object: one title and description per language code. */
+export function localizationsOf(
+  translations: { language: string; title: string; description: string }[] | undefined,
+  own: string,
+): Record<string, { title: string; description: string }> | null {
+  const usable = (translations ?? []).filter((t) => t.language && t.language !== own && t.title.trim())
+  if (usable.length === 0) return null
+  return Object.fromEntries(
+    usable.map((t) => [
+      t.language,
+      { title: t.title.slice(0, 100), description: t.description.slice(0, 5000) },
+    ]),
+  )
 }
 
 export async function uploadVideo(client: OAuthClient, input: UploadVideoInput): Promise<string> {
   const yt = youtubeApi({ version: 'v3', auth: client })
   const size = (await stat(input.filePath)).size
   const scheduled = Boolean(input.publishAt)
+  // Localizations need the video's own language set.
+  const localizations = input.language ? localizationsOf(input.localizations, input.language) : null
   const res = await yt.videos.insert(
     {
-      part: ['snippet', 'status'],
+      part: localizations ? ['snippet', 'status', 'localizations'] : ['snippet', 'status'],
       notifySubscribers: true,
       requestBody: {
         snippet: {
@@ -393,6 +412,7 @@ export async function uploadVideo(client: OAuthClient, input: UploadVideoInput):
           selfDeclaredMadeForKids: input.madeForKids,
           embeddable: true,
         },
+        ...(localizations ? { localizations } : {}),
       },
       media: { body: createReadStream(input.filePath) },
     },

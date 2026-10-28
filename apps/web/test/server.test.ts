@@ -107,6 +107,7 @@ const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/s
 const effectsRoute = await import('../src/app/api/projects/[id]/ai/effects/route')
 const breakoutsModule = await import('../src/server/breakouts')
 const breakoutsRoute = await import('../src/app/api/breakouts/route')
+const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -1966,5 +1967,52 @@ describe('videos breaking out in the niche', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+describe('titles and descriptions in other languages', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const post = (body: unknown) =>
+    new Request('http://localhost/api', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+  it('keeps the languages and the translations, and asks for a title and languages first', async () => {
+    const settings = await settingsModule.getSettings()
+    await settingsModule.saveSettings({ ...settings, defaults: { ...settings.defaults, translateTo: [] } })
+    const id = await newProject()
+    const noTitle = await translateRoute.POST(post({}), ctx(id))
+    expect(noTitle.status).toBe(400)
+    expect((await noTitle.json()).error).toMatch(/title/)
+
+    const project = await projects.getProjectRow(id)
+    const translations = [{ language: 'es', title: 'Pulpos', description: 'Hola', basis: 'abc' }]
+    const saved = await projectRoute.PATCH(
+      new Request('http://localhost/api', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ post: { ...project.post, title: 'Octopuses', translations } }),
+      }),
+      ctx(id),
+    )
+    expect(saved.status).toBe(200)
+    expect((await projects.getProjectRow(id)).post.translations).toEqual(translations)
+    const noLanguages = await translateRoute.POST(post({}), ctx(id))
+    expect(noLanguages.status).toBe(400)
+    expect((await noLanguages.json()).error).toMatch(/Settings/)
+
+    // Settings saved by an older version have no languages yet.
+    const put = await settingsRoute.PUT(
+      new Request('http://localhost/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...settings, defaults: { ...settings.defaults, translateTo: ['es', 'pt'] } }),
+      }),
+      undefined,
+    )
+    expect(put.status).toBe(200)
+    expect((await settingsModule.getSettings()).defaults.translateTo).toEqual(['es', 'pt'])
   })
 })

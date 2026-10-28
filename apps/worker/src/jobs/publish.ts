@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { composeDescription, hasGeminiKey, writePostDetails } from '@cutroom/shared/ai'
+import { composeDescription, hasGeminiKey, translatePost, writePostDetails } from '@cutroom/shared/ai'
 import { captionWords, overlayEvents } from '@cutroom/shared/captions'
 import {
   addToPlaylist,
@@ -302,6 +302,24 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
       await ctx.result({ post })
       await ctx.step('details', 'done', post.title)
     }
+    // The title and description in the languages Settings asks for, unless already there.
+    const missing = settings.defaults.translateTo.filter(
+      (code) => code !== post.language && !post.translations?.some((t) => t.language === code),
+    )
+    if (missing.length && hasGeminiKey() && project.post.aiFill !== false && post.title.trim()) {
+      try {
+        const added = await translatePost({
+          title: post.title,
+          description: post.description,
+          from: post.language,
+          to: missing,
+        })
+        post = { ...post, translations: [...(post.translations ?? []), ...added] }
+        await ctx.result({ post })
+      } catch (error) {
+        await ctx.warn(`The title and description were not translated: ${errorMessage(error)}`)
+      }
+    }
     if (drive) {
       const detailsFile = work('post-details.json')
       await writeFile(detailsFile, JSON.stringify(post, null, 2))
@@ -357,6 +375,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         publishAt,
         madeForKids: post.madeForKids,
         language: post.language,
+        localizations: post.translations,
         onProgress: (f) => ctx.progress('youtube', f, `Uploading to YouTube (${Math.round(f * 100)}%)`),
       })
       await ctx.result({ youtubeVideoId: videoId, publishAt })
