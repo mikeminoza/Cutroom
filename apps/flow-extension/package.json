@@ -1,0 +1,13 @@
+{
+  "name": "@cutroom/flow-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Chrome extension that makes a Cutroom storyboard's pictures in Google Flow. Load this folder unpacked.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5"
+  }
+}

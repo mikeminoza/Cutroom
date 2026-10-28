@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Cutroom for Flow",
+  "version": "0.1.0",
+  "description": "Makes a Cutroom storyboard's pictures one by one in Google Flow, with your character attached, and saves them as scene-001, scene-002 and so on.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "storage", "unlimitedStorage", "downloads", "scripting"],
+  "host_permissions": [
+    "https://flow.google/*",
+    "https://*.flow.google/*",
+    "https://flow.google.com/*",
+    "https://labs.google/*",
+    "https://*.googleusercontent.com/*",
+    "https://storage.googleapis.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "Cutroom for Flow" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google/*",
+        "https://*.flow.google/*",
+        "https://flow.google.com/*",
+        "https://labs.google/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

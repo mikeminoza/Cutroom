@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cutroom for Flow</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Cutroom for Flow</h1>
+      <p id="connection" class="muted">Open Google Flow in this window, then come back here.</p>
+    </header>
+
+    <section>
+      <h2>1. Storyboard</h2>
+      <p class="muted">
+        Paste the storyboard from Cutroom (Script step → Storyboard → Copy all), or load its .txt. Any list of
+        numbered prompts works too.
+      </p>
+      <textarea id="storyboard" rows="5" placeholder="Scene 1  (0:00.0 – 0:04.1)&#10;Narration: …&#10;&#10;Image prompt: …"></textarea>
+      <div class="row">
+        <label class="button">
+          Load .txt
+          <input id="file" type="file" accept=".txt,text/plain" hidden />
+        </label>
+        <button id="read" type="button">Read it</button>
+        <span id="summary" class="muted"></span>
+      </div>
+      <label class="field">
+        <span>Save to <span class="muted">Downloads/Cutroom/…</span></span>
+        <input id="folder" type="text" placeholder="why-you-wake-up" />
+      </label>
+    </section>
+
+    <section>
+      <h2>2. Your character</h2>
+      <p class="muted">
+        One to three pictures of your main character. They go with every scene that shows a person, so the
+        character looks the same throughout.
+      </p>
+      <div id="characterImages" class="thumbs"></div>
+      <div class="row">
+        <label class="button">
+          Add a picture
+          <input id="characterFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+        </label>
+        <button id="clearCharacter" type="button" class="quiet">Remove all</button>
+      </div>
+      <label class="field">
+        <span>Name</span>
+        <input id="characterName" type="text" placeholder="Cappy" />
+      </label>
+      <label class="field">
+        <span>What they look like <span class="muted">(optional)</span></span>
+        <input id="characterLooks" type="text" placeholder="a stick figure with messy hair and a grey hoodie" />
+      </label>
+      <label class="field">
+        <span>Called in Flow <span class="muted">(if you saved them there as an ingredient, e.g. @Cappy)</span></span>
+        <input id="characterMention" type="text" placeholder="@Cappy" />
+      </label>
+    </section>
+
+    <section>
+      <h2>3. Flow's controls</h2>
+      <p class="muted">
+        Cutroom looks for Flow's prompt box and buttons by itself. If it picks the wrong one, show it each one
+        once.
+      </p>
+      <div class="controls">
+        <button type="button" data-teach="prompt">Prompt box <span data-learned="prompt"></span></button>
+        <button type="button" data-teach="generate">Generate button <span data-learned="generate"></span></button>
+        <button type="button" data-teach="attach">Add-picture button <span data-learned="attach"></span></button>
+      </div>
+      <div class="row">
+        <button id="check" type="button">Check what it finds</button>
+        <button id="forget" type="button" class="quiet">Forget what I showed</button>
+      </div>
+      <p id="checkResult" class="muted"></p>
+    </section>
+
+    <section>
+      <h2>4. Options</h2>
+      <label class="check"><input id="attach" type="checkbox" /> Give Flow the pictures (character, earlier scene) with each prompt</label>
+      <label class="check"><input id="continuity" type="checkbox" /> Match related scenes to the earlier picture</label>
+      <label class="check"><input id="anatomy" type="checkbox" /> Ask for normal anatomy (no extra arms or fingers)</label>
+      <label class="check"><input id="saveAll" type="checkbox" /> Keep every version Flow makes (extras go in a "more" folder)</label>
+      <div class="row">
+        <label class="field small">
+          <span>Wait up to (s)</span>
+          <input id="timeout" type="number" min="30" max="900" step="10" />
+        </label>
+        <label class="field small">
+          <span>Pause between (s)</span>
+          <input id="pause" type="number" min="2" max="120" step="1" />
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <div class="row spread">
+        <h2>5. Scenes</h2>
+        <button id="reset" type="button" class="quiet">Mark all as to do</button>
+      </div>
+      <ol id="scenes"></ol>
+    </section>
+
+    <footer>
+      <p id="status" class="muted">Read a storyboard to begin.</p>
+      <div class="progress"><div id="bar"></div></div>
+      <div class="row">
+        <button id="start" type="button" class="go">Start</button>
+        <button id="stop" type="button" hidden>Stop after this one</button>
+        <label class="field inline">
+          <span>from scene</span>
+          <input id="from" type="number" min="1" />
+        </label>
+      </div>
+    </footer>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

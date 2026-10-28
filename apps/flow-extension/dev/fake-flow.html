@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fake Flow (for testing content.js)</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 24px; background: #111; color: #eee; }
+      #results img { width: 384px; margin: 6px; border-radius: 8px; }
+      .bar { display: flex; gap: 8px; align-items: flex-end; margin-top: 16px; }
+      textarea { width: 520px; height: 70px; }
+      .icon { font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <!--
+      A stand-in for Google Flow's image tool, shaped like such tools usually are: a prompt box, an
+      icon-only "send" button, an add-picture button over a hidden file input, and results that
+      appear a moment after sending. To try content.js against it, run
+      `window.__cutroomFlowTest = {}` in the console, then paste content.js: its handlers appear on
+      window.__cutroomFlowTest.handlers.
+    -->
+    <div id="results"></div>
+    <div class="bar">
+      <button type="button" aria-label="Add media" id="add"><span class="icon">add</span></button>
+      <input type="file" accept="image/*" multiple hidden id="upload" />
+      <textarea placeholder="Describe what you want to see"></textarea>
+      <button type="button" aria-label="Create" id="send"><span class="icon">arrow_forward</span></button>
+    </div>
+    <p>Attached: <span id="attached">0</span> · Last prompt: <span id="last"></span></p>
+    <script>
+      const upload = document.getElementById('upload')
+      document.getElementById('add').addEventListener('click', () => upload.click())
+      upload.addEventListener('change', () => {
+        document.getElementById('attached').textContent = String(upload.files.length)
+      })
+      document.getElementById('send').addEventListener('click', () => {
+        const prompt = document.querySelector('textarea').value
+        document.getElementById('last').textContent = prompt
+        // Two results, as image tools usually make, after a short wait.
+        setTimeout(() => {
+          for (const colour of ['#c94', '#49c']) {
+            const canvas = document.createElement('canvas')
+            canvas.width = 640
+            canvas.height = 360
+            const g = canvas.getContext('2d')
+            g.fillStyle = colour
+            g.fillRect(0, 0, 640, 360)
+            g.fillStyle = '#000'
+            g.font = '24px sans-serif'
+            g.fillText(prompt.slice(0, 40), 20, 180)
+            canvas.toBlob((blob) => {
+              const img = new Image()
+              img.src = URL.createObjectURL(blob)
+              document.getElementById('results').append(img)
+            }, 'image/png')
+          }
+        }, 1500)
+      })
+    </script>
+  </body>
+</html>
