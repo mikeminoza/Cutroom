@@ -239,6 +239,8 @@ export interface ScriptBrief {
   characters?: { name: string; description: string }[]
   /** Country code of the viewers the channel is made for (Channel setup). */
   market?: string
+  /** Where viewers stopped watching the channel's recent videos (retentionLesson), one per video. */
+  lessons?: string[]
 }
 
 export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
@@ -256,6 +258,8 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
       `Recurring characters (use these exact names):\n${brief.characters
         .map((c) => `- ${c.name}${c.description.trim() ? `: ${c.description.trim()}` : ''}`)
         .join('\n')}`,
+    brief.lessons?.length &&
+      `Where viewers stopped watching this channel's recent videos. Learn from it: get to the point faster in the opening, and keep moments like the ones where they left shorter, livelier or cut:\n${brief.lessons.map((l) => `- ${l}`).join('\n')}`,
     'Open with a hook in the first sentence. Use short, spoken sentences. Plain text only: no headings, no stage directions, no emoji, no scene labels, no markdown. Separate paragraphs with a blank line.',
   ]
     .filter(Boolean)
@@ -634,6 +638,17 @@ export interface PostDraftInput {
   topTitles?: { title: string; views: number }[]
   /** Country code of the viewers the channel is made for (Channel setup). */
   market?: string
+  /** YouTube searches that already bring viewers to the channel, most views first. */
+  searchTerms?: string[]
+}
+
+/** The searches that find the channel, for titles, tags and ideas. */
+function searchTermsNote(terms: string[] | undefined, use: string): string {
+  if (!terms?.length) return ''
+  return `\nYouTube searches that already bring viewers to this channel (most first). ${use}\n${terms
+    .slice(0, 15)
+    .map((t) => `- ${t}`)
+    .join('\n')}\n`
 }
 
 function topTitlesNote(top: { title: string; views: number }[] | undefined): string {
@@ -669,7 +684,7 @@ Length: ${Math.round(input.duration)} seconds
 
 Scenes (index, start time, narration):
 ${sceneList}
-${topTitlesNote(input.topTitles)}
+${topTitlesNote(input.topTitles)}${searchTermsNote(input.searchTerms, "Where one honestly fits this video, use its exact wording in a title, the description's first sentence and the tags; never force one in.")}
 Return:
 - titleOptions: 5 distinct titles, max 60 characters with the hook in the first 40 (phones cut off the rest), curiosity-driven but honest, no clickbait lies, no ALL CAPS words, no emoji.
 - description: 2 short paragraphs (hook + what the viewer learns). The first sentence shows in search results: make it the hook, in the words people search for. Do NOT include chapters, hashtags or links.
@@ -906,6 +921,8 @@ export interface IdeaRequest {
   topTitles: { title: string; views: number }[]
   /** Country code of the viewers the channel is made for (Channel setup). */
   market?: string
+  /** YouTube searches that already bring viewers to the channel, most views first. */
+  searchTerms?: string[]
 }
 
 export async function generateIdeas(input: IdeaRequest): Promise<{ title: string; angle: string }[]> {
@@ -923,6 +940,10 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     marketNote(input.market),
     input.direction && `Direction from the creator: ${input.direction}`,
     topTitlesNote(input.topTitles).trim(),
+    searchTermsNote(
+      input.searchTerms,
+      'People clearly look for these: make some ideas answer searches like them, or the next question someone typing them would have.',
+    ).trim(),
     avoid && `Already made or planned (do not repeat these or make near-duplicates):\n${avoid}`,
     'Each idea: a working title (max 60 characters with the hook in the first 40, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from. Make the ideas varied.',
   ]

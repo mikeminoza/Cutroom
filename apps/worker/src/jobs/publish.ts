@@ -285,6 +285,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         defaultTags: settings.defaults.tags,
         descriptionFooter: settings.defaults.descriptionFooter,
         topTitles: payload.insights?.topTitles ?? [],
+        searchTerms: payload.insights?.searchTerms ?? [],
         market: settings.niche.market,
       })
       post = {

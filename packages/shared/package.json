@@ -18,6 +18,7 @@
     "./transitions": "./src/transitions.ts",
     "./accents": "./src/accents.ts",
     "./sfx": "./src/sfx.ts",
+    "./retention": "./src/retention.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

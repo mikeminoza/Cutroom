@@ -1826,3 +1826,68 @@ describe('the edit', () => {
     ])
   })
 })
+
+describe('what viewers watch and search for', () => {
+  it('adds up the searches that find the channel and tells the writers where viewers left', async () => {
+    const watching = (t: number) =>
+      t <= 30 ? 1 - 0.003 * t : t <= 40 ? 0.91 - 0.02 * (t - 30) : 0.71 - 0.003 * (t - 40)
+    const posted = await newProject()
+    await projects.replaceScenes(posted, [
+      { start: 0, end: 30, narration: 'Here is the hook.' },
+      { start: 30, end: 40, narration: 'A long boring list.' },
+      { start: 40, end: 100, narration: 'The rest.' },
+    ])
+    const other = await newProject()
+    const database = await db()
+    const insights = (searchTerms: { term: string; views: number }[], retention: number[] | null) => ({
+      retention,
+      relative: null,
+      searchTerms,
+      fetchedAt: new Date().toISOString(),
+    })
+    await database
+      .update(schema.projects)
+      .set({
+        youtubeVideoId: 'watched-1',
+        voiceoverDuration: 100,
+        videoInsights: insights(
+          [
+            { term: 'why cant i sleep', views: 30 },
+            { term: '3am wake up', views: 10 },
+          ],
+          Array.from({ length: 100 }, (_, i) => watching(i + 1)),
+        ),
+      })
+      .where(eq(schema.projects.id, posted))
+    await database
+      .update(schema.projects)
+      .set({
+        youtubeVideoId: 'watched-2',
+        videoInsights: insights([{ term: 'Why cant I sleep', views: 5 }], null),
+      })
+      .where(eq(schema.projects.id, other))
+
+    expect((await analytics.searchTermsFor(null, null)).slice(0, 2)).toEqual([
+      { term: 'why cant i sleep', views: 35 },
+      { term: '3am wake up', views: 10 },
+    ])
+    const lessons = await analytics.retentionLessons(null, null, 'landscape')
+    expect(lessons).toHaveLength(1)
+    expect(lessons[0]).toMatch(
+      /91% still watching at 0:30\. Most left at 0:30 \("A long boring list\.", 20% left\)/,
+    )
+    expect(await analytics.retentionLessons(null, null, 'portrait')).toEqual([])
+
+    // The script writer gets the lessons, the idea writer the searches.
+    const next = await newProject()
+    vi.mocked(ai.writeScript).mockResolvedValueOnce({
+      title: 'Next',
+      script: 'A brand new script for the channel.',
+    })
+    await drafting.writeProjectScript(next)
+    expect(vi.mocked(ai.writeScript).mock.lastCall?.[0].lessons).toEqual(lessons)
+    vi.mocked(ai.generateIdeas).mockResolvedValueOnce([])
+    await drafting.addIdeas({ count: 1 })
+    expect(vi.mocked(ai.generateIdeas).mock.lastCall?.[0].searchTerms?.[0]).toBe('why cant i sleep')
+  })
+})

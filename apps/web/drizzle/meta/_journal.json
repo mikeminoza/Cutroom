@@ -57,6 +57,13 @@
       "when": 1793153999760,
       "tag": "0007_scene_effects",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793155307640,
+      "tag": "0008_video_insights",
+      "breakpoints": true
     }
   ]
 }

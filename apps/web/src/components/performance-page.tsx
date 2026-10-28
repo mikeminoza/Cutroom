@@ -12,6 +12,7 @@ import { formatWhen, timeAgo } from '@/lib/format'
 import { keys, usePerformance, useSeriesList, useStatus } from '@/lib/hooks'
 import { CommentInsightsPanels } from './comment-insights'
 import { Button, Panel, Segmented, Select } from './ui'
+import { SearchesThatFindYou, WhereViewersLeave } from './viewer-insights'
 
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 const whole = new Intl.NumberFormat('en-US')
@@ -109,8 +110,8 @@ export function PerformancePage() {
             How your posted videos are doing. Watch time and retention arrive 2–3 days after a video goes
             live.{' '}
             {status?.daily === 'needs-secret' ? 'Updated when you press Refresh now' : 'Updated once a day'}
-            {fetched ? `, last ${timeAgo(fetched)}` : ''}. The best titles also teach Gemini what works on
-            your channel.
+            {fetched ? `, last ${timeAgo(fetched)}` : ''}. What viewers watch, skip and search for also
+            teaches Gemini what works on your channel.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -240,24 +241,29 @@ export function PerformancePage() {
             </div>
           </Panel>
 
-          <CommentInsightsPanels channels={shownChannel ? [shownChannel] : channels} />
+          <WhereViewersLeave videos={videos} />
 
-          {top.length > 0 && (
-            <Panel
-              title="What works"
-              description={`${shownChannel ? `The most-viewed titles on ${shownChannel.title}.` : 'Your most-viewed titles.'} Gemini studies them when it writes new titles and suggests ideas.`}
-            >
-              <ol className="divide-y divide-line">
-                {top.map((video, i) => (
-                  <li key={video.id} className="flex items-center gap-3 px-5 py-2.5 text-[14px]">
-                    <span className="tc w-5 text-ink-3">{i + 1}</span>
-                    <span className="min-w-0 flex-1 truncate">{video.title || 'Untitled video'}</span>
-                    <span className="tc text-ink-2">{whole.format(video.stats?.views ?? 0)} views</span>
-                  </li>
-                ))}
-              </ol>
-            </Panel>
-          )}
+          <div className="grid items-start gap-6 lg:grid-cols-2">
+            <SearchesThatFindYou videos={videos} />
+            {top.length > 0 && (
+              <Panel
+                title="What works"
+                description={`${shownChannel ? `The most-viewed titles on ${shownChannel.title}.` : 'Your most-viewed titles.'} Gemini studies them when it writes new titles and suggests ideas.`}
+              >
+                <ol className="divide-y divide-line">
+                  {top.map((video, i) => (
+                    <li key={video.id} className="flex items-center gap-3 px-5 py-2.5 text-[14px]">
+                      <span className="tc w-5 text-ink-3">{i + 1}</span>
+                      <span className="min-w-0 flex-1 truncate">{video.title || 'Untitled video'}</span>
+                      <span className="tc text-ink-2">{whole.format(video.stats?.views ?? 0)} views</span>
+                    </li>
+                  ))}
+                </ol>
+              </Panel>
+            )}
+          </div>
+
+          <CommentInsightsPanels channels={shownChannel ? [shownChannel] : channels} />
         </div>
       )}
     </div>

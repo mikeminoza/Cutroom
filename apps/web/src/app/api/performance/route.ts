@@ -27,6 +27,8 @@ async function performance(notes: string[] = []): Promise<PerformanceDTO> {
       seriesId: r.seriesId,
       scheduledAt: r.scheduledAt?.toISOString() ?? null,
       stats: r.stats ?? null,
+      insights: r.videoInsights ?? null,
+      duration: r.voiceoverDuration,
     })),
     channels,
     notes,

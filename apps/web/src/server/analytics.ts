@@ -1,6 +1,6 @@
 // How posted videos are doing: views, likes and comments from the YouTube Data API, plus watch
-// time and retention from YouTube Analytics when the channel granted that permission.
-// Refreshed by the daily cron and the Refresh button on the Performance page.
+// time, retention and the searches that found them from YouTube Analytics when the channel granted
+// that permission. Refreshed by the daily cron and the Refresh button on the Performance page.
 import {
   AnalyticsUnavailable,
   clientFromRefresh,
@@ -8,10 +8,13 @@ import {
   hasAnalyticsScope,
   type VideoAnalytics,
   videoAnalytics,
+  videoRetention,
+  videoSearchTerms,
   videoStatistics,
 } from '@cutroom/shared/google'
-import type { VideoStats } from '@cutroom/shared/types'
-import { eq, isNotNull } from 'drizzle-orm'
+import { retentionLesson, topSearchTerms } from '@cutroom/shared/retention'
+import type { VideoFormat, VideoInsights, VideoStats } from '@cutroom/shared/types'
+import { asc, eq, inArray, isNotNull } from 'drizzle-orm'
 import { resolveChannel } from '@/lib/channels'
 import { listChannels } from './connections'
 import { db, schema } from './db'
@@ -109,9 +112,22 @@ export async function refreshStats(
         return
       }
       let a: VideoAnalytics | null = null
+      let insights: VideoInsights | null = project.videoInsights ?? null
       if (withAnalytics && !unavailable && c.privacy !== 'private' && c.publishedAt) {
+        const range = [day(c.publishedAt), day(new Date().toISOString())] as const
         try {
-          a = await videoAnalytics(client, id, day(c.publishedAt), day(new Date().toISOString()))
+          a = await videoAnalytics(client, id, ...range)
+          // Each part keeps its last value when YouTube can't give it this time.
+          const [curve, terms] = await Promise.all([
+            videoRetention(client, id, ...range).catch(() => undefined),
+            videoSearchTerms(client, id, ...range).catch(() => undefined),
+          ])
+          insights = {
+            retention: curve === undefined ? (insights?.retention ?? null) : (curve?.retention ?? null),
+            relative: curve === undefined ? (insights?.relative ?? null) : (curve?.relative ?? null),
+            searchTerms: terms ?? insights?.searchTerms ?? [],
+            fetchedAt: new Date().toISOString(),
+          }
         } catch (error) {
           if (error instanceof AnalyticsUnavailable) unavailable = error.message
         }
@@ -129,7 +145,10 @@ export async function refreshStats(
       }
       // Saved one by one, so a timeout keeps what was already fetched. Not through updateProject:
       // stats refreshing must not bump "Edited …" on the dashboard.
-      await database.update(schema.projects).set({ stats }).where(eq(schema.projects.id, project.id))
+      await database
+        .update(schema.projects)
+        .set({ stats, videoInsights: insights })
+        .where(eq(schema.projects.id, project.id))
       updated++
     })
     if (unavailable) {
@@ -159,4 +178,67 @@ export async function topTitles(
   // A new channel learns from the channel whose style it follows until it has hits of its own.
   if (own.length >= 3) return own
   return [...own, ...(settings.niche.reference?.titles ?? [])].slice(0, limit)
+}
+
+/** The posted videos of one channel (resolved like publishing does), newest first. */
+async function channelVideos(channelId: string | null, youtubeId: string | null): Promise<ProjectRow[]> {
+  const [projects, channels] = await Promise.all([postedProjects(), listChannels()])
+  const target = resolveChannel(channels, channelId, youtubeId)?.id ?? null
+  const published = (p: ProjectRow) => p.stats?.publishedAt ?? p.scheduledAt?.toISOString() ?? ''
+  return projects
+    .filter((p) => (channelOf(channels, p)?.id ?? null) === target)
+    .sort((a, b) => published(b).localeCompare(published(a)))
+}
+
+/** The YouTube searches that bring viewers to a channel's videos, added up, most views first. */
+export async function searchTermsFor(
+  channelId: string | null,
+  youtubeId: string | null,
+  limit = 15,
+): Promise<{ term: string; views: number }[]> {
+  const videos = await channelVideos(channelId, youtubeId)
+  return topSearchTerms(
+    videos.map((p) => p.videoInsights?.searchTerms ?? []),
+    limit,
+  )
+}
+
+/**
+ * Where a channel's latest videos of this format lost viewers, one line each (see
+ * retentionLesson), for the script writer.
+ */
+export async function retentionLessons(
+  channelId: string | null,
+  youtubeId: string | null,
+  format: VideoFormat,
+  limit = 3,
+): Promise<string[]> {
+  const videos = (await channelVideos(channelId, youtubeId))
+    .filter((p) => p.format === format && p.videoInsights?.retention?.length)
+    .slice(0, limit)
+  if (videos.length === 0) return []
+  const database = await db()
+  const scenes = await database
+    .select()
+    .from(schema.scenes)
+    .where(
+      inArray(
+        schema.scenes.projectId,
+        videos.map((p) => p.id),
+      ),
+    )
+    .orderBy(asc(schema.scenes.index))
+  return videos.flatMap((p) => {
+    const own = scenes.filter((s) => s.projectId === p.id)
+    const duration = p.voiceoverDuration ?? Math.max(0, ...own.map((s) => s.end))
+    if (!(duration > 0)) return []
+    return [
+      retentionLesson({
+        title: p.post?.title || p.title,
+        duration,
+        retention: p.videoInsights?.retention ?? [],
+        scenes: own,
+      }),
+    ]
+  })
 }

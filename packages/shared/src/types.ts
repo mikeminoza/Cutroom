@@ -113,6 +113,23 @@ export interface VideoStats {
   fetchedAt: string
 }
 
+/**
+ * What YouTube Analytics says about a posted video's viewers, refreshed with its stats: where they
+ * stop watching, and the searches that found it.
+ */
+export interface VideoInsights {
+  /**
+   * The share of viewers still watching at each 1% of the video (100 points, from 1% to 100%). It
+   * can pass 1 where people rewatch. null = too few views for YouTube to say yet.
+   */
+  retention: number[] | null
+  /** How well it holds viewers at the same points next to YouTube videos of similar length (0.5 = average). */
+  relative: number[] | null
+  /** YouTube searches that led viewers to the video, most views first. */
+  searchTerms: { term: string; views: number }[]
+  fetchedAt: string
+}
+
 export interface TemplateCharacter {
   name: string
   description: string

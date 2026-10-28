@@ -15,6 +15,7 @@ import type {
   SeriesTemplate,
   Transcript,
   VideoFormat,
+  VideoInsights,
   VideoStats,
   VoiceSettings,
 } from '@cutroom/shared/types'
@@ -74,6 +75,8 @@ export const projects = pgTable('projects', {
    */
   channelYoutubeId: text('channel_youtube_id'),
   stats: jsonb('stats').$type<VideoStats>(),
+  /** Where viewers stop watching and what they searched to find it, refreshed with `stats`. */
+  videoInsights: jsonb('video_insights').$type<VideoInsights>(),
   /** The comment posted for viewers (post.comment); '' when it could not be posted. */
   commentId: text('comment_id'),
   /** Drafted by the weekly autopilot (server/drafting.ts). */

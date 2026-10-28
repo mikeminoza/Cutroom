@@ -620,25 +620,14 @@ export interface VideoAnalytics {
 /** Thrown when YouTube Analytics can't be used at all, so the caller stops asking for the rest. */
 export class AnalyticsUnavailable extends Error {}
 
-/**
- * Watch time and retention for one video from the YouTube Analytics API (needs ANALYTICS_SCOPE and
- * the API enabled in Google Cloud). Returns null while YouTube has no data for it yet.
- */
-export async function videoAnalytics(
+/** One YouTube Analytics report: its column names and rows (needs ANALYTICS_SCOPE). */
+async function analyticsReport(
   client: OAuthClient,
-  videoId: string,
-  startDate: string,
-  endDate: string,
-): Promise<VideoAnalytics | null> {
+  query: Record<string, string>,
+): Promise<{ columns: string[]; rows: (string | number)[][] }> {
   const { token } = await client.getAccessToken()
   if (!token) throw new AnalyticsUnavailable('Google did not return an access token.')
-  const params = new URLSearchParams({
-    ids: 'channel==MINE',
-    startDate,
-    endDate,
-    metrics: 'estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained',
-    filters: `video==${videoId}`,
-  })
+  const params = new URLSearchParams({ ids: 'channel==MINE', ...query })
   const res = await fetch(`https://youtubeanalytics.googleapis.com/v2/reports?${params}`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(15_000),
@@ -650,11 +639,30 @@ export async function videoAnalytics(
     if (res.status === 401 || res.status === 403) throw new AnalyticsUnavailable(message)
     throw new Error(`YouTube Analytics: ${message}`)
   }
-  const data = (await res.json()) as { columnHeaders?: { name: string }[]; rows?: number[][] }
-  const row = data.rows?.[0]
-  if (!row || !data.columnHeaders) return null
+  const data = (await res.json()) as { columnHeaders?: { name: string }[]; rows?: (string | number)[][] }
+  return { columns: (data.columnHeaders ?? []).map((h) => h.name), rows: data.rows ?? [] }
+}
+
+/**
+ * Watch time and retention for one video from the YouTube Analytics API (needs ANALYTICS_SCOPE and
+ * the API enabled in Google Cloud). Returns null while YouTube has no data for it yet.
+ */
+export async function videoAnalytics(
+  client: OAuthClient,
+  videoId: string,
+  startDate: string,
+  endDate: string,
+): Promise<VideoAnalytics | null> {
+  const { columns, rows } = await analyticsReport(client, {
+    startDate,
+    endDate,
+    metrics: 'estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained',
+    filters: `video==${videoId}`,
+  })
+  const row = rows[0]
+  if (!row || columns.length === 0) return null
   const value = (name: string) => {
-    const index = data.columnHeaders!.findIndex((h) => h.name === name)
+    const index = columns.indexOf(name)
     return index >= 0 ? Number(row[index] ?? 0) : 0
   }
   return {
@@ -663,6 +671,78 @@ export async function videoAnalytics(
     averageViewPercent: value('averageViewPercentage'),
     subscribersGained: value('subscribersGained'),
   }
+}
+
+/**
+ * Where viewers stop watching one video: the share still watching at each 1% of it, and how that
+ * compares with YouTube videos of similar length. null while YouTube has too few views to say.
+ */
+export async function videoRetention(
+  client: OAuthClient,
+  videoId: string,
+  startDate: string,
+  endDate: string,
+): Promise<{ retention: number[]; relative: number[] | null } | null> {
+  const { columns, rows } = await analyticsReport(client, {
+    startDate,
+    endDate,
+    dimensions: 'elapsedVideoTimeRatio',
+    metrics: 'audienceWatchRatio,relativeRetentionPerformance',
+    filters: `video==${videoId}`,
+  })
+  return retentionFromRows(columns, rows)
+}
+
+/** The report's rows as 100 points, one per 1% of the video; gaps take the point before. */
+export function retentionFromRows(
+  columns: string[],
+  rows: (string | number)[][],
+): { retention: number[]; relative: number[] | null } | null {
+  const at = columns.indexOf('elapsedVideoTimeRatio')
+  const watching = columns.indexOf('audienceWatchRatio')
+  const relative = columns.indexOf('relativeRetentionPerformance')
+  if (at < 0 || watching < 0 || rows.length === 0) return null
+  const points = (column: number) => {
+    const values = new Array<number | null>(100).fill(null)
+    for (const row of rows) {
+      const slot = Math.round(Number(row[at]) * 100) - 1
+      const value = Number(row[column])
+      if (slot >= 0 && slot < 100 && Number.isFinite(value)) values[slot] = value
+    }
+    const first = values.find((v) => v !== null)
+    if (first === undefined || first === null) return null
+    let last = first
+    return values.map((v) => {
+      if (v !== null) last = v
+      return Math.round(last * 1000) / 1000
+    })
+  }
+  const retention = points(watching)
+  return retention ? { retention, relative: relative >= 0 ? points(relative) : null } : null
+}
+
+/** The YouTube searches that led viewers to one video, most views first (up to 25). */
+export async function videoSearchTerms(
+  client: OAuthClient,
+  videoId: string,
+  startDate: string,
+  endDate: string,
+): Promise<{ term: string; views: number }[]> {
+  const { columns, rows } = await analyticsReport(client, {
+    startDate,
+    endDate,
+    dimensions: 'insightTrafficSourceDetail',
+    metrics: 'views',
+    filters: `video==${videoId};insightTrafficSourceType==YT_SEARCH`,
+    sort: '-views',
+    maxResults: '25',
+  })
+  const term = columns.indexOf('insightTrafficSourceDetail')
+  const views = columns.indexOf('views')
+  if (term < 0 || views < 0) return []
+  return rows
+    .map((row) => ({ term: String(row[term] ?? '').trim(), views: Number(row[views] ?? 0) }))
+    .filter((t) => t.term && t.views > 0)
 }
 
 export function youtubeUrl(videoId: string): string {

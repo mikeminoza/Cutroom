@@ -152,7 +152,11 @@ export interface JobPayload {
     driveRefreshToken: string | null
   }
   /** What has worked on the channel so far, for the post-details prompt. */
-  insights: { topTitles: { title: string; views: number }[] }
+  insights: {
+    topTitles: { title: string; views: number }[]
+    /** YouTube searches that bring viewers to the channel; missing from an older web app. */
+    searchTerms?: string[]
+  }
   /** Base URL the worker can download local-storage files from (dev only). */
   appUrl: string
 }

@@ -17,7 +17,7 @@ import {
 import { deleteFile, storageDriver } from '@cutroom/shared/storage'
 import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
-import { topTitles } from './analytics'
+import { searchTermsFor, topTitles } from './analytics'
 import { postDueComments } from './comments'
 import { channelFor, getDrive } from './connections'
 import { db, schema } from './db'
@@ -675,7 +675,7 @@ export async function pendingJobIds(): Promise<string[]> {
 export async function buildPayload(jobId: string, request: Request): Promise<JobPayload> {
   const job = await getJob(jobId)
   const projectRow = await getProjectRow(job.projectId)
-  const [scenes, characters, settings, channel, drive, insights] = await Promise.all([
+  const [scenes, characters, settings, channel, drive, insights, searches] = await Promise.all([
     getScenes(job.projectId),
     getCharacters(job.projectId),
     getSettings(),
@@ -683,6 +683,9 @@ export async function buildPayload(jobId: string, request: Request): Promise<Job
     getDrive(),
     job.type === 'publish'
       ? topTitles(projectRow.channelId, projectRow.channelYoutubeId)
+      : Promise.resolve([]),
+    job.type === 'publish'
+      ? searchTermsFor(projectRow.channelId, projectRow.channelYoutubeId)
       : Promise.resolve([]),
   ])
   const project = toProjectDTO(projectRow)
@@ -731,7 +734,7 @@ export async function buildPayload(jobId: string, request: Request): Promise<Job
       youtubeChannelMissing: !channel && Boolean(projectRow.channelYoutubeId),
       driveRefreshToken: drive?.refreshToken ?? null,
     },
-    insights: { topTitles: insights },
+    insights: { topTitles: insights, searchTerms: searches.map((t) => t.term) },
     appUrl: appUrl(request),
   }
 }

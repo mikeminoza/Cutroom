@@ -76,4 +76,8 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "scenes" ADD COLUMN "accent_word" text DEFAULT \'\' NOT NULL;',
     ],
   },
+  {
+    tag: '0008_video_insights',
+    statements: ['ALTER TABLE "projects" ADD COLUMN "video_insights" jsonb;'],
+  },
 ]

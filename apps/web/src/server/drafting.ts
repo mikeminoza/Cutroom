@@ -14,7 +14,7 @@ import { alignScenes } from '@cutroom/shared/align'
 import { layoutByEstimate } from '@cutroom/shared/timing'
 import { normalizeTransition, type SceneLayer, type SeriesTemplate } from '@cutroom/shared/types'
 import { and, desc, eq, gte } from 'drizzle-orm'
-import { topTitles } from './analytics'
+import { retentionLessons, searchTermsFor, topTitles } from './analytics'
 import { db, schema } from './db'
 import { badRequest } from './http'
 import { notify } from './notify'
@@ -47,6 +47,7 @@ export async function writeProjectScript(id: string, notes = ''): Promise<void> 
       .filter((c) => c.name.trim())
       .map((c) => ({ name: c.name.trim(), description: c.description })),
     market: settings.niche.market,
+    lessons: await retentionLessons(project.channelId, project.channelYoutubeId, project.format),
   })
   await updateProject(id, { script: result.script, title: project.title.trim() || result.title })
 }
@@ -201,6 +202,9 @@ export async function addIdeas(input: {
     direction: input.direction ?? '',
     avoid: [...projects.map((p) => p.title || p.topic), ...ideas.map((i) => i.title)],
     topTitles: await topTitles(template?.channelId ?? null, template?.channelYoutubeId ?? null),
+    searchTerms: (await searchTermsFor(template?.channelId ?? null, template?.channelYoutubeId ?? null)).map(
+      (t) => t.term,
+    ),
     market: settings.niche.market,
   })
   if (generated.length) {

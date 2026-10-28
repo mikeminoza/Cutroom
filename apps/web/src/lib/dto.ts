@@ -13,6 +13,7 @@ import type {
   SeriesTemplate,
   Transcript,
   VideoFormat,
+  VideoInsights,
   VideoStats,
   VoiceSettings,
 } from '@cutroom/shared/types'
@@ -193,6 +194,10 @@ export interface PerformanceVideo {
   seriesId: string | null
   scheduledAt: string | null
   stats: VideoStats | null
+  /** Where viewers stop watching, and the searches that found it. */
+  insights: VideoInsights | null
+  /** The video's length in seconds (its voice-over), null when unknown. */
+  duration: number | null
 }
 
 export interface CommentInsightsDTO {
