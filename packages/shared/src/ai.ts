@@ -3,6 +3,7 @@
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
 import { narrationHas } from './accents'
+import { findPassage } from './review'
 import { CADENCES, type Cadence, marketNote } from './setup'
 import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
 import {
@@ -559,6 +560,298 @@ ${list}`
     'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
   )
   return result.scenes
+}
+
+// ---------------------------------------------------------------------------
+// Script doctor: punch-ups, facts and the hook
+
+/** Who the script is for and how it should sound, for the reviews below. */
+export interface ScriptVoice {
+  narration: string
+  audience: string
+  tone: string
+  /** Rules every script on the channel follows (Channel setup). */
+  rules: string[]
+}
+
+function voiceNotes(voice: ScriptVoice): string {
+  return [
+    voice.narration && `Narrator's voice: ${voice.narration}`,
+    voice.audience && `Audience: ${voice.audience}`,
+    voice.tone && `Tone: ${voice.tone}`,
+    voice.rules.length && `Rules for every script:\n${voice.rules.map((r) => `- ${r}`).join('\n')}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+export interface ScriptEdit {
+  /** The exact text in the script it replaces. */
+  original: string
+  suggestion: string
+  kind: 'funnier' | 'tighter' | 'clearer' | 'cut'
+  why: string
+}
+
+export interface ScriptClaim {
+  /** The exact text in the script that makes the claim. */
+  quote: string
+  verdict: 'ok' | 'check' | 'wrong'
+  note: string
+  /** Wording that stays accurate, or '' when none is needed. */
+  safer: string
+}
+
+/**
+ * An editor's read of the script: lines to make funnier, tighter or clearer (or cut), in the
+ * narrator's own voice, and the factual claims, health ones above all, with how sure they are.
+ * Only passages found in the script come back, as they are written there.
+ */
+export async function reviewScript(input: {
+  script: string
+  title: string
+  voice: ScriptVoice
+}): Promise<{ edits: ScriptEdit[]; claims: ScriptClaim[] }> {
+  const prompt = `You are the script editor for a YouTube channel. Read this narration script and return:
+
+- edits: up to 10 lines worth improving, the weakest first. Make a flat line funnier, a wordy one tighter, a confusing one clearer, or cut filler that slows the video down. Rewrite in the narrator's own voice and keep the facts. "original" is copied exactly from the script (one sentence or part of one, never more than two sentences); "suggestion" replaces it (for kind "cut", the few words that remain, or ""). kind is one of funnier, tighter, clearer, cut; why is one short sentence. Leave lines that already work alone.
+- claims: every factual claim a viewer could act on or repeat, health and science ones above all. "quote" is copied exactly from the script; verdict "ok" (well established), "check" (simplified, disputed or needs a source) or "wrong" (not supported); note says why in one sentence; safer is accurate wording in the narrator's voice when verdict is check or wrong, otherwise "". YouTube removes medical misinformation, so be strict with health advice.
+
+Title: ${input.title || '(none yet)'}
+${voiceNotes(input.voice)}
+
+Script:
+"""
+${input.script.trim()}
+"""`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        edits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              original: str,
+              suggestion: str,
+              kind: { type: 'string', enum: ['funnier', 'tighter', 'clearer', 'cut'] },
+              why: str,
+            },
+            required: ['original', 'suggestion', 'kind', 'why'],
+          },
+        },
+        claims: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              quote: str,
+              verdict: { type: 'string', enum: ['ok', 'check', 'wrong'] },
+              note: str,
+              safer: str,
+            },
+            required: ['quote', 'verdict', 'note', 'safer'],
+          },
+        },
+      },
+      required: ['edits', 'claims'],
+    },
+    z.object({
+      edits: z.array(
+        z.object({
+          original: z.string(),
+          suggestion: z.string(),
+          kind: z.string(),
+          why: z.string().default(''),
+        }),
+      ),
+      claims: z.array(
+        z.object({
+          quote: z.string(),
+          verdict: z.string(),
+          note: z.string().default(''),
+          safer: z.string().default(''),
+        }),
+      ),
+    }),
+    'You are a sharp, funny script editor and a careful fact checker for educational YouTube channels.',
+    // Facts need thought.
+    { thinking: 'default' },
+  )
+  const kinds = ['funnier', 'tighter', 'clearer', 'cut'] as const
+  const verdicts = ['ok', 'check', 'wrong'] as const
+  const edits = result.edits.flatMap((e): ScriptEdit[] => {
+    const original = findPassage(input.script, e.original)
+    const suggestion = e.suggestion.trim()
+    if (!original || suggestion === original.trim()) return []
+    return [
+      {
+        original,
+        suggestion,
+        kind: kinds.find((k) => k === e.kind) ?? 'clearer',
+        why: e.why.trim().slice(0, 300),
+      },
+    ]
+  })
+  const claims = result.claims.flatMap((c): ScriptClaim[] => {
+    const quote = findPassage(input.script, c.quote)
+    if (!quote) return []
+    const verdict = verdicts.find((v) => v === c.verdict) ?? 'check'
+    return [
+      { quote, verdict, note: c.note.trim().slice(0, 400), safer: verdict === 'ok' ? '' : c.safer.trim() },
+    ]
+  })
+  const seen = new Set<string>()
+  return {
+    edits: edits.filter((e) => !seen.has(e.original) && seen.add(e.original)).slice(0, 10),
+    claims: claims.slice(0, 12),
+  }
+}
+
+export interface HookCheck {
+  /** 1 (viewers leave) to 10 (they can't look away). */
+  score: number
+  verdict: string
+  problems: string[]
+  /** Does the opening deliver what the title and thumbnail promise? */
+  promise: { kept: boolean; note: string }
+  /** The opening as it is now: the exact text the new openings replace. */
+  replaces: string
+  openings: { text: string; why: string }[]
+}
+
+/**
+ * How well the first 15 seconds hold a new viewer: a score, what loses them, whether the opening
+ * pays off the title and thumbnail, and three stronger openings in the narrator's voice.
+ */
+export async function checkHook(input: {
+  script: string
+  title: string
+  thumbnailText: string
+  voice: ScriptVoice
+  /** Where viewers left the channel's recent videos (retentionLesson). */
+  lessons: string[]
+}): Promise<HookCheck> {
+  const opening = sentencesOf(input.script).slice(0, 6).join(' ')
+  const prompt = `Judge the opening of this YouTube video: the first 15 seconds (about 40 spoken words) decide whether a new viewer stays.
+
+Title: ${input.title || '(none yet)'}
+Thumbnail text: ${input.thumbnailText || '(none)'}
+${voiceNotes(input.voice)}
+${input.lessons.length ? `Where viewers left this channel's recent videos:\n${input.lessons.map((l) => `- ${l}`).join('\n')}\n` : ''}
+The script starts:
+"""
+${opening}
+"""
+
+Return:
+- score: 1 to 10, how well it hooks a new viewer (10 = they can't look away). Be honest; most openings are a 5 or 6.
+- verdict: one sentence.
+- problems: up to 3 things that lose viewers (a slow start, a greeting, no clear question, the payoff given away), each one sentence; [] if none.
+- promise: kept is true when the opening quickly confirms the video is about what the title and thumbnail promise; note says how, in one sentence.
+- replaces: the opening as it is now that a new opening would replace: the first 1–3 sentences, copied exactly from the script.
+- openings: 3 stronger openings, different approaches (a question, a surprising fact, a relatable moment), each 1–3 sentences in the narrator's voice that lead naturally into the rest of the script, with why (one sentence).`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        score: { type: 'integer' },
+        verdict: str,
+        problems: { type: 'array', items: str },
+        promise: {
+          type: 'object',
+          properties: { kept: { type: 'boolean' }, note: str },
+          required: ['kept', 'note'],
+        },
+        replaces: str,
+        openings: {
+          type: 'array',
+          items: { type: 'object', properties: { text: str, why: str }, required: ['text', 'why'] },
+        },
+      },
+      required: ['score', 'verdict', 'problems', 'promise', 'replaces', 'openings'],
+    },
+    z.object({
+      score: z.number(),
+      verdict: z.string(),
+      problems: z.array(z.string()).default([]),
+      promise: z.object({ kept: z.boolean(), note: z.string().default('') }),
+      replaces: z.string(),
+      openings: z.array(z.object({ text: z.string(), why: z.string().default('') })),
+    }),
+    'You are a YouTube retention expert who writes openings that make people stay.',
+  )
+  // The part to replace must really be the start of the script; otherwise the first sentence.
+  const found = findPassage(input.script, result.replaces)
+  const replaces =
+    found && input.script.indexOf(found) <= 40
+      ? found
+      : (findPassage(input.script, sentencesOf(input.script)[0] ?? '') ?? '')
+  return {
+    score: Math.min(10, Math.max(1, Math.round(result.score) || 5)),
+    verdict: result.verdict.trim().slice(0, 300),
+    problems: result.problems
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .slice(0, 3),
+    promise: { kept: result.promise.kept, note: result.promise.note.trim().slice(0, 300) },
+    replaces,
+    openings: result.openings
+      .map((o) => ({ text: o.text.trim(), why: o.why.trim().slice(0, 300) }))
+      .filter((o) => o.text)
+      .slice(0, 3),
+  }
+}
+
+/**
+ * Whether the title, thumbnail, description and opening sell one video, and what could get it
+ * demonetized or limited: up to 5 notes, each good, worth a look, or to fix.
+ */
+export async function reviewPackaging(input: {
+  title: string
+  thumbnailText: string
+  thumbnailIdea: string
+  description: string
+  opening: string
+  audience: string
+}): Promise<{ level: 'good' | 'look' | 'fix'; text: string }[]> {
+  const prompt = `Review how this YouTube video is packaged, as a strategist would before it posts.
+
+Title: ${input.title || '(none yet)'}
+Thumbnail text: ${input.thumbnailText || '(none)'}
+Thumbnail idea: ${input.thumbnailIdea || '(none)'}
+Description: ${input.description.slice(0, 600) || '(none yet)'}
+Opening of the script: ${input.opening || '(none)'}
+Audience: ${input.audience || '(not set)'}
+
+Return notes: up to 5, the most important first, each with level "good", "look" or "fix" and text (one or two sentences). Cover: do the title and thumbnail make one promise without repeating each other's words; does the opening deliver it straight away; is it honest (no promise the video doesn't keep); and anything that could limit ads or reach, such as medical claims, shocking words or a misleading title.`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        notes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { level: { type: 'string', enum: ['good', 'look', 'fix'] }, text: str },
+            required: ['level', 'text'],
+          },
+        },
+      },
+      required: ['notes'],
+    },
+    z.object({ notes: z.array(z.object({ level: z.string(), text: z.string() })) }),
+    'You are a YouTube packaging strategist: titles, thumbnails and openings that get honest clicks.',
+  )
+  const levels = ['good', 'look', 'fix'] as const
+  return result.notes
+    .map((n) => ({ level: levels.find((l) => l === n.level) ?? 'look', text: n.text.trim().slice(0, 400) }))
+    .filter((n) => n.text)
+    .slice(0, 5)
 }
 
 // ---------------------------------------------------------------------------

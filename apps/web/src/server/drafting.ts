@@ -303,3 +303,24 @@ export async function runAutopilot(): Promise<string | null> {
   })
   return `Autopilot: drafted "${project.title || idea.title}".`
 }
+
+/** The script as the reviews read it: the script itself, or the scenes' narration without one. */
+export async function scriptText(id: string): Promise<string> {
+  const project = await getProjectRow(id)
+  if (project.script.trim()) return project.script
+  return (await getScenes(id))
+    .map((s) => s.narration.trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+/** How the project's scripts should sound: its own audience and tone, the channel's narrator and rules. */
+export async function scriptVoice(id: string) {
+  const [project, settings] = await Promise.all([getProjectRow(id), getSettings()])
+  return {
+    narration: settings.niche.narration,
+    audience: project.audience || settings.niche.audience,
+    tone: project.tone || settings.niche.tone,
+    rules: settings.niche.rules ?? [],
+  }
+}

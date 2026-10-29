@@ -52,6 +52,7 @@ import { keys, usePlaylists, useProjectAction, useSaver, useSettings, useStatus 
 import type { StepId, Tone } from '@/lib/stage'
 import { downloadHref } from '@/lib/upload'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
+import { FinalCheck, finalChecks } from './final-check'
 import { JobSteps, Warnings } from './job-panel'
 import { ThumbnailMaker } from './thumbnail-maker'
 import { type StepProps, stageOf } from './workspace'
@@ -65,6 +66,7 @@ export function PublishStep({ data, goTo }: StepProps) {
         <PostDetailsPanel data={data} />
         <TranslationsPanel data={data} />
         <ThumbnailPanel data={data} />
+        <FinalCheck data={data} goTo={goTo} />
       </div>
       <div className="flex flex-col gap-5 xl:sticky xl:top-4">
         {showJob ? <JobPanel data={data} job={job} /> : <FinishPanel data={data} goTo={goTo} />}
@@ -327,6 +329,12 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
           onCheckedChange={(madeForKids) => setPost({ madeForKids }, 0)}
           label="Made for kids"
           description="Required by YouTube. Turns off comments and personalised ads for this video."
+        />
+        <Switch
+          checked={post.syntheticMedia === true}
+          onCheckedChange={(syntheticMedia) => setPost({ syntheticMedia }, 0)}
+          label="Altered or synthetic content"
+          description="YouTube's label for realistic AI-made people, places or events. Not needed for cartoons, doodles or obvious fantasy."
         />
         <Switch
           checked={post.aiFill !== false}
@@ -746,61 +754,75 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
     status && (status.notifications.discord || status.notifications.telegram || status.notifications.email),
   )
 
-  const checks: { label: string; tone: Tone; detail: string; step?: StepId; href?: string }[] = [
-    {
-      label: 'Scenes',
-      tone: scenes.length ? 'ok' : 'you',
-      detail: scenes.length ? `${scenes.length} scenes` : 'Split the script into scenes',
-      step: 'script',
-    },
-    {
-      label: 'Voice-over',
-      tone: stage.timed ? 'ok' : project.voiceoverUrl ? 'you' : 'you',
-      detail: stage.timed
-        ? 'Scenes match the speech'
-        : project.voiceoverUrl
-          ? 'Match the scenes to it'
-          : 'Upload one, or record it with AI',
-      step: 'voiceover',
-    },
-    {
-      label: 'Images',
-      tone: missing === 0 && scenes.length ? 'ok' : 'you',
-      detail:
-        missing === 0 ? 'Every scene has one' : `${missing} missing — the previous image stays on screen`,
-      step: 'images',
-    },
-    {
-      label: 'YouTube',
-      tone: channel ? 'ok' : disconnected ? 'bad' : 'idle',
-      detail: channel
-        ? `Posting to ${channel.title}`
-        : disconnected
-          ? 'Its channel is disconnected — reconnect it, or pick another under Post details'
-          : 'Not connected — the video is rendered but not posted',
-      href: '/settings',
-    },
-    {
-      label: 'Google Drive',
-      tone: status?.drive.connected ? 'ok' : 'idle',
-      detail: status?.drive.connected
-        ? 'The video and files are saved there'
-        : 'Not connected — the video stays in app storage',
-      href: '/settings',
-    },
-    {
-      label: 'Worker',
-      tone: status?.worker.configured ? (status.worker.reachable ? 'ok' : 'idle') : 'bad',
-      detail: !status?.worker.configured
-        ? 'Not set up — see Settings'
-        : status.worker.mode === 'github'
-          ? 'GitHub Actions starts a run for this video'
-          : status.worker.reachable
-            ? 'Online'
-            : 'Asleep — it wakes up when you start (about a minute)',
-      href: '/settings',
-    },
-  ]
+  const final = finalChecks(data)
+  const toFix = final.filter((c) => c.level === 'fix').length
+  const toLook = final.filter((c) => c.level === 'look').length
+  const checks: { label: string; tone: Tone; detail: string; step?: StepId; href?: string; link?: string }[] =
+    [
+      {
+        label: 'Scenes',
+        tone: scenes.length ? 'ok' : 'you',
+        detail: scenes.length ? `${scenes.length} scenes` : 'Split the script into scenes',
+        step: 'script',
+      },
+      {
+        label: 'Voice-over',
+        tone: stage.timed ? 'ok' : project.voiceoverUrl ? 'you' : 'you',
+        detail: stage.timed
+          ? 'Scenes match the speech'
+          : project.voiceoverUrl
+            ? 'Match the scenes to it'
+            : 'Upload one, or record it with AI',
+        step: 'voiceover',
+      },
+      {
+        label: 'Images',
+        tone: missing === 0 && scenes.length ? 'ok' : 'you',
+        detail:
+          missing === 0 ? 'Every scene has one' : `${missing} missing — the previous image stays on screen`,
+        step: 'images',
+      },
+      {
+        label: 'Final check',
+        tone: toFix ? 'you' : 'ok',
+        detail:
+          toFix || toLook
+            ? [toFix && `${toFix} to fix`, toLook && `${toLook} to look at`].filter(Boolean).join(', ')
+            : 'Title, thumbnail, description and chapters look right',
+        href: '#final-check',
+        link: 'See',
+      },
+      {
+        label: 'YouTube',
+        tone: channel ? 'ok' : disconnected ? 'bad' : 'idle',
+        detail: channel
+          ? `Posting to ${channel.title}`
+          : disconnected
+            ? 'Its channel is disconnected — reconnect it, or pick another under Post details'
+            : 'Not connected — the video is rendered but not posted',
+        href: '/settings',
+      },
+      {
+        label: 'Google Drive',
+        tone: status?.drive.connected ? 'ok' : 'idle',
+        detail: status?.drive.connected
+          ? 'The video and files are saved there'
+          : 'Not connected — the video stays in app storage',
+        href: '/settings',
+      },
+      {
+        label: 'Worker',
+        tone: status?.worker.configured ? (status.worker.reachable ? 'ok' : 'idle') : 'bad',
+        detail: !status?.worker.configured
+          ? 'Not set up — see Settings'
+          : status.worker.mode === 'github'
+            ? 'GitHub Actions starts a run for this video'
+            : status.worker.reachable
+              ? 'Online'
+              : 'Asleep — it wakes up when you start (about a minute)',
+        href: '/settings',
+      },
+    ]
 
   const blocked = !scenes.length || !status?.worker.configured || disconnected
   const finish = async () => {
@@ -872,7 +894,7 @@ function FinishPanel({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) =
                   </button>
                 ) : (
                   <a href={check.href} className="text-[12.5px] font-medium underline underline-offset-4">
-                    Set up
+                    {check.link ?? 'Set up'}
                   </a>
                 ))}
             </li>

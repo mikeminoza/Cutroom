@@ -20,6 +20,7 @@
     "./sfx": "./src/sfx.ts",
     "./retention": "./src/retention.ts",
     "./breakouts": "./src/breakouts.ts",
+    "./review": "./src/review.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

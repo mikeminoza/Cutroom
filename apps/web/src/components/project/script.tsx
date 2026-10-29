@@ -30,6 +30,7 @@ import { formatLength } from '@/lib/format'
 import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { SyncedInput, SyncedTextarea } from './fields'
 import { ScenePromptsPanel } from './scene-prompts'
+import { ScriptDoctor } from './script-doctor'
 import type { StepProps } from './workspace'
 
 export const MOTION_LABEL: Record<Motion, string> = {
@@ -170,7 +171,8 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
 
         <ScenesPanel data={data} selectedSceneId={selectedSceneId} selectScene={selectScene} goTo={goTo} />
       </div>
-      {/* Outside the grid, so the sticky script panel never slides over it. */}
+      {/* Outside the grid, so the sticky script panel never slides over them. */}
+      <ScriptDoctor data={data} />
       <ScenePromptsPanel data={data} timed={Boolean(project.transcript?.words.length)} />
 
       <WriteDialog

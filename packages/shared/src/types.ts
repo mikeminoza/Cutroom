@@ -350,6 +350,11 @@ export interface PostDetails {
   comment?: string
   /** The title and description in other languages: YouTube shows viewers their own. */
   translations?: PostTranslation[]
+  /**
+   * YouTube's "altered or synthetic content" label, for realistic AI-made people, places or events
+   * (not needed for cartoons or obvious fantasy).
+   */
+  syntheticMedia?: boolean
 }
 
 export interface PostTranslation {

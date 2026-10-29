@@ -1,4 +1,5 @@
 import type { JobType } from '@cutroom/shared/protocol'
+import { findPassage } from '@cutroom/shared/review'
 import { copyStoredFile, deleteFile, isStoredUnder } from '@cutroom/shared/storage'
 import {
   type Accent,
@@ -463,6 +464,39 @@ export async function replaceScenes(projectId: string, drafts: SceneDraftInput[]
   }
   await Promise.all(old.map((s) => deleteFile(s.imageUrl)))
   await updateProject(projectId, { status: 'draft' })
+}
+
+/**
+ * Replaces one passage with new words in the script and in every scene whose narration holds it,
+ * so a punch-up or a new opening lands wherever the words are read from (the voice-over reads the
+ * scenes). Returns whether the script had it and the numbers of the scenes changed.
+ */
+export async function editScript(
+  projectId: string,
+  original: string,
+  replacement: string,
+): Promise<{ script: boolean; scenes: number[] }> {
+  const project = await getProjectRow(projectId)
+  const scenes = await getScenes(projectId)
+  const inScript = findPassage(project.script, original)
+  const touched = scenes.flatMap((scene) => {
+    const found = findPassage(scene.narration, original)
+    return found ? [{ scene, found }] : []
+  })
+  if (!inScript && touched.length === 0) badRequest('Those words are no longer in the script.')
+  // A cut can leave a double space or a space before a comma behind.
+  const tidy = (text: string) => text.replace(/[ \t]{2,}/g, ' ').replace(/ +([,.;:!?])/g, '$1')
+  if (inScript)
+    await updateProject(projectId, { script: tidy(project.script.replace(inScript, replacement)) })
+  const database = await db()
+  for (const { scene, found } of touched) {
+    await database
+      .update(schema.scenes)
+      .set({ narration: tidy(scene.narration.replace(found, replacement)).trim() })
+      .where(eq(schema.scenes.id, scene.id))
+  }
+  if (!inScript) await touchProject(projectId)
+  return { script: Boolean(inScript), scenes: touched.map(({ scene }) => scene.index + 1) }
 }
 
 export async function renumberScenes(projectId: string) {

@@ -376,6 +376,7 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         madeForKids: post.madeForKids,
         language: post.language,
         localizations: post.translations,
+        syntheticMedia: post.syntheticMedia,
         onProgress: (f) => ctx.progress('youtube', f, `Uploading to YouTube (${Math.round(f * 100)}%)`),
       })
       await ctx.result({ youtubeVideoId: videoId, publishAt })

@@ -70,6 +70,11 @@ export function buildImagePrompt(
   return lines.join('\n')
 }
 
+/** The words a thumbnail prompt asks to print (see buildThumbnailPrompt), or ''. */
+export function thumbnailWords(prompt: string): string {
+  return /Add the text "([^"]+)"/.exec(prompt)?.[1] ?? ''
+}
+
 export function buildThumbnailPrompt(
   idea: string,
   options: { artStyle: string; characters: CharacterInput[]; text?: string },

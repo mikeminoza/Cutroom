@@ -109,6 +109,8 @@ const breakoutsModule = await import('../src/server/breakouts')
 const breakoutsRoute = await import('../src/app/api/breakouts/route')
 const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/route')
 const monetizationRoute = await import('../src/app/api/channel/monetization/route')
+const scriptEditRoute = await import('../src/app/api/projects/[id]/script-edit/route')
+const reviewRoute = await import('../src/app/api/projects/[id]/ai/review/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2066,5 +2068,79 @@ describe('a channel set up to grow and earn', () => {
     } finally {
       if (channels.length) await database.insert(schema.channels).values(channels)
     }
+  })
+})
+
+describe('the script doctor', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const post = (body?: unknown) =>
+    new Request('http://localhost/api', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+
+  it('puts an accepted suggestion in the script and in the scenes that hold it', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, {
+      script: 'Look at you right now,\nscrolling in the dark like a goblin. Bro, you do not need an app.',
+    })
+    await projects.replaceScenes(id, [
+      { start: 0, end: 4, narration: 'Look at you right now, scrolling in the dark like a goblin.' },
+      { start: 4, end: 7, narration: 'Bro, you do not need an app.' },
+    ])
+    const response = await scriptEditRoute.POST(
+      post({ original: 'right now, scrolling in the dark', replacement: 'doom-scrolling at 2 AM' }),
+      ctx(id),
+    )
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.edit).toEqual({ script: true, scenes: [1] })
+    expect(body.project.script).toBe(
+      'Look at you doom-scrolling at 2 AM like a goblin. Bro, you do not need an app.',
+    )
+    expect(body.scenes[0].narration).toBe('Look at you doom-scrolling at 2 AM like a goblin.')
+    expect(body.scenes[1].narration).toBe('Bro, you do not need an app.')
+
+    // A cut leaves no double space or stray space before a comma.
+    const cut = await (
+      await scriptEditRoute.POST(post({ original: 'Bro,', replacement: '' }), ctx(id))
+    ).json()
+    expect(cut.scenes[1].narration).toBe('you do not need an app.')
+    expect(cut.project.script).toBe(
+      'Look at you doom-scrolling at 2 AM like a goblin. you do not need an app.',
+    )
+
+    // Words spanning two scenes change in the script only.
+    const across = await (
+      await scriptEditRoute.POST(post({ original: 'goblin. you do', replacement: 'goblin. You do' }), ctx(id))
+    ).json()
+    expect(across.edit).toEqual({ script: true, scenes: [] })
+
+    const gone = await scriptEditRoute.POST(
+      post({ original: 'not in the script', replacement: 'x' }),
+      ctx(id),
+    )
+    expect(gone.status).toBe(400)
+    expect((await gone.json()).error).toMatch(/no longer in the script/)
+  })
+
+  it('needs a script to review, and keeps the altered-content label of a post', async () => {
+    const id = await newProject()
+    const empty = await reviewRoute.POST(post(), ctx(id))
+    expect(empty.status).toBe(400)
+    expect((await empty.json()).error).toMatch(/script/)
+
+    const project = await projects.getProjectRow(id)
+    const saved = await projectRoute.PATCH(
+      new Request('http://localhost/api', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ post: { ...project.post, syntheticMedia: true } }),
+      }),
+      ctx(id),
+    )
+    expect(saved.status).toBe(200)
+    expect((await projects.getProjectRow(id)).post.syntheticMedia).toBe(true)
   })
 })

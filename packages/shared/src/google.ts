@@ -368,6 +368,8 @@ export interface UploadVideoInput {
   language: string
   /** The title and description in other languages (not the video's own). */
   localizations?: { language: string; title: string; description: string }[]
+  /** YouTube's "altered or synthetic content" label. */
+  syntheticMedia?: boolean
   onProgress?: (fraction: number) => void
 }
 
@@ -411,6 +413,7 @@ export async function uploadVideo(client: OAuthClient, input: UploadVideoInput):
           publishAt: input.publishAt ?? undefined,
           selfDeclaredMadeForKids: input.madeForKids,
           embeddable: true,
+          ...(input.syntheticMedia ? { containsSyntheticMedia: true } : {}),
         },
         ...(localizations ? { localizations } : {}),
       },
