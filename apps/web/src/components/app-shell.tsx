@@ -9,6 +9,7 @@ import {
   ListChecks,
   LogOut,
   MonitorPlay,
+  Rocket,
   Settings2,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -22,6 +23,7 @@ import { Dot } from './ui'
 
 const NAV = [
   { href: '/', label: 'Projects', icon: Clapperboard },
+  { href: '/grow', label: 'Grow the channel', short: 'Grow', icon: Rocket },
   { href: '/ideas', label: 'Ideas', icon: Lightbulb },
   { href: '/schedule', label: 'Schedule', icon: CalendarClock },
   { href: '/performance', label: 'Performance', short: 'Stats', icon: ChartColumn },
@@ -193,7 +195,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Phone tab bar */}
       <nav
         aria-label="Main"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-8 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-9 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
       >
         {NAV.map(({ href, label, short, icon: Icon }) => {
           const active = isActive(href)

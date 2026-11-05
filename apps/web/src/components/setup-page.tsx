@@ -17,29 +17,10 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { keys, useSettings, useStatus } from '@/lib/hooks'
-import type { Tone } from '@/lib/stage'
 import { AiSetup } from './ai-setup'
+import { type TipItem, TipRow, useTicks } from './checklist'
 import { RoadToMonetization } from './monetization'
-import { Button, ButtonLink, Panel, ProgressBar, Segmented, Select, StatusPill, useConfirm } from './ui'
-
-type State = 'done' | 'todo' | 'auto' | 'info'
-
-const STATE: Record<State, { tone: Tone; label: string }> = {
-  done: { tone: 'ok', label: 'Done' },
-  auto: { tone: 'ok', label: 'Cutroom does this' },
-  todo: { tone: 'you', label: 'To do' },
-  info: { tone: 'idle', label: 'Good to know' },
-}
-
-interface TipItem {
-  id: string
-  title: string
-  state: State
-  body: React.ReactNode
-  action?: React.ReactNode
-  /** Shown under the tip, full width: a picker. */
-  extra?: React.ReactNode
-}
+import { Button, ButtonLink, Panel, ProgressBar, Segmented, Select, useConfirm } from './ui'
 
 interface Section {
   title: string
@@ -73,6 +54,7 @@ export function SetupPage() {
   const [channelId, setChannelId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [cadence, setCadence] = useState<Cadence>(3)
+  const { ticked, button: tick } = useTicks(settings)
 
   const channels = status?.channels ?? []
   const channel =
@@ -99,7 +81,6 @@ export function SetupPage() {
 
   const market = marketOf(settings.niche.market) ?? MARKETS[0]
   const geminiReady = status?.gemini.configured === true
-  const ticked = new Set(settings.setup.done)
   const { defaults } = settings
 
   const save = async (next: AppSettings, message: string, key: string): Promise<boolean> => {
@@ -117,16 +98,6 @@ export function SetupPage() {
       setBusy(null)
     }
   }
-
-  const toggleTick = (id: string) =>
-    save(
-      {
-        ...settings,
-        setup: { done: ticked.has(id) ? [...ticked].filter((t) => t !== id) : [...ticked, id] },
-      },
-      ticked.has(id) ? 'Marked as still to do' : 'Marked as done',
-      id,
-    )
 
   const applyMarket = (code: string) => {
     const next = marketOf(code)
@@ -162,16 +133,6 @@ export function SetupPage() {
     >
       YouTube Studio
     </ButtonLink>
-  )
-  const tick = (id: string) => (
-    <Button
-      size="sm"
-      variant={ticked.has(id) ? 'ghost' : 'plain'}
-      busy={busy === id}
-      onClick={() => toggleTick(id)}
-    >
-      {ticked.has(id) ? 'Undo' : 'Mark as done'}
-    </Button>
   )
   /** Where a YouTube setting is changed: the channel page, or Settings to connect one first. */
   const channelLink = channel ? (
@@ -611,7 +572,7 @@ export function SetupPage() {
           <Panel key={section.title} title={section.title} description={section.description}>
             <ul className="divide-y divide-line">
               {section.items.map((item) => (
-                <Tip key={item.id} item={item} />
+                <TipRow key={item.id} item={item} />
               ))}
             </ul>
           </Panel>
@@ -619,22 +580,5 @@ export function SetupPage() {
       </div>
       {confirmDialog}
     </div>
-  )
-}
-
-function Tip({ item }: { item: TipItem }) {
-  const state = STATE[item.state]
-  return (
-    <li className="grid gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <h3 className="text-[14.5px] font-semibold">{item.title}</h3>
-          <StatusPill tone={state.tone}>{state.label}</StatusPill>
-        </div>
-        <div className="mt-1.5 max-w-[68ch] text-[13.5px] leading-relaxed text-ink-2">{item.body}</div>
-      </div>
-      {item.action && <div className="flex flex-wrap items-start gap-2 sm:justify-end">{item.action}</div>}
-      {item.extra && <div className="sm:col-span-2">{item.extra}</div>}
-    </li>
   )
 }

@@ -21,6 +21,7 @@
     "./retention": "./src/retention.ts",
     "./breakouts": "./src/breakouts.ts",
     "./review": "./src/review.ts",
+    "./growth": "./src/growth.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

@@ -3,7 +3,7 @@
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Lightbulb, Plus, RotateCcw, Sparkles, Trash2, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
@@ -32,6 +32,10 @@ export function IdeasPage() {
   const { data: status } = useStatus()
   const client = useQueryClient()
   const [tab, setTab] = useState<Tab>('new')
+  // Grow the channel links to /ideas#breakouts.
+  useEffect(() => {
+    if (window.location.hash === '#breakouts') setTab('breakouts')
+  }, [])
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [niche, setNiche] = useState('')
   const [ownTitle, setOwnTitle] = useState('')
