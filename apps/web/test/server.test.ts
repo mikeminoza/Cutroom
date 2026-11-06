@@ -111,6 +111,7 @@ const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/r
 const monetizationRoute = await import('../src/app/api/channel/monetization/route')
 const scriptEditRoute = await import('../src/app/api/projects/[id]/script-edit/route')
 const reviewRoute = await import('../src/app/api/projects/[id]/ai/review/route')
+const workerCheck = await import('../src/server/worker-check')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2142,5 +2143,141 @@ describe('the script doctor', () => {
     )
     expect(saved.status).toBe(200)
     expect((await projects.getProjectRow(id)).post.syntheticMedia).toBe(true)
+  })
+})
+
+describe('testing the worker', () => {
+  const checkRow = async (id: string) => {
+    const database = await db()
+    const [row] = await database.select().from(schema.workerChecks).where(eq(schema.workerChecks.id, id))
+    return row
+  }
+
+  it('hands the check to GitHub like a job, and records what the worker reports', async () => {
+    process.env.GITHUB_DISPATCH_TOKEN = 'token'
+    process.env.GITHUB_REPO = 'me/cutroom'
+    process.env.WORKER_SECRET = 'secret'
+    try {
+      const fetchMock = vi.fn(
+        async (_url: string, _init?: RequestInit) => new Response(null, { status: 204 }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      const check = await workerCheck.startCheck()
+      expect(check.status).toBe('queued')
+      expect(check.runsUrl).toBe('https://github.com/me/cutroom/actions/workflows/worker.yml')
+      const [, init] = fetchMock.mock.calls[0]
+      expect(JSON.parse(init?.body as string)).toEqual({
+        ref: 'main',
+        inputs: { job_id: `check-${check.id}` },
+      })
+      // Asking again while it runs gives the same check, not a second run.
+      expect((await workerCheck.startCheck()).id).toBe(check.id)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      const request = new Request('http://localhost/api/worker/checks/x')
+      const payload = await workerCheck.checkPayload(check.id, request)
+      expect(payload).toMatchObject({ id: check.id, voiceProvider: 'gemini' })
+      await workerCheck.applyCheckEvent(check.id, {
+        type: 'info',
+        info: { runner: 'GitHub Actions', os: 'Ubuntu 24.04.3 LTS', node: 'v24.11.1', ffmpeg: '6.1.1' },
+      })
+      await workerCheck.applyCheckEvent(check.id, {
+        type: 'step',
+        key: 'keys',
+        status: 'done',
+        detail: 'Gemini works',
+      })
+      await workerCheck.applyCheckEvent(check.id, {
+        type: 'step',
+        key: 'render',
+        status: 'done',
+        detail: 'Rendered',
+      })
+      const clip = await putFile(`checks/${check.id}/test-clip.mp4`, Buffer.from('mp4'), 'video/mp4')
+      await workerCheck.applyCheckEvent(check.id, { type: 'clip', url: clip.url, seconds: 2 })
+      const done = await workerCheck.applyCheckEvent(check.id, { type: 'finished' })
+      expect(done.status).toBe('done')
+      expect(done.clipUrl).toBe(clip.url)
+      expect(done.steps.map((s) => [s.key, s.status])).toEqual([
+        ['start', 'done'],
+        ['keys', 'done'],
+        ['render', 'done'],
+        ['storage', 'done'],
+      ])
+      expect(done.steps[0].detail).toBe('GitHub Actions · Ubuntu 24.04.3 LTS · Node 24.11.1 · ffmpeg 6.1.1')
+      // A finished check refuses more reports, so a late worker stops.
+      await expect(workerCheck.applyCheckEvent(check.id, { type: 'finished' })).rejects.toThrow(
+        /already finished/,
+      )
+
+      // The next check replaces it and deletes its clip.
+      const next = await workerCheck.startCheck()
+      expect(await checkRow(check.id)).toBeUndefined()
+      expect(stored(keyOfUrl(clip.url))).toBe(false)
+      expect(next.id).not.toBe(check.id)
+    } finally {
+      delete process.env.GITHUB_DISPATCH_TOKEN
+      delete process.env.GITHUB_REPO
+      delete process.env.WORKER_SECRET
+    }
+  })
+
+  it('says why a run never started, or never reached Cutroom', async () => {
+    process.env.GITHUB_DISPATCH_TOKEN = 'token'
+    process.env.GITHUB_REPO = 'me/cutroom'
+    process.env.WORKER_SECRET = 'secret'
+    try {
+      // The check left running by the test before.
+      await (await db()).delete(schema.workerChecks)
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => Response.json({ message: 'Not Found' }, { status: 404 })),
+      )
+      const refused = await workerCheck.startCheck()
+      expect(refused.status).toBe('failed')
+      expect(refused.steps[0]).toMatchObject({
+        status: 'failed',
+        detail: 'GitHub answered HTTP 404: Not Found',
+      })
+      expect(refused.steps.slice(1).every((s) => s.status === 'skipped')).toBe(true)
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(null, { status: 204 })),
+      )
+      const silent = await workerCheck.startCheck()
+      const row = await checkRow(silent.id)
+      // Within the wait it stays queued; after it, the check fails with what to look at.
+      expect((await workerCheck.refreshCheck(row, Date.now() + 60_000)).status).toBe('queued')
+      const late = await workerCheck.refreshCheck(row, Date.now() + 9 * 60_000)
+      expect(late.status).toBe('failed')
+      expect(late.error).toBe(workerCheck.noShowMessage('github'))
+      expect(late.error).toMatch(/APP_URL or WORKER_SECRET/)
+    } finally {
+      delete process.env.GITHUB_DISPATCH_TOKEN
+      delete process.env.GITHUB_REPO
+      delete process.env.WORKER_SECRET
+    }
+  })
+
+  it('catches a worker that saves to its own disk while Cutroom uses Vercel Blob', async () => {
+    expect(await workerCheck.clipProblem('/api/files/checks/none/test-clip.mp4')).toMatch(
+      /must share .data\/storage/,
+    )
+    process.env.BLOB_READ_WRITE_TOKEN = 'token'
+    try {
+      expect(await workerCheck.clipProblem('/api/files/checks/x/test-clip.mp4')).toMatch(
+        /Add BLOB_READ_WRITE_TOKEN to the worker's secrets/,
+      )
+    } finally {
+      delete process.env.BLOB_READ_WRITE_TOKEN
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 403 })),
+    )
+    expect(await workerCheck.clipProblem('https://x.public.blob.vercel-storage.com/c.mp4')).toBe(
+      "Cutroom couldn't read the clip back: storage answered HTTP 403.",
+    )
   })
 })

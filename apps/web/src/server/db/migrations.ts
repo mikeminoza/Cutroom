@@ -87,4 +87,10 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "breakouts" ADD CONSTRAINT "breakouts_idea_id_ideas_id_fk" FOREIGN KEY ("idea_id") REFERENCES "public"."ideas"("id") ON DELETE set null ON UPDATE no action;',
     ],
   },
+  {
+    tag: '0010_worker_checks',
+    statements: [
+      'CREATE TABLE "worker_checks" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"status" text DEFAULT \'queued\' NOT NULL,\n\t"steps" jsonb NOT NULL,\n\t"info" jsonb,\n\t"clip_url" text,\n\t"error" text,\n\t"heard_at" timestamp with time zone,\n\t"finished_at" timestamp with time zone,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL,\n\t"updated_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+    ],
+  },
 ]

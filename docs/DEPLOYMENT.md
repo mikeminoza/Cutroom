@@ -397,7 +397,13 @@ Optional features add more later: the [checklist](#before-you-start-checklist) s
 
 ## 8. Test run
 
-Use a short test so you see the whole pipeline in a few minutes:
+First, **Settings → Worker → Test the worker**. It starts the worker the way a real job does (on
+Render or GitHub Actions), checks its keys (Gemini, Google sign-in, ElevenLabs when you use it),
+renders a 4-second clip with ffmpeg and saves it to storage, then plays the clip back. Each part
+says what to fix when it fails: a run that never reaches Cutroom usually means `APP_URL` or
+`WORKER_SECRET` is missing or different on the worker. On GitHub Actions it takes 2–4 minutes.
+
+Then make a short test video, to see the whole pipeline in a few minutes:
 
 1. **Projects → New video**. Choose **Short**, write a one-line topic, then **Create project**.
 2. **Script:** paste three or four sentences and click **Split into scenes**.

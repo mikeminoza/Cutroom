@@ -34,6 +34,7 @@ export const keys = {
   voices: ['voices'] as const,
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
   channel: (channelId: string | null) => ['channel', channelId ?? 'default'] as const,
+  workerCheck: ['worker-check'] as const,
 }
 
 export function useSeriesList() {

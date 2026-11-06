@@ -36,6 +36,7 @@ import {
   Textarea,
   useConfirm,
 } from './ui'
+import { useWorkerCheck, WorkerCheckResult } from './worker-check'
 
 const GOOGLE_MESSAGES: Record<string, { ok: boolean; text: string }> = {
   'youtube-connected': { ok: true, text: 'YouTube connected' },
@@ -120,6 +121,7 @@ function Connections() {
   const client = useQueryClient()
   const { confirm, element } = useConfirm()
   const [testing, setTesting] = useState(false)
+  const workerCheck = useWorkerCheck(Boolean(status?.worker.configured))
   const drive = useQuery({
     queryKey: ['drive-usage'],
     queryFn: () => api.get<{ usage: { used: number; limit: number | null } | null }>('/api/google/drive'),
@@ -410,6 +412,11 @@ function Connections() {
                   } A free Render worker renders slowly (a 6-minute video takes about half an hour); the free GitHub Actions worker takes a few minutes (DEPLOYMENT.md, section 11).`
           }
         >
+          {status.worker.configured && (
+            <Button size="sm" busy={workerCheck.busy} onClick={workerCheck.start}>
+              {workerCheck.busy ? 'Testing…' : 'Test the worker'}
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -418,6 +425,7 @@ function Connections() {
             Check again
           </Button>
         </Row>
+        {workerCheck.check && <WorkerCheckResult check={workerCheck.check} />}
         <Row
           name="Notifications"
           tone={notifyNames.length ? 'ok' : 'idle'}

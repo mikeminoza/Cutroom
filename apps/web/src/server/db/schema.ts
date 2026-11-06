@@ -1,4 +1,12 @@
-import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/protocol'
+import type {
+  CheckStatus,
+  CheckStep,
+  JobResult,
+  JobStatus,
+  JobStep,
+  JobType,
+  WorkerInfo,
+} from '@cutroom/shared/protocol'
 import type {
   Accent,
   AppSettings,
@@ -263,6 +271,23 @@ export const ideas = pgTable('ideas', {
   createdAt: created(),
 })
 
+/** Test runs of the worker from Settings (server/worker-check.ts). Only the latest is kept. */
+export const workerChecks = pgTable('worker_checks', {
+  id: text('id').primaryKey(),
+  status: text('status').$type<CheckStatus>().notNull().default('queued'),
+  steps: jsonb('steps').$type<CheckStep[]>().notNull(),
+  info: jsonb('info').$type<WorkerInfo>(),
+  /** The test clip the worker saved, deleted with the check. */
+  clipUrl: text('clip_url'),
+  /** Why the worker could not be started, set by the web app. */
+  error: text('error'),
+  /** When the worker last reported. */
+  heardAt: timestamp('heard_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  createdAt: created(),
+  updatedAt: updated(),
+})
+
 export type ProjectRow = typeof projects.$inferSelect
 export type SceneRow = typeof scenes.$inferSelect
 export type CharacterRow = typeof characters.$inferSelect
@@ -272,3 +297,4 @@ export type SeriesRow = typeof series.$inferSelect
 export type LibraryCharacterRow = typeof libraryCharacters.$inferSelect
 export type LibraryBackgroundRow = typeof libraryBackgrounds.$inferSelect
 export type IdeaRow = typeof ideas.$inferSelect
+export type WorkerCheckRow = typeof workerChecks.$inferSelect

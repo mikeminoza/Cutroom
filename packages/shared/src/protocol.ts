@@ -175,3 +175,55 @@ export function initialSteps(type: JobType): JobStep[] {
 
 /** A job counts as stalled when the worker has not reported for this long. */
 export const STALL_SECONDS = 150
+
+// ---------------------------------------------------------------------------
+// Worker check: a test run from Settings that goes the way a real job does (the same dispatch,
+// secrets and storage) without touching a project. It runs instead of a job when the id handed
+// to the worker starts with CHECK_PREFIX.
+
+export const CHECK_PREFIX = 'check-'
+
+export type CheckStepKey = 'start' | 'keys' | 'render' | 'storage'
+export type CheckStatus = 'queued' | 'running' | 'done' | 'failed'
+
+export interface CheckStep {
+  key: CheckStepKey
+  label: string
+  status: StepStatus
+  detail?: string
+}
+
+export const CHECK_STEPS: { key: CheckStepKey; label: string }[] = [
+  { key: 'start', label: 'Start the worker' },
+  { key: 'keys', label: 'Check its keys' },
+  { key: 'render', label: 'Render a test clip' },
+  { key: 'storage', label: 'Save the clip where Cutroom can read it' },
+]
+
+/** Where the worker runs: shown so you know which machine and tools did the work. */
+export interface WorkerInfo {
+  /** "GitHub Actions", "Render" or the host name. */
+  runner: string
+  /** e.g. "Ubuntu 24.04.3 LTS". */
+  os: string
+  node: string
+  /** The ffmpeg version, e.g. "6.1.1-3ubuntu5"; '' when ffmpeg is missing. */
+  ffmpeg: string
+}
+
+/** What the worker needs for a check, from the web app. */
+export interface CheckPayload {
+  id: string
+  /** The default channel's sign-in, to test GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET. */
+  youtubeRefreshToken: string | null
+  /** The voice-over provider in use: ElevenLabs then needs its key on the worker too. */
+  voiceProvider: VoiceSettings['provider']
+  appUrl: string
+}
+
+export type CheckEvent =
+  | { type: 'info'; info: WorkerInfo }
+  | { type: 'step'; key: CheckStepKey; status: StepStatus; detail?: string }
+  /** The test clip, saved; the web app checks that it can read it back. */
+  | { type: 'clip'; url: string; seconds: number }
+  | { type: 'finished' }

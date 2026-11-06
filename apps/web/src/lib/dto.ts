@@ -1,5 +1,13 @@
 // Shapes the browser receives from the API.
-import type { JobResult, JobStatus, JobStep, JobType } from '@cutroom/shared/protocol'
+import type {
+  CheckStatus,
+  CheckStep,
+  JobResult,
+  JobStatus,
+  JobStep,
+  JobType,
+  WorkerInfo,
+} from '@cutroom/shared/protocol'
 import type { GrowthNumbers } from '@cutroom/shared/setup'
 import type {
   CaptionStyle,
@@ -250,4 +258,19 @@ export interface PerformanceDTO {
   videos: PerformanceVideo[]
   channels: ChannelDTO[]
   notes: string[]
+}
+
+/** A test of the worker from Settings (server/worker-check.ts). */
+export interface WorkerCheckDTO {
+  id: string
+  status: CheckStatus
+  steps: CheckStep[]
+  info: WorkerInfo | null
+  clipUrl: string | null
+  error: string | null
+  createdAt: string
+  finishedAt: string | null
+  mode: 'render' | 'github'
+  /** The worker's runs on GitHub, to see a run that failed before it reached Cutroom. */
+  runsUrl: string | null
 }

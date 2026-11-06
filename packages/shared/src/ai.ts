@@ -64,6 +64,14 @@ function client(): GoogleGenAI {
   return new GoogleGenAI({ apiKey })
 }
 
+/**
+ * Checks the key and the text model (GEMINI_MODEL) with a lookup that uses no quota. Throws when
+ * Gemini refuses either. For the worker check in Settings.
+ */
+export async function checkGeminiKey(): Promise<void> {
+  await client().models.get({ model: geminiModel() })
+}
+
 /** Waits, or rejects as soon as `signal` aborts. */
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {

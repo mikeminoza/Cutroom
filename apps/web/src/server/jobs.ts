@@ -119,6 +119,24 @@ async function dispatchGithub(jobId: string): Promise<string | null> {
   }
 }
 
+/** The worker's runs on GitHub, where a run that failed before reaching Cutroom shows why. */
+export function githubRunsUrl(): string | null {
+  const gh = github()
+  return gh ? `https://github.com/${gh.repo}/actions/workflows/${encodeURIComponent(gh.workflow)}` : null
+}
+
+/**
+ * Hands a worker check (server/worker-check.ts) to the worker the way a job is handed over.
+ * Returns why it could not be started, or null: also when the worker service is asleep and
+ * didn't answer, since the request wakes it and the check is sent again.
+ */
+export async function dispatchCheck(runId: string): Promise<string | null> {
+  if (workerMode() === 'github') return dispatchGithub(runId)
+  const res = await workerFetch('/jobs', { method: 'POST', body: JSON.stringify({ jobId: runId }) })
+  if (res?.status === 401) return 'The worker refused Cutroom: WORKER_SECRET differs between the two.'
+  return res && !res.ok ? `The worker answered HTTP ${res.status}.` : null
+}
+
 export async function pingWorker(): Promise<{ reachable: boolean; busy: boolean }> {
   if (workerMode() === 'github') {
     // Nothing to ping: a run starts per job. Busy when a job is running.

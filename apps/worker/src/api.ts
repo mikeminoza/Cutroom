@@ -1,6 +1,6 @@
 // Talks to the web app, which owns the database.
 import { hostname } from 'node:os'
-import type { JobPayload, WorkerEvent } from '@cutroom/shared/protocol'
+import type { CheckEvent, CheckPayload, JobPayload, WorkerEvent } from '@cutroom/shared/protocol'
 
 export function appUrl(): string {
   return (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')
@@ -98,4 +98,13 @@ export async function nextSlot(jobId: string): Promise<string | null> {
 export async function pendingJobs(): Promise<string[]> {
   const data = await call<{ ids: string[] }>('/api/worker/jobs/pending', undefined, 2)
   return data.ids
+}
+
+/** What a worker check needs (see check.ts). `id` is the check's id, without CHECK_PREFIX. */
+export function getCheck(id: string): Promise<CheckPayload> {
+  return call<CheckPayload>(`/api/worker/checks/${id}`)
+}
+
+export async function sendCheckEvent(id: string, event: CheckEvent): Promise<void> {
+  await call(`/api/worker/checks/${id}/events`, { method: 'POST', body: JSON.stringify(event) })
 }

@@ -1,8 +1,9 @@
 // Runs one job at a time (the free Render instance has very little CPU).
 // Every run first claims the job from the web app, so a second worker (a restart overlapping the
 // old instance, a GitHub Actions run, a double click) can never run or upload the same job twice.
-import { STALL_SECONDS } from '@cutroom/shared/protocol'
+import { CHECK_PREFIX, STALL_SECONDS } from '@cutroom/shared/protocol'
 import { claim, getPayload, LostJob, sendEvent } from './api'
+import { runCheck } from './check'
 import { createContext } from './jobs/context'
 import { runPublish } from './jobs/publish'
 import { runRetime } from './jobs/retime'
@@ -80,6 +81,8 @@ export type RunOutcome = 'done' | 'waiting' | 'failed' | 'busy' | 'skipped' | 'e
 /** Claims, runs and reports one job. Never throws. */
 export async function runJob(jobId: string, controller: AbortController): Promise<RunOutcome> {
   const { signal } = controller
+  // A test run from Settings, handed over like a job.
+  if (jobId.startsWith(CHECK_PREFIX)) return runCheck(jobId, signal)
   try {
     const claimed = await claim(jobId)
     if (claimed === 'held') {
