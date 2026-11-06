@@ -12,7 +12,7 @@ import { formatWhen, timeAgo } from '@/lib/format'
 import { keys, usePerformance, useSeriesList, useStatus } from '@/lib/hooks'
 import { CommentInsightsPanels } from './comment-insights'
 import { Button, Panel, Segmented, Select } from './ui'
-import { SearchesThatFindYou, WhereViewersLeave } from './viewer-insights'
+import { SearchesThatFindYou, WhereViewersAre, WhereViewersLeave } from './viewer-insights'
 
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 const whole = new Intl.NumberFormat('en-US')
@@ -245,6 +245,7 @@ export function PerformancePage() {
 
           <div className="grid items-start gap-6 lg:grid-cols-2">
             <SearchesThatFindYou videos={videos} />
+            <WhereViewersAre videos={videos} />
             {top.length > 0 && (
               <Panel
                 title="What works"

@@ -127,7 +127,16 @@ export interface VideoInsights {
   relative: number[] | null
   /** YouTube searches that led viewers to the video, most views first. */
   searchTerms: { term: string; views: number }[]
+  /** Where its viewers are, most views first. Missing before this was read. */
+  countries?: CountryViews[]
   fetchedAt: string
+}
+
+/** Views and watch time from one country (an ISO code; YouTube uses ZZ for unknown). */
+export interface CountryViews {
+  country: string
+  views: number
+  minutes: number
 }
 
 export interface TemplateCharacter {

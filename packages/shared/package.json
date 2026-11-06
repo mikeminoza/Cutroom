@@ -22,6 +22,7 @@
     "./breakouts": "./src/breakouts.ts",
     "./review": "./src/review.ts",
     "./growth": "./src/growth.ts",
+    "./audience": "./src/audience.ts",
     "./elevenlabs": "./src/elevenlabs.ts",
     "./images": "./src/images.ts"
   },

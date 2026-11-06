@@ -1,13 +1,16 @@
 'use client'
 
+import { addCountries, audienceVerdict, countryName } from '@cutroom/shared/audience'
 import { biggestDrops, hookHold, sceneDrops, topSearchTerms, watchingAt } from '@cutroom/shared/retention'
+import { marketOf } from '@cutroom/shared/setup'
 import { formatTimecode } from '@cutroom/shared/timing'
-import { Search } from 'lucide-react'
+import { CircleAlert, Search } from 'lucide-react'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { cn } from '@/lib/cn'
 import type { PerformanceVideo } from '@/lib/dto'
 import { formatWhen } from '@/lib/format'
-import { useProject } from '@/lib/hooks'
+import { useProject, useSettings } from '@/lib/hooks'
 import { Panel, Select } from './ui'
 
 const percent = (n: number) => `${Math.round(n * 100)}%`
@@ -373,6 +376,96 @@ export function SearchesThatFindYou({ videos }: { videos: PerformanceVideo[] }) 
           Once people find your videos by searching YouTube, their searches show up here after the daily
           refresh. It needs the analytics permission on the channel.
         </p>
+      )}
+    </Panel>
+  )
+}
+
+const SHOWN_COUNTRIES = 8
+
+/**
+ * Where the viewers are, added up over the videos, next to the audience the videos are written
+ * for (the target audience in Channel setup).
+ */
+export function WhereViewersAre({ videos }: { videos: PerformanceVideo[] }) {
+  const { data: settings } = useSettings()
+  const market = marketOf(settings?.niche.market)
+  const countries = useMemo(() => addCountries(videos.map((v) => v.insights?.countries ?? [])), [videos])
+  const total = countries.reduce((n, c) => n + c.views, 0)
+  const verdict = audienceVerdict(countries, market)
+  const shown = countries.slice(0, SHOWN_COUNTRIES)
+  const others = total - shown.reduce((n, c) => n + c.views, 0)
+  const most = Math.max(1, ...shown.map((c) => c.views))
+  const share = (views: number) => `${Math.round((views / Math.max(1, total)) * 100)}%`
+
+  return (
+    <Panel
+      title="Where your viewers are"
+      description="Views by country since each video went live. YouTube recommends videos to people like those who watch them."
+    >
+      {countries.length === 0 ? (
+        <p className="px-5 py-8 text-[13.5px] leading-relaxed text-ink-2">
+          Once your videos have views, the countries they come from show up here after the daily refresh. It
+          needs the analytics permission on the channel.
+        </p>
+      ) : (
+        <>
+          <div
+            className={cn(
+              'flex items-start gap-2.5 border-b border-line px-5 py-3 text-[13.5px] leading-snug',
+              verdict?.level === 'look' ? 'bg-kodak/15 text-ink' : 'text-ink-2',
+            )}
+          >
+            {verdict?.level === 'look' && <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />}
+            <p>
+              {verdict
+                ? verdict.text
+                : `Only ${total.toLocaleString('en-US')} ${total === 1 ? 'view' : 'views'} so far: too few to say who your audience is. The first viewers are often people you shared the video with.`}
+              {verdict?.level === 'info' && (
+                <>
+                  {' '}
+                  <Link href="/setup" className="font-medium text-ink underline underline-offset-4">
+                    Channel setup
+                  </Link>
+                </>
+              )}
+            </p>
+          </div>
+          <ol className="divide-y divide-line">
+            {shown.map((c) => (
+              <li key={c.country} className="flex items-center gap-3 px-5 py-2 text-[13.5px]">
+                <span className="min-w-0 flex-1 truncate">
+                  {countryName(c.country)}
+                  {market?.code === c.country && (
+                    <span className="ml-2 rounded-full bg-ok-wash px-2 py-px text-[11.5px] font-medium text-ok">
+                      your audience
+                    </span>
+                  )}
+                </span>
+                <span className="relative hidden h-1.5 w-24 overflow-hidden sm:block" aria-hidden>
+                  <span
+                    className={cn(
+                      'absolute inset-y-0 left-0 rounded-r-[4px]',
+                      market?.code === c.country ? 'bg-ok' : 'bg-run',
+                    )}
+                    style={{ width: `${Math.max(4, (c.views / most) * 100)}%` }}
+                  />
+                </span>
+                <span className="tc w-10 text-right text-ink-2">{share(c.views)}</span>
+                <span className="tc w-20 text-right text-ink-3">
+                  {c.views.toLocaleString('en-US')} {c.views === 1 ? 'view' : 'views'}
+                </span>
+              </li>
+            ))}
+            {others > 0 && (
+              <li className="flex items-center gap-3 px-5 py-2 text-[13.5px] text-ink-3">
+                <span className="min-w-0 flex-1">Other countries</span>
+                <span className="tc w-10 text-right">{share(others)}</span>
+                <span className="tc w-20 text-right">{others.toLocaleString('en-US')} views</span>
+              </li>
+            )}
+          </ol>
+        </>
       )}
     </Panel>
   )

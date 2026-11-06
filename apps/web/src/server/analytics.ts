@@ -8,6 +8,7 @@ import {
   hasAnalyticsScope,
   type VideoAnalytics,
   videoAnalytics,
+  videoCountries,
   videoRetention,
   videoSearchTerms,
   videoStatistics,
@@ -118,14 +119,16 @@ export async function refreshStats(
         try {
           a = await videoAnalytics(client, id, ...range)
           // Each part keeps its last value when YouTube can't give it this time.
-          const [curve, terms] = await Promise.all([
+          const [curve, terms, countries] = await Promise.all([
             videoRetention(client, id, ...range).catch(() => undefined),
             videoSearchTerms(client, id, ...range).catch(() => undefined),
+            videoCountries(client, id, ...range).catch(() => undefined),
           ])
           insights = {
             retention: curve === undefined ? (insights?.retention ?? null) : (curve?.retention ?? null),
             relative: curve === undefined ? (insights?.relative ?? null) : (curve?.relative ?? null),
             searchTerms: terms ?? insights?.searchTerms ?? [],
+            countries: countries ?? insights?.countries ?? [],
             fetchedAt: new Date().toISOString(),
           }
         } catch (error) {

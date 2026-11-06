@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises'
 import { drive as driveApi } from '@googleapis/drive'
 import { auth, type youtube_v3, youtube as youtubeApi } from '@googleapis/youtube'
 import { type ChannelDetails, formatChannelKeywords, parseChannelKeywords, topicName } from './setup'
-import type { Privacy } from './types'
+import type { CountryViews, Privacy } from './types'
 
 export type GoogleProvider = 'youtube' | 'drive'
 
@@ -904,6 +904,45 @@ export async function videoSearchTerms(
   return rows
     .map((row) => ({ term: String(row[term] ?? '').trim(), views: Number(row[views] ?? 0) }))
     .filter((t) => t.term && t.views > 0)
+}
+
+/** Where one video's viewers are, most views first (up to 25 countries). */
+export async function videoCountries(
+  client: OAuthClient,
+  videoId: string,
+  startDate: string,
+  endDate: string,
+): Promise<CountryViews[]> {
+  const { columns, rows } = await analyticsReport(client, {
+    startDate,
+    endDate,
+    dimensions: 'country',
+    metrics: 'views,estimatedMinutesWatched',
+    filters: `video==${videoId}`,
+    sort: '-views',
+  })
+  return countriesFromRows(columns, rows)
+}
+
+/** A country report's rows, most views first, without countries that have no views. */
+export function countriesFromRows(
+  columns: string[],
+  rows: (string | number)[][],
+  limit = 25,
+): CountryViews[] {
+  const country = columns.indexOf('country')
+  const views = columns.indexOf('views')
+  const minutes = columns.indexOf('estimatedMinutesWatched')
+  if (country < 0 || views < 0) return []
+  return rows
+    .map((row) => ({
+      country: String(row[country] ?? '').toUpperCase(),
+      views: Number(row[views] ?? 0),
+      minutes: minutes >= 0 ? Math.round(Number(row[minutes] ?? 0)) : 0,
+    }))
+    .filter((c) => /^[A-Z]{2}$/.test(c.country) && c.views > 0)
+    .sort((a, b) => b.views - a.views)
+    .slice(0, limit)
 }
 
 export function youtubeUrl(videoId: string): string {
