@@ -1,0 +1,83 @@
+// What a Cutroom project sends (Images step → "Make in Flow"), as the side panel uses it: the
+// scenes as storyboard items that know which Cutroom scene they belong to, and the character
+// whose pictures go along with them.
+
+/**
+ * The project's scenes as storyboard items. Cutroom says which scenes already have a picture:
+ * those start as done ("Make again" makes a new one). Your choices on a scene (character, which
+ * scene to match) are kept when the same project is sent again with the same prompt.
+ */
+export function itemsFromCutroom(incoming, previous = []) {
+  const before = new Map(
+    previous.filter((item) => item.sceneId).map((item) => [`${item.sceneId}|${item.prompt}`, item]),
+  )
+  const items = []
+  for (const scene of incoming?.scenes ?? []) {
+    const number = Number(scene.number)
+    const prompt = String(scene.prompt ?? '').trim()
+    if (!prompt || !Number.isInteger(number) || number < 1) continue
+    const old = before.get(`${scene.id}|${prompt}`)
+    const range =
+      scene.range && Number.isFinite(scene.range.start) && Number.isFinite(scene.range.end)
+        ? { start: scene.range.start, end: scene.range.end, label: String(scene.range.label ?? '') }
+        : null
+    items.push({
+      number,
+      sceneId: String(scene.id),
+      range,
+      narration: String(scene.narration ?? ''),
+      cast: Array.isArray(scene.cast) ? scene.cast.map(String).filter(Boolean) : [],
+      prompt,
+      status: scene.hasImage ? 'done' : 'todo',
+      files: scene.hasImage ? ['in Cutroom'] : [],
+      error: '',
+      character: old?.character ?? 'auto',
+      related: old?.related ?? 'auto',
+    })
+  }
+  return items
+}
+
+/**
+ * The character whose pictures go with the scenes: of the project's characters with pictures, the
+ * one the most scenes call for (the first on a tie). Null when none has a picture.
+ */
+export function mainCharacter(incoming) {
+  const counts = new Map()
+  for (const scene of incoming?.scenes ?? []) {
+    for (const name of scene.cast ?? []) {
+      const key = String(name).trim().toLowerCase()
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+  }
+  const pictured = (incoming?.characters ?? []).filter(
+    (character) => character?.name && character.images?.some((image) => image?.dataUrl),
+  )
+  if (pictured.length === 0) return null
+  const score = (character) => counts.get(character.name.trim().toLowerCase()) ?? 0
+  const best = pictured.reduce((winner, other) => (score(other) > score(winner) ? other : winner))
+  return {
+    name: best.name.trim(),
+    looks: String(best.description ?? '').trim(),
+    images: best.images
+      .filter((image) => image?.dataUrl)
+      .slice(0, 3)
+      .map((image, i) => ({
+        name: image.name || `${best.name.trim()}-${i + 1}.png`,
+        type: image.type || 'image/png',
+        dataUrl: image.dataUrl,
+      })),
+  }
+}
+
+/** "https://cutroom.example.com/projects/1" → "https://cutroom.example.com"; null when not a web address. */
+export function siteOrigin(address) {
+  const text = String(address ?? '').trim()
+  if (!text) return null
+  try {
+    const url = new URL(/^[a-z]+:\/\//i.test(text) ? text : `https://${text}`)
+    return /^https?:$/.test(url.protocol) && url.hostname ? url.origin : null
+  } catch {
+    return null
+  }
+}

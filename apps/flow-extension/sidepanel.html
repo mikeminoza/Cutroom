@@ -14,23 +14,48 @@
 
     <section>
       <h2>1. Storyboard</h2>
-      <p class="muted">
-        Paste the storyboard from Cutroom (Script step → Storyboard → Copy all), or load its .txt. Any list of
-        numbered prompts works too.
-      </p>
-      <textarea id="storyboard" rows="5" placeholder="Scene 1  (0:00.0 – 0:04.1)&#10;Narration: …&#10;&#10;Image prompt: …"></textarea>
-      <div class="row">
-        <label class="button">
-          Load .txt
-          <input id="file" type="file" accept=".txt,text/plain" hidden />
-        </label>
-        <button id="read" type="button">Read it</button>
-        <span id="summary" class="muted"></span>
+      <div id="linked" class="linked" hidden>
+        <p><strong>From Cutroom:</strong> <span id="linkedTitle"></span> <span id="linkedSummary" class="muted"></span></p>
+        <p class="muted">
+          Each picture goes straight onto its scene in Cutroom as soon as it's made. Keep a Cutroom tab open.
+        </p>
+        <button id="unlink" type="button" class="quiet">Paste a storyboard instead</button>
+      </div>
+      <div id="manual">
+        <p class="muted">
+          In Cutroom, open a project's <strong>Images</strong> step and press <strong>Make in Flow</strong>: its
+          scenes come here by themselves, and every picture goes back onto its scene.
+        </p>
+        <p class="muted">
+          Or paste a storyboard (Script step → Storyboard → Copy all), or load its .txt. Pictures then go to
+          Downloads.
+        </p>
+        <textarea id="storyboard" rows="5" placeholder="Scene 1  (0:00.0 – 0:04.1)&#10;Narration: …&#10;&#10;Image prompt: …"></textarea>
+        <div class="row">
+          <label class="button">
+            Load .txt
+            <input id="file" type="file" accept=".txt,text/plain" hidden />
+          </label>
+          <button id="read" type="button">Read it</button>
+          <span id="summary" class="muted"></span>
+        </div>
       </div>
       <label class="field">
-        <span>Save to <span class="muted">Downloads/Cutroom/…</span></span>
+        <span id="folderLabel">Save to <span class="muted">Downloads/Cutroom/…</span></span>
         <input id="folder" type="text" placeholder="why-you-wake-up" />
       </label>
+      <details id="address">
+        <summary>Using Cutroom online?</summary>
+        <p class="muted">
+          Cutroom on this computer (localhost) works as it is. For Cutroom online, enter its address once and
+          allow it: its projects then get the Make in Flow button too.
+        </p>
+        <div class="row">
+          <input id="cutroomAddress" class="address-input" type="url" placeholder="https://cutroom.example.com" />
+          <button id="connectAddress" type="button">Connect</button>
+        </div>
+        <p id="addressResult" class="muted"></p>
+      </details>
     </section>
 
     <section>

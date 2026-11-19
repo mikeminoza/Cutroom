@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Toaster } from 'sonner'
 import { useTheme } from '@/lib/theme'
+import { FlowBridge } from './flow-bridge'
 
 export function Providers({ children }: { children: React.ReactNode }) {
   // Subscribing here keeps every page following the system theme live, login included.
@@ -19,6 +20,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={client}>
       {children}
+      <FlowBridge />
       <Toaster
         position="bottom-right"
         theme={theme}

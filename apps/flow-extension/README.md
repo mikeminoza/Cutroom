@@ -1,38 +1,53 @@
 # Cutroom for Flow
 
-A Chrome extension that makes every picture of a Cutroom storyboard in
-[Google Flow](https://flow.google/), one after another, and saves each one under its scene number.
+A Chrome extension that makes every picture of a Cutroom project in
+[Google Flow](https://labs.google/fx/tools/flow), one after another, and puts each one on its scene
+in Cutroom. You don't paste prompts or press Generate yourself.
 
-- Paste the storyboard (Cutroom → Script step → Storyboard → **Copy all**) or load its **.txt**.
-- Add one to three pictures of your main character: they go with every scene that shows them.
+- In Cutroom, a project's **Images** step gets a **Make in Flow** button. It hands every scene's
+  prompt, and your character's pictures, to the extension and brings up Flow.
+- Press **Start** in the side panel once. Each scene's prompt is typed into Flow and generated, and
+  the picture lands on its scene in Cutroom as soon as it's made.
+- Your character's pictures (from the project's characters) go with every scene that shows them.
 - Related scenes (the same alarm clock, the same bedroom) get the earlier scene's picture as a
   reference, so they match.
 - Every prompt asks for normal anatomy, which cuts down on extra arms and fingers.
-- Pictures are saved as `Downloads/Cutroom/<folder>/scene-001.png`, `scene-002.png`… Extra versions
-  go in `more/` as `scene-001b.png`. Drop the folder's pictures on Cutroom's **Images** step and
-  each one lands on its scene.
+- Extra versions are saved as `Downloads/Cutroom/<folder>/more/scene-001b.png`. If Cutroom can't
+  take a picture (no Cutroom tab open), it's saved in Downloads too, and the scene says so.
+- A storyboard pasted or loaded as a **.txt** (Script step → Storyboard → **Copy all**) still works.
+  Its pictures go to `Downloads/Cutroom/<folder>/scene-001.png`, ready to drop on the Images step.
 
 ## Install
 
 1. Open `chrome://extensions` and turn on **Developer mode** (top right).
 2. Click **Load unpacked** and pick this folder (`apps/flow-extension`).
 3. Pin **Cutroom for Flow** to the toolbar.
+4. Cutroom on this computer (`localhost`) needs nothing else. For Cutroom online, open the side
+   panel, expand **Using Cutroom online?**, enter its address and press **Connect** (Chrome asks
+   to allow that one site).
 
-After changing these files, press the reload button on the extension's card, then reload Flow.
+After changing these files, press the reload button on the extension's card, then reload Flow and
+Cutroom's tabs.
 
 ## Use
 
-1. Open Flow's image tool in a tab and click the extension's icon: the side panel opens beside it.
-2. **Storyboard:** paste it or load the .txt. The list shows every scene, whether it gets your
-   character, and which earlier scene it should match. Change either per scene, and open
-   **Prompt** to see exactly what goes to Flow.
-3. **Your character:** add their pictures and name. If you saved the character in Flow (as an
-   ingredient), put its name as Flow knows it, for example `@Cappy`.
-4. **Flow's controls:** press **Check what it finds**. The prompt box and buttons it would use are
-   outlined in yellow. If one is wrong or missing, press its button and click it in Flow's page.
-5. Press **Start**. Keep the Flow tab in front while it runs: Chrome slows down hidden tabs. **Stop
-   after this one** finishes the current scene and stops; **Start** carries on from the first scene
-   not done yet (or the scene number you enter).
+1. In Cutroom, open the project's **Images** step and press **Make in Flow**. Flow opens (or comes
+   to the front) next to the Cutroom tab, and the side panel shows the scenes. Scenes that already
+   have a picture are marked done. If the side panel doesn't open by itself, click the extension's
+   icon.
+2. Check the list if you like. It shows every scene, whether it gets your character, and which
+   earlier scene it should match. Change either per scene, and open **Prompt** to see exactly what
+   goes to Flow.
+3. **Your character** is filled in from the project's main character (the one most scenes call
+   for). If you saved the character in Flow (as an ingredient), put its name as Flow knows it, for
+   example `@Cappy`.
+4. **Flow's controls** (first time only): press **Check what it finds**. The prompt box and buttons
+   it would use are outlined in yellow. If one is wrong or missing, press its button and click it in
+   Flow's page.
+5. Press **Start**. Keep the Flow tab in front while it runs, because Chrome slows down hidden
+   tabs. Keep the Cutroom tab open too (in the background is fine): that's where pictures are
+   saved. **Stop after this one** finishes the current scene and stops. **Start** carries on from
+   the first scene not done yet (or the scene number you enter).
 
 ## Getting the same character every time, with the right number of arms
 
@@ -52,10 +67,17 @@ After changing these files, press the reload button on the extension's card, the
 
 ## How it works
 
-`sidepanel.js` reads the storyboard (`lib/parse.js`), works out each scene's prompt and pictures
-(`lib/prompt.js`) and runs the scenes one at a time. `content.js` runs in Flow's page: it adds the
-pictures (through Flow's upload control, or by pasting them into the prompt box), types the prompt,
-presses Generate, waits for the new pictures and sends them back to be saved.
+`cutroom.js` runs in Cutroom's pages. It tells Cutroom the extension is there, passes **Make in
+Flow**'s scenes to `background.js` (which keeps them, brings up Flow and opens the side panel), and
+hands each finished picture to Cutroom's page, which uploads it and saves it on its scene
+(`apps/web/src/components/flow-bridge.tsx`). Cutroom's page and `cutroom.js` talk with window
+messages: `{ source: 'cutroom' }` one way, `{ source: 'cutroom-flow' }` the other.
+
+`sidepanel.js` takes those scenes (`lib/cutroom.js`) or reads a pasted storyboard (`lib/parse.js`),
+works out each scene's prompt and pictures (`lib/prompt.js`) and runs the scenes one at a time.
+`content.js` runs in Flow's page: it adds the pictures (through Flow's upload control, or by pasting
+them into the prompt box), types the prompt, presses Generate, waits for the new pictures and sends
+them back to be saved.
 
 Flow's page isn't documented and changes from time to time, so the extension finds its controls by
 looking for them, and remembers whatever you show it. `dev/fake-flow.html` is a stand-in page for

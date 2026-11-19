@@ -24,6 +24,7 @@ import {
   LayoutGrid,
   List,
   Replace,
+  Send,
   Sparkles,
   Square,
   Trash2,
@@ -48,6 +49,7 @@ import {
 import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
+import { flowProject, sendToFlow, useFlowExtension } from '@/lib/flow-extension'
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { downloadScenePrompts, scenePrompts } from '@/lib/scene-prompts'
@@ -113,6 +115,42 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const { data: library } = useLibrary()
   const hasLayers = (backgrounds?.length ?? 0) > 0 || (library ?? []).some((c) => c.poses.length > 0)
   const [composing, setComposing] = useState(false)
+  const flow = useFlowExtension()
+  const [sendingToFlow, setSendingToFlow] = useState(false)
+
+  /**
+   * Hands every scene's prompt (and the characters' pictures) to the Cutroom for Flow extension:
+   * it makes the pictures in Google Flow one by one, and each lands on its scene here.
+   */
+  const makeInFlow = async () => {
+    setSendingToFlow(true)
+    try {
+      // Prompt edits are saved with a short delay; send the latest ones.
+      await saver.flushAll()
+      const latest = client.getQueryData<ProjectFull>(keys.project(project.id)) ?? data
+      const answer = await sendToFlow(await flowProject(latest))
+      if (!answer.ok) {
+        toast.error(answer.error ?? 'The Cutroom for Flow extension didn’t take the scenes.')
+        return
+      }
+      const missing = latest.scenes.filter((s) => !hasPicture(s)).length
+      toast.success(
+        missing ? `Sent ${plural(missing, 'scene')} to make in Flow` : 'Sent the scenes to Flow',
+        {
+          description: `${
+            answer.panel
+              ? 'Press Start in the Cutroom for Flow panel.'
+              : 'Click the Cutroom for Flow icon in Chrome’s toolbar, then press Start.'
+          } Keep this tab open: each picture lands on its scene here.`,
+          duration: 12_000,
+        },
+      )
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setSendingToFlow(false)
+    }
+  }
 
   /** Gemini paints one scene. Returns 'stop' when nothing else will work either (billing, key). */
   const generateOne = useCallback(
@@ -387,11 +425,23 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                     </Button>
                   </Tip>
                 )}
+                {flow && (
+                  <Tip content="The Cutroom for Flow extension makes each picture in Google Flow, with your character attached, and puts it on its scene here.">
+                    <Button
+                      variant={!complete && !canGenerate ? 'go' : 'plain'}
+                      busy={sendingToFlow}
+                      onClick={makeInFlow}
+                      icon={<Send className="size-4" />}
+                    >
+                      {complete ? 'Make in Flow' : `Make ${scenes.length - done} in Flow`}
+                    </Button>
+                  </Tip>
+                )}
                 <Button variant="plain" onClick={downloadPrompts} icon={<Download className="size-4" />}>
                   All prompts (.txt)
                 </Button>
                 <Button
-                  variant={complete || canGenerate ? 'plain' : 'go'}
+                  variant={complete || canGenerate || flow ? 'plain' : 'go'}
                   onClick={picker.open}
                   icon={<Images className="size-4" />}
                 >

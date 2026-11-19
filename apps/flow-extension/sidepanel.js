@@ -1,6 +1,9 @@
-// The side panel: reads the storyboard, keeps your character's pictures and the options, and runs
-// the scenes through Flow one at a time (content.js does the clicking), saving each picture as
-// Downloads/Cutroom/<folder>/scene-001.png so Cutroom's Images step can take the whole folder.
+// The side panel: takes a Cutroom project's scenes (sent from its Images step) or a pasted
+// storyboard, keeps your character's pictures and the options, and runs the scenes through Flow
+// one at a time (content.js does the clicking). Each picture goes straight onto its scene in
+// Cutroom (through cutroom.js in Cutroom's tab); a pasted storyboard's pictures, extra versions and
+// anything Cutroom can't take are saved as Downloads/Cutroom/<folder>/scene-001.png instead.
+import { itemsFromCutroom, mainCharacter, siteOrigin } from './lib/cutroom.js'
 import { parseStoryboard } from './lib/parse.js'
 import {
   extensionFor,
@@ -13,6 +16,10 @@ import {
 
 const FLOW = /^https:\/\/([\w-]+\.)*(flow\.google(\.com)?|labs\.google)(\/|$)/
 const KEY = 'cutroom-flow'
+/** Where background.js leaves what a Cutroom page sent. */
+const INCOMING = 'cutroom-flow-incoming'
+/** The registered copy of cutroom.js for Cutroom online. */
+const SITE_SCRIPT = 'cutroom-site'
 const DEFAULTS = { attach: true, continuity: true, anatomy: true, saveAll: true, timeout: 180, pause: 8 }
 const MAX_PICTURE_BYTES = 6 * 1024 * 1024
 
@@ -23,11 +30,19 @@ let state = {
   character: { name: '', looks: '', mention: '', images: [] },
   settings: { ...DEFAULTS },
   controls: {},
+  /** The Cutroom project the scenes came from: { origin, tabId, projectId, title, sentAt }. */
+  cutroom: null,
+  /** Cutroom online's address, once connected. */
+  address: '',
+  /** When the last project sent from Cutroom was read, so it's read once. */
+  incomingAt: 0,
 }
 /** The first picture of each scene made in this session, to match related scenes to. */
 const made = new Map()
 let running = false
 let stopping = false
+/** A project sent while a run was going: it's read when the run ends. */
+let waitingIncoming = null
 
 const $ = (id) => document.getElementById(id)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -58,6 +73,7 @@ async function load() {
   fill()
   render()
   showConnection()
+  takeIncoming((await chrome.storage.local.get(INCOMING))[INCOMING])
 }
 
 function fill() {
@@ -69,6 +85,7 @@ function fill() {
   for (const key of ['attach', 'continuity', 'anatomy', 'saveAll']) $(key).checked = state.settings[key]
   $('timeout').value = state.settings.timeout
   $('pause').value = state.settings.pause
+  $('cutroomAddress').value = state.address
 }
 
 // ---------------------------------------------------------------- the storyboard
@@ -92,9 +109,64 @@ function read(text, name) {
   const usualFolder = state.source?.name ? folderName(state.source.name) : ''
   state.source = { name: name ?? state.source?.name ?? '', text }
   if (name && (!state.folder || state.folder === usualFolder)) state.folder = folderName(name)
+  // A pasted storyboard isn't tied to a Cutroom project: its pictures go to Downloads.
+  state.cutroom = null
   save()
   fill()
   render()
+}
+
+/**
+ * A project sent from Cutroom's Images step ("Make in Flow"): its scenes, which already have a
+ * picture, and its main character's pictures. Read once; a run going on finishes first.
+ */
+function takeIncoming(incoming) {
+  if (!incoming?.sentAt || incoming.sentAt <= state.incomingAt) return
+  if (running) {
+    waitingIncoming = incoming
+    say(`“${incoming.title}” arrived from Cutroom: it loads when this run stops.`)
+    return
+  }
+  waitingIncoming = null
+  state.incomingAt = incoming.sentAt
+  const sameProject = state.cutroom?.projectId === incoming.projectId
+  const items = itemsFromCutroom(incoming, sameProject ? state.items : [])
+  if (items.length === 0) {
+    save()
+    say(`“${incoming.title}” has no scene prompts yet. Split the script into scenes in Cutroom first.`)
+    return
+  }
+  state.items = items
+  state.source = { name: incoming.title, text: incoming.text }
+  state.folder = folderName(incoming.title)
+  state.cutroom = {
+    origin: incoming.origin,
+    tabId: incoming.tabId,
+    projectId: incoming.projectId,
+    title: incoming.title,
+    sentAt: incoming.sentAt,
+  }
+  const main = mainCharacter(incoming)
+  if (main) {
+    const same = state.character.name.trim().toLowerCase() === main.name.toLowerCase()
+    state.character = {
+      name: main.name,
+      looks: main.looks,
+      // The @name you gave Flow for this character stays; another character's doesn't.
+      mention: same ? state.character.mention : '',
+      images: main.images,
+    }
+  }
+  if (!sameProject) made.clear()
+  save()
+  fill()
+  render()
+  const todo = items.filter((item) => item.status !== 'done').length
+  say(
+    todo
+      ? `${todo} of ${items.length} scenes to make${main ? `, with ${main.name}'s pictures` : ''}. Press Start.`
+      : `Every scene of “${incoming.title}” already has a picture. Use "Make again" on one to redo it.`,
+  )
 }
 
 function characterOptions() {
@@ -240,6 +312,15 @@ function render() {
   }
   $('start').disabled = running || state.items.length === 0
   $('stop').hidden = !running
+  const linked = Boolean(state.cutroom)
+  $('linked').hidden = !linked
+  $('manual').hidden = linked
+  $('unlink').disabled = running
+  if (linked) {
+    $('linkedTitle').textContent = `“${state.cutroom.title || 'Untitled'}”`
+    $('linkedSummary').textContent = `(${done} of ${state.items.length} have a picture)`
+  }
+  $('folderLabel').firstChild.textContent = linked ? 'Extra versions go to ' : 'Save to '
   for (const what of ['prompt', 'generate', 'attach']) {
     const mark = document.querySelector(`[data-learned="${what}"]`)
     mark.textContent = state.controls[what] ? '✓ shown' : 'auto'
@@ -343,6 +424,37 @@ async function pictureFile(image) {
 
 const safe = (name) => name.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'storyboard'
 
+/**
+ * Puts a picture on its scene in Cutroom, through cutroom.js in a Cutroom tab: the one that sent
+ * the project, or else any other tab of the same Cutroom.
+ */
+async function saveToCutroom(item, image, name) {
+  if (!image.dataUrl) throw new Error("Flow's picture couldn't be read to send it to Cutroom.")
+  const { origin, projectId } = state.cutroom
+  const picture = { projectId, sceneId: item.sceneId, number: item.number, name, dataUrl: image.dataUrl }
+  const tabs = [state.cutroom.tabId]
+  try {
+    for (const tab of await chrome.tabs.query({ url: `${origin}/*` })) tabs.push(tab.id)
+  } catch {
+    // Not allowed to look: the tab that sent the project is the only one tried.
+  }
+  let problem = `no Cutroom tab answered. Open ${origin} in a tab to save pictures there.`
+  for (const tabId of new Set(tabs)) {
+    let answer
+    try {
+      answer = await chrome.tabs.sendMessage(tabId, { type: 'cutroom:picture', picture })
+    } catch {
+      continue // Closed, on another site now, or opened before the extension was (re)loaded.
+    }
+    if (answer?.ok) {
+      state.cutroom.tabId = tabId
+      return
+    }
+    if (answer?.error) problem = answer.error
+  }
+  throw new Error(problem)
+}
+
 /** One scene: its pictures go in, its prompt is typed, its results are saved. */
 async function makeScene(link, index) {
   const item = state.items[index]
@@ -376,9 +488,22 @@ async function makeScene(link, index) {
     )
     const keep = state.settings.saveAll ? result.images : result.images.slice(0, 1)
     const files = []
+    const notes = []
     for (const [variant, found] of keep.entries()) {
       const image = await pictureFile(found)
       const name = fileName(item.number, variant, { extension: extensionFor(image.mime) })
+      if (variant === 0 && image.dataUrl) made.set(item.number, { dataUrl: image.dataUrl, mime: image.mime })
+      // From Cutroom: the main picture goes straight onto its scene there.
+      if (variant === 0 && state.cutroom && item.sceneId) {
+        onStatus('putting the picture on its scene in Cutroom…')
+        try {
+          await saveToCutroom(item, image, name)
+          files.push('in Cutroom')
+          continue
+        } catch (error) {
+          notes.push(`Saved to Downloads instead: ${error.message}`)
+        }
+      }
       // The main picture next to the others for Cutroom's Images step; extra versions to one side.
       const path = `Cutroom/${safe(state.folder)}/${variant === 0 ? '' : 'more/'}${name}`
       await chrome.downloads.download({
@@ -387,13 +512,13 @@ async function makeScene(link, index) {
         conflictAction: 'overwrite',
       })
       files.push(name)
-      if (variant === 0 && image.dataUrl) made.set(item.number, { dataUrl: image.dataUrl, mime: image.mime })
     }
     item.status = 'done'
     item.files = files
     if (attachments.length && result.attached === 'failed') {
-      item.error = "Made without the reference pictures: show Cutroom Flow's add-picture button in step 3."
+      notes.push("Made without the reference pictures: show Cutroom Flow's add-picture button in step 3.")
     }
+    item.error = notes.join(' ')
     return true
   } catch (error) {
     item.status = 'failed'
@@ -443,11 +568,57 @@ async function start() {
   link.port.disconnect()
   render()
   const failed = state.items.filter((item) => item.status === 'failed').length
+  const where = state.cutroom
+    ? state.items.some((item) => item.error.startsWith('Saved to Downloads'))
+      ? `Pictures are on their scenes in Cutroom, except the ones marked: those are in Downloads/Cutroom/${safe(state.folder)}.`
+      : 'Pictures are on their scenes in Cutroom.'
+    : `Pictures are in Downloads/Cutroom/${safe(state.folder)}.`
   say(
     `${stopping ? 'Stopped' : 'Finished'} after ${finished} ${finished === 1 ? 'scene' : 'scenes'}${
       failed ? `; ${failed} failed (see the list)` : ''
-    }. Pictures are in Downloads/Cutroom/${safe(state.folder)}.`,
+    }. ${where}`,
   )
+  if (waitingIncoming) takeIncoming(waitingIncoming)
+}
+
+/**
+ * Cutroom online: asks Chrome for that site, then has cutroom.js run in its pages (and in the ones
+ * open now), so its projects get the Make in Flow button. Localhost needs none of this.
+ */
+async function connectAddress() {
+  const origin = siteOrigin($('cutroomAddress').value)
+  if (!origin) {
+    $('addressResult').textContent = 'Enter Cutroom’s address, like https://cutroom.example.com.'
+    return
+  }
+  // Asked first, straight from the click: Chrome only shows the question then.
+  const granted = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false)
+  if (!granted) {
+    $('addressResult').textContent = 'Chrome didn’t allow it, so nothing changed.'
+    return
+  }
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [SITE_SCRIPT] }).catch(() => {})
+    await chrome.scripting.registerContentScripts([
+      {
+        id: SITE_SCRIPT,
+        matches: [`${origin}/*`],
+        js: ['cutroom.js'],
+        runAt: 'document_idle',
+        persistAcrossSessions: true,
+      },
+    ])
+    for (const tab of await chrome.tabs.query({ url: `${origin}/*` })) {
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['cutroom.js'] }).catch(() => {})
+    }
+  } catch (error) {
+    $('addressResult').textContent = error.message
+    return
+  }
+  state.address = origin
+  save()
+  fill()
+  $('addressResult').textContent = `Connected. Open a project on ${origin}: its Images step has Make in Flow.`
 }
 
 // ---------------------------------------------------------------- the controls
@@ -561,6 +732,16 @@ $('reset').addEventListener('click', () => {
   }
   save()
   render()
+})
+$('unlink').addEventListener('click', () => {
+  state.cutroom = null
+  save()
+  render()
+  say('Paste a storyboard or load its .txt. Its pictures go to Downloads.')
+})
+$('connectAddress').addEventListener('click', connectAddress)
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[INCOMING]) takeIncoming(changes[INCOMING].newValue)
 })
 $('start').addEventListener('click', start)
 $('stop').addEventListener('click', () => {
