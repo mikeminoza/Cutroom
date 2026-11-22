@@ -578,6 +578,12 @@ describe('Gemini calls', () => {
     }
   })
 
+  it("leaves the temperature at the model's default, where Gemini 3 doesn't loop", async () => {
+    generateContent.mockResolvedValueOnce(oneIdea)
+    await askForIdeas()
+    expect(generateContent.mock.calls[0][0].config).not.toHaveProperty('temperature')
+  })
+
   it('on Vercel, stops in time with a clear message instead of hitting the cut-off', async () => {
     const { AI_BUDGET_MS } = await import('../src/ai')
     process.env.VERCEL = '1'

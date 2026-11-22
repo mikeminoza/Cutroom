@@ -23,6 +23,8 @@ export function badRequest(message: string): never {
 export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status })
   if (error instanceof AiError) {
+    // Logged too, so failed AI calls show up in the server logs and not only in the browser.
+    console.error(`AI request failed (${error.code}): ${error.message}`)
     const status =
       error.code === 'rate_limited' || error.code === 'daily_limit'
         ? 429

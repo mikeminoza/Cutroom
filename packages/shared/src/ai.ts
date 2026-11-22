@@ -211,7 +211,8 @@ async function generateJson<T>(
           systemInstruction: system,
           responseMimeType: 'application/json',
           responseJsonSchema: jsonSchema,
-          temperature: 0.7,
+          // No temperature: Gemini 3 models are tuned for their default (1.0), and below it they can
+          // loop, writing until the output limit, which runs past the time budget.
           thinkingConfig: options.thinking === 'default' ? undefined : quickThinking(model),
           abortSignal: signal,
         },
