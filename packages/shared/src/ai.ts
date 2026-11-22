@@ -103,12 +103,19 @@ function requestDeadline(): number | undefined {
   return process.env.VERCEL ? Date.now() + AI_BUDGET_MS : undefined
 }
 
-/** Aborts at the deadline, or when the caller aborts. */
-function attemptSignal(deadline?: number, signal?: AbortSignal): AbortSignal | undefined {
-  const signals = [signal, deadline ? AbortSignal.timeout(Math.max(1000, deadline - Date.now())) : undefined]
-  const live = signals.filter((s): s is AbortSignal => s !== undefined)
-  return live.length > 1 ? AbortSignal.any(live) : live[0]
-}
+/**
+ * How long one try may run before it is given up and asked again. Without a limit, a request that
+ * stalls waits out the whole budget (on the worker, forever). Generous, because a try cut short
+ * starts over and counts against the free tier's requests per day.
+ */
+export const ATTEMPT_MS = {
+  /** Structured answers with little thinking. */
+  quick: 90_000,
+  /** Pictures and speech. */
+  media: 120_000,
+  /** Answers the model thinks through in full: the script doctor and transcription. */
+  thorough: 240_000,
+} as const
 
 /**
  * As little thinking as the model allows. These are structured tasks, and thinking is most of the
@@ -130,47 +137,60 @@ function httpStatus(error: unknown): number | null {
 
 /**
  * Runs a Gemini request, asking again after temporary failures. `run` gets the signal to pass
- * to the SDK: it aborts when the caller does, or at the deadline.
+ * to the SDK: it aborts when the caller does, at the deadline, or when the try has run for
+ * `attemptMs`, which counts as a temporary failure.
  */
 async function withRetry<T>(
   run: (signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
   deadline?: number,
+  attemptMs: number = ATTEMPT_MS.quick,
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt++) {
     signal?.throwIfAborted()
     if (deadline && Date.now() >= deadline) throw new AiError(TOO_SLOW, 'timeout')
-    const attemptAbort = attemptSignal(deadline, signal)
+    const atDeadline = deadline ? AbortSignal.timeout(Math.max(1000, deadline - Date.now())) : undefined
+    // A timer rather than AbortSignal.timeout, so tests can fake the clock.
+    const tooLong = new AbortController()
+    const timer = setTimeout(() => tooLong.abort(new Error('This try took too long.')), attemptMs)
+    const live = [signal, atDeadline, tooLong.signal].filter((s): s is AbortSignal => s !== undefined)
     try {
-      return await run(attemptAbort)
+      return await run(AbortSignal.any(live))
     } catch (error) {
       // Stopped by the caller: not a failure to retry or explain.
       if (signal?.aborted) throw error
       // The deadline ran out in the middle of the request.
-      if (deadline && (attemptAbort?.aborted || Date.now() >= deadline))
-        throw new AiError(TOO_SLOW, 'timeout')
-      lastError = error
-      const message = error instanceof Error ? error.message : String(error)
-      // A quota of 0 is not a rate limit: the model is not on the free tier. Waiting won't help.
-      if (/limit:\s*0\b/.test(message)) {
-        throw new AiError(
-          'This Gemini model is not on the free tier. Turn on billing for the Google Cloud project of your Gemini API key, or choose another model in the environment settings.',
-          'billing',
-        )
+      if (deadline && (atDeadline?.aborted || Date.now() >= deadline)) throw new AiError(TOO_SLOW, 'timeout')
+      if (tooLong.signal.aborted) {
+        // No answer in time: this request is most likely stuck, and a new one usually isn't.
+        lastError = new AiError(TOO_SLOW, 'timeout')
+      } else {
+        lastError = error
+        const message = error instanceof Error ? error.message : String(error)
+        // A quota of 0 is not a rate limit: the model is not on the free tier. Waiting won't help.
+        if (/limit:\s*0\b/.test(message)) {
+          throw new AiError(
+            'This Gemini model is not on the free tier. Turn on billing for the Google Cloud project of your Gemini API key, or choose another model in the environment settings.',
+            'billing',
+          )
+        }
+        // Decide by the HTTP status the SDK reports: the message is the whole error body, which can
+        // mention "500" or "internal" in a request that will never succeed.
+        const status = httpStatus(error)
+        const retryable =
+          status !== null
+            ? RETRY_STATUSES.includes(status)
+            : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
+        if (!retryable) break
       }
-      // Decide by the HTTP status the SDK reports: the message is the whole error body, which can
-      // mention "500" or "internal" in a request that will never succeed.
-      const status = httpStatus(error)
-      const retryable =
-        status !== null
-          ? RETRY_STATUSES.includes(status)
-          : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
-      if (!retryable || attempt === 3) break
+      if (attempt === 3) break
       const wait = 1500 * 2 ** attempt + Math.random() * 500
       // No time left for another try (it needs a few seconds itself).
       if (deadline && Date.now() + wait + 5000 > deadline) break
       await sleep(wait, signal)
+    } finally {
+      clearTimeout(timer)
     }
   }
   const message = lastError instanceof Error ? lastError.message : String(lastError)
@@ -232,6 +252,7 @@ async function generateJson<T>(
     },
     undefined,
     requestDeadline(),
+    options.thinking === 'default' ? ATTEMPT_MS.thorough : ATTEMPT_MS.quick,
   )
 }
 
@@ -1210,6 +1231,8 @@ export async function synthesizeSpeech(
           },
         }),
       options.signal,
+      undefined,
+      ATTEMPT_MS.media,
     )
     const audio = response.candidates?.[0]?.content?.parts?.find(
       (p) => p.inlineData?.data && (p.inlineData.mimeType ?? '').startsWith('audio/'),
@@ -1262,6 +1285,7 @@ export async function generateImage(input: {
       }),
     undefined,
     requestDeadline(),
+    ATTEMPT_MS.media,
   )
   const candidate = response.candidates?.[0]
   const image = candidate?.content?.parts?.find(

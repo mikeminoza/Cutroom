@@ -500,7 +500,8 @@ describe('Gemini calls', () => {
     // Without the signal the backoff alone would wait 1.5 s or more.
     expect(Date.now() - started).toBeLessThan(1000)
     expect(generateContent).toHaveBeenCalledTimes(1)
-    expect(generateContent.mock.calls[0][0].config.abortSignal).toBe(controller.signal)
+    // The request itself was stopped with the job.
+    expect(generateContent.mock.calls[0][0].config.abortSignal.aborted).toBe(true)
   })
 
   it('reads speech with a voice and a delivery style', async () => {
@@ -610,6 +611,71 @@ describe('Gemini calls', () => {
     } finally {
       now.mockRestore()
       delete process.env.VERCEL
+    }
+  })
+
+  type Request = { config: { abortSignal: AbortSignal } }
+  /** A request that answers `reply` after `ms`, or fails as soon as it is aborted. */
+  const answersAfter =
+    (ms: number, reply: unknown) =>
+    ({ config }: Request) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(reply), ms)
+        config.abortSignal.addEventListener('abort', () => {
+          clearTimeout(timer)
+          reject(new Error('aborted'))
+        })
+      })
+  /** A request that never answers. */
+  const stuck = ({ config }: Request) =>
+    new Promise((_, reject) =>
+      config.abortSignal.addEventListener('abort', () => reject(new Error('aborted'))),
+    )
+
+  it('asks again when a try gets no answer for 90 s, instead of waiting it out', async () => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockImplementationOnce(stuck).mockResolvedValueOnce(oneIdea)
+      const ideas = askForIdeas()
+      // 90 s, then the wait before the next try.
+      await vi.advanceTimersByTimeAsync(95_000)
+      expect(generateContent).toHaveBeenCalledTimes(2)
+      expect(generateContent.mock.calls[0][0].config.abortSignal.aborted).toBe(true)
+      await expect(ideas).resolves.toEqual([{ title: 'Capybara wants pizza', angle: 'A' }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up with a clear message when every try is stuck', async () => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockImplementation(stuck)
+      const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'timeout' })
+      // Four tries of 90 s, and the waits between them.
+      await vi.advanceTimersByTimeAsync(4 * 90_000 + 15_000)
+      await outcome
+      expect(generateContent).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives answers the model thinks through in full longer than 90 s', async () => {
+    const { reviewScript } = await import('../src/ai')
+    vi.useFakeTimers()
+    try {
+      generateContent.mockImplementationOnce(answersAfter(150_000, { text: '{"edits":[],"claims":[]}' }))
+      const review = reviewScript({
+        script: 'A short script.',
+        title: '',
+        voice: { narration: '', audience: '', tone: '', rules: [] },
+      })
+      await vi.advanceTimersByTimeAsync(150_000)
+      await expect(review).resolves.toEqual({ edits: [], claims: [] })
+      expect(generateContent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
     }
   })
 
