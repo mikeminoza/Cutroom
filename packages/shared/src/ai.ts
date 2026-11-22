@@ -91,6 +91,25 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 /** Rate limited, or a temporary server problem: worth asking again. */
 const RETRY_STATUSES = [429, 500, 502, 503, 504]
 
+/** The longest wait for a rate limit to lift: per-minute limits are back within a minute. */
+const LONGEST_WAIT_MS = 60_000
+
+/** A quota that runs out per day: it comes back at midnight Pacific time, not by waiting. */
+function isDailyQuota(message: string): boolean {
+  return /PerDay|per[ _-]?day|daily/i.test(message)
+}
+
+/**
+ * How long Google asks to wait before asking again, from a rate-limit error: its retry info
+ * ("retryDelay":"20s"), or its message ("Please retry in 19.6s."). Null when it doesn't say.
+ */
+function retryDelayMs(message: string): number | null {
+  const seconds =
+    /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(message)?.[1] ??
+    /retry in (\d+(?:\.\d+)?)\s*s\b/i.exec(message)?.[1]
+  return seconds ? Number(seconds) * 1000 : null
+}
+
 const TOO_SLOW = 'Gemini is taking too long to answer right now. Try again in a minute.'
 
 /**
@@ -177,6 +196,7 @@ async function withRetry<T>(
       if (signal?.aborted) throw error
       // The deadline ran out in the middle of the request.
       if (deadline && (atDeadline?.aborted || Date.now() >= deadline)) throw new AiError(TOO_SLOW, 'timeout')
+      let asked: number | null = null
       if (tooLong.signal.aborted) {
         // No answer in time: this request is most likely stuck, and a new one usually isn't.
         lastError = new AiError(TOO_SLOW, 'timeout')
@@ -194,6 +214,12 @@ async function withRetry<T>(
         // mention "500" or "internal" in a request that will never succeed. Of our own errors, only
         // an answer cut off at its length limit is worth asking again: a new one rarely loops.
         const status = httpStatus(error)
+        if (status === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
+          if (isDailyQuota(message)) break
+          asked = retryDelayMs(message)
+          // Longer than a per-minute limit takes to lift: not worth waiting out here.
+          if (asked !== null && asked > LONGEST_WAIT_MS) break
+        }
         const retryable =
           error instanceof AiError
             ? error.code === 'too_long'
@@ -203,7 +229,8 @@ async function withRetry<T>(
         if (!retryable) break
       }
       if (attempt === 3) break
-      const wait = 1500 * 2 ** attempt + Math.random() * 500
+      // After a rate limit, as long as Google asks: any sooner, the quota is still used up.
+      const wait = Math.max(1500 * 2 ** attempt, asked ?? 0) + Math.random() * 500
       // No time left for another try (it needs a few seconds itself).
       if (deadline && Date.now() + wait + 5000 > deadline) break
       await sleep(wait, signal)
@@ -215,7 +242,7 @@ async function withRetry<T>(
   const status = httpStatus(lastError)
   if (status === 429 || /RESOURCE_EXHAUSTED/.test(message)) {
     // Google names the quota that ran out: a per-day one won't come back by waiting a minute.
-    if (/PerDay|per[ _-]?day|daily/i.test(message)) {
+    if (isDailyQuota(message)) {
       throw new AiError(
         "Gemini's free daily limit is used up. It resets at midnight Pacific time.",
         'daily_limit',

@@ -776,6 +776,70 @@ describe('Gemini calls', () => {
       const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'daily_limit' })
       await vi.advanceTimersByTimeAsync(30_000)
       await outcome
+      // Waiting won't bring it back before midnight Pacific time, so it doesn't ask again.
+      expect(generateContent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /** A per-minute rate limit as the SDK reports it: the whole response body is the message. */
+  const rateLimit = (body: unknown) => Object.assign(new Error(JSON.stringify(body)), { status: 429 })
+
+  it.each([
+    [
+      'its retry info',
+      {
+        error: {
+          code: 429,
+          message: 'You exceeded your current quota.',
+          status: 'RESOURCE_EXHAUSTED',
+          details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '20s' }],
+        },
+      },
+    ],
+    [
+      'its message',
+      {
+        error: {
+          code: 429,
+          message: 'You exceeded your current quota. Please retry in 19.6s.',
+          status: 'RESOURCE_EXHAUSTED',
+        },
+      },
+    ],
+  ])('after a rate limit, waits as long as Google asks in %s before asking again', async (_, body) => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockRejectedValueOnce(rateLimit(body)).mockResolvedValueOnce(oneIdea)
+      const ideas = askForIdeas()
+      // Asking again within the same minute would only be refused again.
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(generateContent).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(6_000)
+      expect(generateContent).toHaveBeenCalledTimes(2)
+      await expect(ideas).resolves.toEqual([{ title: 'Capybara wants pizza', angle: 'A' }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not wait more than a minute for a rate limit to lift', async () => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockRejectedValue(
+        rateLimit({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '3600s' }],
+          },
+        }),
+      )
+      const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'rate_limited' })
+      await vi.advanceTimersByTimeAsync(1000)
+      await outcome
+      expect(generateContent).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
