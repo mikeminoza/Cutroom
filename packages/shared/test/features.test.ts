@@ -679,6 +679,89 @@ describe('Gemini calls', () => {
     }
   })
 
+  it("caps an answer's length, with more room for longer work", async () => {
+    generateContent.mockResolvedValueOnce(oneIdea)
+    await askForIdeas()
+    expect(generateContent.mock.calls[0][0].config.maxOutputTokens).toBeGreaterThan(0)
+
+    const { writeScript } = await import('../src/ai')
+    const script = { text: JSON.stringify({ title: 'Sleep', script: 'A script that is long enough.' }) }
+    generateContent.mockResolvedValueOnce(script).mockResolvedValueOnce(script).mockResolvedValueOnce(script)
+    const brief = { topic: 'Sleep', audience: '', tone: '', language: 'en', format: 'landscape' as const }
+    await writeScript({ ...brief, minutes: 1 })
+    await writeScript({ ...brief, minutes: 20 })
+    await writeScript({ ...brief, minutes: 60 })
+    const [one, twenty, sixty] = generateContent.mock.calls
+      .slice(1)
+      .map((call) => call[0].config.maxOutputTokens)
+    expect(twenty).toBeGreaterThan(one)
+    // 20 minutes is about 3,000 words: room for them even in a language that takes 4 tokens a word.
+    expect(twenty).toBeGreaterThan(3000 * 4)
+    // Never more than the model can write.
+    expect(sixty).toBeLessThanOrEqual(65_536)
+  })
+
+  it('leaves answers the model thinks through in full uncapped, as thinking may count against it', async () => {
+    const { reviewScript } = await import('../src/ai')
+    generateContent.mockResolvedValueOnce({ text: '{"edits":[],"claims":[]}' })
+    await reviewScript({
+      script: 'A short script.',
+      title: '',
+      voice: { narration: '', audience: '', tone: '', rules: [] },
+    })
+    expect(generateContent.mock.calls[0][0].config).not.toHaveProperty('maxOutputTokens')
+  })
+
+  it('gives a long answer more time per try than a short one', async () => {
+    const { writeScript } = await import('../src/ai')
+    vi.useFakeTimers()
+    try {
+      const script = { text: JSON.stringify({ title: 'Sleep', script: 'A script that is long enough.' }) }
+      generateContent.mockImplementationOnce(answersAfter(150_000, script))
+      const written = writeScript({
+        topic: 'Sleep',
+        audience: '',
+        tone: '',
+        language: 'en',
+        format: 'landscape',
+        minutes: 60,
+      })
+      await vi.advanceTimersByTimeAsync(150_000)
+      await expect(written).resolves.toEqual({ title: 'Sleep', script: 'A script that is long enough.' })
+      expect(generateContent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  const cutOff = { text: '{"ideas":[{"title":"Capy', candidates: [{ finishReason: 'MAX_TOKENS' }] }
+
+  it('asks again when an answer runs past its length limit', async () => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockResolvedValueOnce(cutOff).mockResolvedValueOnce(oneIdea)
+      const ideas = askForIdeas()
+      await vi.advanceTimersByTimeAsync(5000)
+      await expect(ideas).resolves.toEqual([{ title: 'Capybara wants pizza', angle: 'A' }])
+      expect(generateContent).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says so when every answer runs past its length limit', async () => {
+    vi.useFakeTimers()
+    try {
+      generateContent.mockResolvedValue(cutOff)
+      const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'too_long' })
+      await vi.advanceTimersByTimeAsync(20_000)
+      await outcome
+      expect(generateContent).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('tells the daily limit apart from the per-minute one', async () => {
     generateContent.mockRejectedValue(
       Object.assign(

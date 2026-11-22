@@ -34,7 +34,8 @@ export class AiError extends Error {
       | 'failed'
       | 'billing'
       | 'busy'
-      | 'timeout',
+      | 'timeout'
+      | 'too_long',
   ) {
     super(message)
   }
@@ -109,13 +110,27 @@ function requestDeadline(): number | undefined {
  * starts over and counts against the free tier's requests per day.
  */
 export const ATTEMPT_MS = {
-  /** Structured answers with little thinking. */
+  /** Structured answers with little thinking, or longer for a long answer (see generateJson). */
   quick: 90_000,
   /** Pictures and speech. */
   media: 120_000,
   /** Answers the model thinks through in full: the script doctor and transcription. */
   thorough: 240_000,
 } as const
+
+/** Length limit for a structured answer of modest size, in tokens. */
+const ANSWER_TOKENS = 8192
+/** Room in a length limit for the model's thinking, which may count against it. */
+const THINKING_ROOM = 8192
+/** The most a Gemini Flash model writes in one answer. */
+const MAX_OUTPUT_TOKENS = 65_536
+/** Tokens to allow per word of text, enough for languages that take several tokens a word. */
+const TOKENS_PER_WORD = 4
+/** Tokens a second Gemini writes at a normal pace, so a long answer gets the time to finish. */
+const TOKENS_PER_SECOND = 200
+
+const RAN_TOO_LONG =
+  "Gemini's answer ran past its length limit, which usually means it got stuck repeating itself. Try again."
 
 /**
  * As little thinking as the model allows. These are structured tasks, and thinking is most of the
@@ -176,12 +191,15 @@ async function withRetry<T>(
           )
         }
         // Decide by the HTTP status the SDK reports: the message is the whole error body, which can
-        // mention "500" or "internal" in a request that will never succeed.
+        // mention "500" or "internal" in a request that will never succeed. Of our own errors, only
+        // an answer cut off at its length limit is worth asking again: a new one rarely loops.
         const status = httpStatus(error)
         const retryable =
-          status !== null
-            ? RETRY_STATUSES.includes(status)
-            : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
+          error instanceof AiError
+            ? error.code === 'too_long'
+            : status !== null
+              ? RETRY_STATUSES.includes(status)
+              : /fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i.test(message)
         if (!retryable) break
       }
       if (attempt === 3) break
@@ -217,11 +235,26 @@ async function generateJson<T>(
   jsonSchema: Record<string, unknown>,
   parser: z.ZodType<T>,
   system: string,
-  /** 'default' leaves thinking to the model, for tasks where accuracy beats speed. */
-  options: { thinking?: 'quick' | 'default' } = {},
+  options: {
+    /** 'default' leaves thinking to the model, for tasks where accuracy beats speed. */
+    thinking?: 'quick' | 'default'
+    /** Tokens the answer may need, when it can be longer than ANSWER_TOKENS. */
+    maxTokens?: number
+  } = {},
 ): Promise<T> {
   const ai = client()
   const model = geminiModel()
+  const thorough = options.thinking === 'default'
+  // A length limit ends a looping answer early. Not for answers the model thinks through in full:
+  // their thinking may count against it, and can run to tens of thousands of tokens.
+  const maxOutputTokens = thorough
+    ? undefined
+    : Math.min(MAX_OUTPUT_TOKENS, (options.maxTokens ?? ANSWER_TOKENS) + THINKING_ROOM)
+  // Time to write the whole length limit at a normal pace: a looping answer reaches the limit
+  // first, a long one has time to finish, and only a stalled one runs out of time.
+  const attemptMs = maxOutputTokens
+    ? Math.max(ATTEMPT_MS.quick, (maxOutputTokens / TOKENS_PER_SECOND) * 1000)
+    : ATTEMPT_MS.thorough
   return withRetry(
     async (signal) => {
       const response = await ai.models.generateContent({
@@ -233,10 +266,13 @@ async function generateJson<T>(
           responseJsonSchema: jsonSchema,
           // No temperature: Gemini 3 models are tuned for their default (1.0), and below it they can
           // loop, writing until the output limit, which runs past the time budget.
-          thinkingConfig: options.thinking === 'default' ? undefined : quickThinking(model),
+          thinkingConfig: thorough ? undefined : quickThinking(model),
+          ...(maxOutputTokens ? { maxOutputTokens } : {}),
           abortSignal: signal,
         },
       })
+      // Cut off at the length limit: the JSON is unfinished.
+      if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') throw new AiError(RAN_TOO_LONG, 'too_long')
       const text = response.text ?? ''
       let data: unknown
       try {
@@ -252,7 +288,7 @@ async function generateJson<T>(
     },
     undefined,
     requestDeadline(),
-    options.thinking === 'default' ? ATTEMPT_MS.thorough : ATTEMPT_MS.quick,
+    attemptMs,
   )
 }
 
@@ -307,6 +343,7 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
     { type: 'object', properties: { title: str, script: str }, required: ['title', 'script'] },
     z.object({ title: z.string(), script: z.string().min(20) }),
     'You are a scriptwriter for YouTube channels, faceless or narrated by a recurring character. You write narration that sounds natural when read aloud, in the narrator voice the creator asks for.',
+    { maxTokens: words * TOKENS_PER_WORD + 1000 },
   )
 }
 
@@ -458,6 +495,8 @@ ${script.trim()}
     },
     z.object({ scenes: z.array(sceneSchema).min(1) }),
     'You are a storyboard artist and video editor for faceless YouTube channels.',
+    // Each scene repeats its words and describes its picture: quick cuts take ~70 tokens a word.
+    { maxTokens: countWords(script) * 80 + 2000 },
   )
   const scenes = result.scenes.map((s) => ({
     ...s,
@@ -588,6 +627,7 @@ ${list}`
       ),
     }),
     'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
+    { maxTokens: scenes.length * 60 + 1000 },
   )
   return result.scenes
 }
@@ -1148,6 +1188,11 @@ ${input.description}
             ),
           }),
           'You translate YouTube titles and descriptions for creators, so they read as if written in each language.',
+          // At most a token a character (languages written in other scripts), and some to spare.
+          {
+            maxTokens:
+              Math.ceil(codes.length * (input.title.length + input.description.length) * 1.25) + 2000,
+          },
         )
         results[i] = result.translations
           .filter((t) => codes.includes(t.language) && t.title.trim())
@@ -2094,6 +2139,7 @@ For each scene, in order, pick the background that fits where it happens, and th
       ),
     }),
     'You are a storyboard artist for a 2D cartoon channel.',
+    { maxTokens: input.scenes.length * 60 + 1000 },
   )
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
   return input.scenes.map((_, i) => {
