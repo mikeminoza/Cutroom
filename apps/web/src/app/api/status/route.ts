@@ -1,4 +1,10 @@
-import { geminiImageModel, geminiModel, geminiTtsModel, hasGeminiKey } from '@cutroom/shared/ai'
+import {
+  geminiImageModel,
+  geminiLiteModel,
+  geminiModel,
+  geminiTtsModel,
+  hasGeminiKey,
+} from '@cutroom/shared/ai'
 import { hasElevenLabsKey } from '@cutroom/shared/elevenlabs'
 import { storageDriver } from '@cutroom/shared/storage'
 import type { StatusDTO } from '@/lib/dto'
@@ -15,6 +21,7 @@ export const GET = route(async (): Promise<StatusDTO> => {
     gemini: {
       configured: hasGeminiKey(),
       model: geminiModel(),
+      liteModel: geminiLiteModel(),
       imageModel: geminiImageModel(),
       ttsModel: geminiTtsModel(),
     },

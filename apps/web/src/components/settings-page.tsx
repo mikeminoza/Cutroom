@@ -220,9 +220,11 @@ function Connections() {
           detail={
             status.gemini.configured ? (
               <>
-                Writes scripts, splits scenes, times the voice-over and drafts post details. Voice-overs use{' '}
-                {status.gemini.ttsModel} (free tier). Pictures use {status.gemini.imageModel}, which needs
-                billing turned on for the key&apos;s Google Cloud project.
+                Writes scripts, splits scenes, times the voice-over and drafts post details. Simpler jobs
+                (effects, scene layers, comment summaries and breakout searches) use the faster{' '}
+                {status.gemini.liteModel}. Voice-overs use {status.gemini.ttsModel} (free tier). Pictures use{' '}
+                {status.gemini.imageModel}, which needs billing turned on for the key&apos;s Google Cloud
+                project.
               </>
             ) : (
               <>

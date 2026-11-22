@@ -87,6 +87,7 @@ How to get each value is in [ENVIRONMENT.md](ENVIRONMENT.md). After adding a var
 | `BLOB_READ_WRITE_TOKEN` | added by Blob | ✓ | Same value in both |
 | `GEMINI_API_KEY` | ✓ | ✓ | |
 | `GEMINI_MODEL` | optional | optional | Defaults to `gemini-3.8-flash` |
+| `GEMINI_LITE_MODEL` | optional | | Defaults to `gemini-3.5-flash-lite`, for the simple jobs |
 | `GEMINI_TTS_MODEL` | | optional | Defaults to `gemini-3.8-flash-tts` |
 | `GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE` | optional | | |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | |
@@ -536,7 +537,7 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | GitHub run fails right away with "WORKER_SECRET and APP_URL must be set" | Repository secrets missing | Add them under **Settings → Secrets and variables → Actions** |
 | "Send a test" reports an error for Telegram | Wrong chat id, or you never messaged the bot | Message the bot first, then read the chat id again from `getUpdates` |
 | Test email never arrives | Resend's test sender only sends to your own Resend account address | Use that address in `NOTIFY_EMAIL_TO`, or verify a domain in Resend and set `NOTIFY_EMAIL_FROM` |
-| Gemini "model not found" | Google renamed or retired the model | Set `GEMINI_MODEL` to a current Flash model on both services |
+| Gemini "model not found" | Google renamed or retired the model | Set `GEMINI_MODEL` to a current Flash model on both services; if only effects, scene layers, comment summaries or breakouts fail, set `GEMINI_LITE_MODEL` on Vercel to a current Flash-Lite model |
 | Settings → Storage is red | `BLOB_READ_WRITE_TOKEN` missing on Vercel | Step 4.5 |
 | Image or voice-over upload fails in production | Blob store created as **Private**, or token missing | Create a new **Public** store, connect it, update the token on Vercel and Render |
 | Worker log: "Could not reach the web app to resume jobs" on start | Web app address wrong or protected | Check `APP_URL` on Render. Vercel → **Settings → Deployment Protection**: production must not require Vercel login |

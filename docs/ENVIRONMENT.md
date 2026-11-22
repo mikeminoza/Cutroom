@@ -13,6 +13,7 @@ Locally both read a single `.env` file at the repository root. In production you
 |---|---|---|---|---|
 | `GEMINI_API_KEY` | ✓ | ✓ | For AI features | `AIzaSy…` |
 | `GEMINI_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash` |
+| `GEMINI_LITE_MODEL` | ✓ | – | No | `gemini-3.5-flash-lite` |
 | `GEMINI_TTS_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash-tts` |
 | `GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE` | ✓ | – | No | `gemini-3.1-flash-lite-image`, `2K` |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_MODEL` | ✓ | ✓ | No | `sk_…`, `eleven_multilingual_v2` |
@@ -77,6 +78,12 @@ The free tier has rate limits. If you hit one, the app says "Gemini free-tier li
 ### `GEMINI_MODEL`
 
 The Gemini text model. It defaults to `gemini-3.8-flash`. Google renames models from time to time. If a Gemini call fails with "model not found", pick a current Flash model from https://ai.google.dev/gemini-api/docs/models and set it here on **both** services.
+
+### `GEMINI_LITE_MODEL`
+
+The faster, lighter model for the simple jobs: picking scene effects ("Add effects with AI"), building scene pictures from Library layers, summing up viewer comments, and the searches behind breakouts. It defaults to `gemini-3.5-flash-lite`, which is on the free tier with a quota of its own, so these jobs don't use up `GEMINI_MODEL`'s requests. Everything you publish (scripts, storyboards, titles, descriptions, translations, ideas) and the checks (script doctor, hook, packaging) stay on `GEMINI_MODEL`.
+
+Web app only: the worker doesn't run these jobs. To send them to the main model instead, set it to the same value as `GEMINI_MODEL`. If a simple job fails with "model not found", pick a current Flash-Lite model from https://ai.google.dev/gemini-api/docs/models.
 
 ### `GEMINI_TTS_MODEL`
 

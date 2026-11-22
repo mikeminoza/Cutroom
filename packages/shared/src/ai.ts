@@ -45,6 +45,14 @@ export function geminiModel(): string {
   return process.env.GEMINI_MODEL || 'gemini-3.8-flash'
 }
 
+/**
+ * Model for the simple jobs (picking effects and layers, summing up comments, short searches):
+ * faster, with a free-tier quota of its own, so the main model's is kept for the writing.
+ */
+export function geminiLiteModel(): string {
+  return process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite'
+}
+
 /** Image model. Image generation is not on Gemini's free tier: the key's project needs billing. */
 export function geminiImageModel(): string {
   return process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image'
@@ -157,6 +165,8 @@ const RAN_TOO_LONG =
  */
 function quickThinking(model: string): ThinkingConfig | undefined {
   const major = Number(/^gemini-(\d+)/.exec(model)?.[1] ?? 0)
+  // Gemini 3 Flash-Lite models go lower still (minimal is their default).
+  if (major >= 3 && /flash-lite/.test(model)) return { thinkingLevel: 'MINIMAL' as ThinkingLevel }
   if (major >= 3) return { thinkingLevel: 'LOW' as ThinkingLevel }
   if (/^gemini-2\.5-(flash|flash-lite)\b/.test(model)) return { thinkingBudget: 0 }
   if (/^gemini-2\.5-pro\b/.test(model)) return { thinkingBudget: 128 }
@@ -267,10 +277,12 @@ async function generateJson<T>(
     thinking?: 'quick' | 'default'
     /** Tokens the answer may need, when it can be longer than ANSWER_TOKENS. */
     maxTokens?: number
+    /** A simple job, for the Flash-Lite model (geminiLiteModel). */
+    lite?: boolean
   } = {},
 ): Promise<T> {
   const ai = client()
-  const model = geminiModel()
+  const model = options.lite ? geminiLiteModel() : geminiModel()
   const thorough = options.thinking === 'default'
   // A length limit ends a looping answer early. Not for answers the model thinks through in full:
   // their thinking may count against it, and can run to tens of thousands of tokens.
@@ -654,7 +666,7 @@ ${list}`
       ),
     }),
     'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
-    { maxTokens: scenes.length * 60 + 1000 },
+    { maxTokens: scenes.length * 60 + 1000, lite: true },
   )
   return result.scenes
 }
@@ -1476,6 +1488,7 @@ export async function breakoutQueries(input: {
     { type: 'object', properties: { queries: { type: 'array', items: str } }, required: ['queries'] },
     z.object({ queries: z.array(z.string()).min(1) }),
     'You are a YouTube strategist who knows what people search for.',
+    { lite: true },
   )
   return [
     ...new Set(result.queries.map((q) => q.replace(/["“”]/g, '').trim().slice(0, 100)).filter(Boolean)),
@@ -2102,6 +2115,7 @@ Leave a list empty when the comments don't support it. Comments with more likes 
       questions: list5,
     }),
     'You read YouTube comments for a creator and tell them, plainly and kindly, what their audience wants.',
+    { lite: true },
   )
 }
 
@@ -2166,7 +2180,7 @@ For each scene, in order, pick the background that fits where it happens, and th
       ),
     }),
     'You are a storyboard artist for a 2D cartoon channel.',
-    { maxTokens: input.scenes.length * 60 + 1000 },
+    { maxTokens: input.scenes.length * 60 + 1000, lite: true },
   )
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
   return input.scenes.map((_, i) => {

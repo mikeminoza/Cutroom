@@ -133,7 +133,7 @@ export interface ChannelDTO {
 }
 
 export interface StatusDTO {
-  gemini: { configured: boolean; model: string; imageModel: string; ttsModel: string }
+  gemini: { configured: boolean; model: string; liteModel: string; imageModel: string; ttsModel: string }
   elevenlabs: { configured: boolean }
   google: { configured: boolean }
   /** The default channel. */

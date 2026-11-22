@@ -585,6 +585,59 @@ describe('Gemini calls', () => {
     expect(generateContent.mock.calls[0][0].config).not.toHaveProperty('temperature')
   })
 
+  /** The jobs simple enough for Flash-Lite: picking effects and layers, summing up, short searches. */
+  const doSimpleJobs = async () => {
+    const { suggestEffects, pickSceneLayers, summarizeComments, breakoutQueries } = await import('../src/ai')
+    generateContent
+      .mockResolvedValueOnce({ text: '{"scenes":[]}' })
+      .mockResolvedValueOnce({ text: '{"scenes":[]}' })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: 'They love it.',
+          liked: [],
+          requests: [],
+          improve: [],
+          questions: [],
+        }),
+      })
+      .mockResolvedValueOnce({ text: '{"queries":["capybara facts"]}' })
+    await suggestEffects([{ narration: 'Meet Cappy.', seconds: 2 }])
+    await pickSceneLayers({
+      scenes: [{ narration: 'Meet Cappy.', visual: '' }],
+      backgrounds: ['Pond'],
+      characters: [],
+    })
+    await summarizeComments({
+      channel: 'Cappy',
+      videos: [{ title: 'Cappy', comments: [{ text: 'Cute!', likes: 2 }] }],
+    })
+    await breakoutQueries({ niche: 'Capybaras', audience: '' })
+    expect(generateContent).toHaveBeenCalledTimes(4)
+    return generateContent.mock.calls.map(([request]) => request)
+  }
+
+  it('does the simple jobs on Flash-Lite with the least thinking, and the writing on the main model', async () => {
+    for (const request of await doSimpleJobs()) {
+      expect(request.model).toBe('gemini-3.5-flash-lite')
+      expect(request.config.thinkingConfig).toEqual({ thinkingLevel: 'MINIMAL' })
+    }
+    generateContent.mockResolvedValueOnce(oneIdea)
+    await askForIdeas()
+    expect(generateContent.mock.calls[4][0].model).toBe('gemini-3.8-flash')
+  })
+
+  it('sends the simple jobs to the main model too when GEMINI_LITE_MODEL names it', async () => {
+    process.env.GEMINI_LITE_MODEL = 'gemini-3.8-flash'
+    try {
+      for (const request of await doSimpleJobs()) {
+        expect(request.model).toBe('gemini-3.8-flash')
+        expect(request.config.thinkingConfig).toEqual({ thinkingLevel: 'LOW' })
+      }
+    } finally {
+      delete process.env.GEMINI_LITE_MODEL
+    }
+  })
+
   it('on Vercel, stops in time with a clear message instead of hitting the cut-off', async () => {
     const { AI_BUDGET_MS } = await import('../src/ai')
     process.env.VERCEL = '1'
