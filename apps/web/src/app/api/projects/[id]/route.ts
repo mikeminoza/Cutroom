@@ -34,6 +34,9 @@ export const PATCH = route(async (request, { params }: Ctx) => {
     badRequest('This video is already on YouTube. Start over to post it to another channel.')
   }
   const update: Parameters<typeof updateProject>[1] = { ...patch }
+  // Title changes made on YouTube are the server's to keep: a save from the browser never drops them.
+  const titleChanges = current.post?.titleChanges
+  if (patch.post && titleChanges) update.post = { ...patch.post, titleChanges }
   // The YouTube id lets the video find its channel again if it is disconnected and reconnected.
   if (patch.channelId !== undefined) update.channelYoutubeId = channel?.youtubeId ?? null
   for (const [field, kind] of [

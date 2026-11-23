@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import type { CommentThread } from '@cutroom/shared/google'
 import { localPath, putFile } from '@cutroom/shared/storage'
-import type { PostDetails } from '@cutroom/shared/types'
+import { type PostDetails, translationBasis } from '@cutroom/shared/types'
 import { eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RepliesDTO, SentRepliesDTO } from '../src/lib/dto'
+import type { ProjectFull, RepliesDTO, SecondChanceDTO, SentRepliesDTO, SlowStarterDTO } from '../src/lib/dto'
 
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
@@ -30,6 +30,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     // Stubbed: each test says what Gemini writes.
     followUpIdeas: vi.fn(),
     draftReplies: vi.fn(),
+    translateTitle: vi.fn(),
   }
 })
 // Reading comments from YouTube is stubbed too, and so is answering them.
@@ -38,6 +39,8 @@ const postComment = vi.hoisted(() => vi.fn())
 const videoCommentThreads = vi.hoisted(() => vi.fn())
 const threadReplyAuthors = vi.hoisted(() => vi.fn())
 const replyToComment = vi.hoisted(() => vi.fn())
+// Changing a title on YouTube is stubbed: each test says what YouTube has.
+const retitleVideo = vi.hoisted(() => vi.fn())
 vi.mock('@cutroom/shared/google', async (original) => {
   const actual = await original<typeof import('@cutroom/shared/google')>()
   // Video statistics stay real unless a test says otherwise.
@@ -48,6 +51,7 @@ vi.mock('@cutroom/shared/google', async (original) => {
     videoCommentThreads,
     threadReplyAuthors,
     replyToComment,
+    retitleVideo,
     searchRecentVideos: vi.fn(),
     videoStatistics: vi.fn(actual.videoStatistics),
     channelUploads: vi.fn(actual.channelUploads),
@@ -134,6 +138,8 @@ const repliesRoute = await import('../src/app/api/replies/route')
 const replyRoute = await import('../src/app/api/replies/[id]/route')
 const draftRepliesRoute = await import('../src/app/api/replies/draft/route')
 const sendRepliesRoute = await import('../src/app/api/replies/send/route')
+const slowStartersRoute = await import('../src/app/api/second-chance/route')
+const secondChanceRoute = await import('../src/app/api/projects/[id]/second-chance/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2934,5 +2940,287 @@ describe('answering comments', () => {
       skipReason: '',
     })
     expect(await ok(await patch('long-waiting', { status: 'waiting' }))).toMatchObject({ status: 'waiting' })
+  })
+})
+
+describe('second-chance titles', () => {
+  const day = 86_400_000
+  const channelId = 'chance-channel'
+  const description = 'Cats knead for comfort.'
+  const A = 'Why cats knead'
+  const B = 'The real reason cats knead'
+  const options = [A, B, 'Your cat is making biscuits', 'Kneading, explained', 'Why cats push on you']
+  const mine = new Set<string>()
+  let slow = ''
+  let fine = ''
+
+  /** A video on the chance channel, public `age` days, with `views` counted now. */
+  async function posted(
+    youtubeVideoId: string,
+    views: number,
+    age: number,
+    over: Partial<typeof schema.projects.$inferInsert> = {},
+    post: Partial<PostDetails> = {},
+  ) {
+    const id = await newProject()
+    const database = await db()
+    const project = await projects.getProjectRow(id)
+    await database
+      .update(schema.projects)
+      .set({
+        title: `Video ${youtubeVideoId}`,
+        channelId,
+        youtubeVideoId,
+        status: 'published',
+        post: { ...project.post, title: `Video ${youtubeVideoId}`, privacy: 'public', ...post },
+        stats: {
+          views,
+          likes: 0,
+          comments: 0,
+          watchMinutes: null,
+          averageViewSeconds: null,
+          averageViewPercent: 40,
+          subscribersGained: null,
+          publishedAt: new Date(Date.now() - age * day).toISOString(),
+          fetchedAt: new Date().toISOString(),
+        },
+        ...over,
+      })
+      .where(eq(schema.projects.id, id))
+    mine.add(id)
+    return id
+  }
+
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const ok = async <T>(response: Response): Promise<T> => {
+    expect(response.status).toBe(200)
+    return response.json()
+  }
+  const listSlow = async () =>
+    (
+      await ok<SlowStarterDTO[]>(await slowStartersRoute.GET(new Request('http://localhost/api'), undefined))
+    ).filter((s) => mine.has(s.id))
+  const panel = async (id: string) =>
+    ok<SecondChanceDTO>(await secondChanceRoute.GET(new Request('http://localhost/api'), ctx(id)))
+  const change = (id: string, title: string) =>
+    secondChanceRoute.POST(
+      new Request('http://localhost/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title }),
+      }),
+      ctx(id),
+    )
+
+  beforeAll(async () => {
+    const database = await db()
+    await database
+      .insert(schema.channels)
+      .values({ id: channelId, youtubeId: 'UC-chance', title: 'Cat Facts', refreshToken: 'r' })
+    for (const [i, views] of [280, 290, 300, 310, 320].entries()) {
+      await posted(`chance-usual-${i}`, views, 40 + i * 10)
+    }
+    fine = await posted('chance-fine', 200, 15)
+    slow = await posted(
+      'chance-slow',
+      20,
+      12,
+      {},
+      {
+        title: A,
+        titleOptions: options,
+        description,
+        language: 'en',
+        translations: [
+          {
+            language: 'es',
+            title: 'Por qué los gatos amasan',
+            description: 'Los gatos amasan.',
+            basis: translationBasis(A, description),
+          },
+        ],
+      },
+    )
+    // Not offered: an unlisted video only gets views from its link (nor is it part of the usual),
+    // and a Short has no other Shorts to compare with.
+    await posted('chance-unlisted', 1, 12, {}, { privacy: 'unlisted' })
+    await posted('chance-short', 1, 12, { format: 'portrait' })
+  })
+
+  beforeEach(() => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    retitleVideo.mockReset()
+    vi.mocked(ai.translateTitle).mockReset()
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('finds public videos off to a slow start from the stored stats, asking neither YouTube nor Gemini', async () => {
+    vi.mocked(google.videoStatistics).mockClear()
+    expect(await listSlow()).toEqual([
+      {
+        id: slow,
+        title: A,
+        format: 'landscape',
+        youtubeVideoId: 'chance-slow',
+        views: 20,
+        // The middle of the five settled videos and the one out longer than it: 290 and 300.
+        usual: 295,
+        peers: 6,
+        publishedAt: expect.any(String),
+      },
+    ])
+    expect(await panel(slow)).toEqual({
+      slow: true,
+      views: 20,
+      usual: 295,
+      peers: 6,
+      days: 12,
+      title: A,
+      options: options.slice(1),
+      changes: [],
+      languages: ['es'],
+    })
+    expect(await panel(fine)).toMatchObject({ slow: false, views: 200, usual: 300, changes: [] })
+    // A video not on YouTube has nothing to show.
+    expect(await panel(await newProject())).toMatchObject({ slow: false, usual: null, changes: [] })
+    expect(retitleVideo).not.toHaveBeenCalled()
+    expect(ai.translateTitle).not.toHaveBeenCalled()
+    expect(google.videoStatistics).not.toHaveBeenCalled()
+  })
+
+  it('changes the title on YouTube only when asked, keeps the history and lets you change it back', async () => {
+    // YouTube's title rules, and nothing sent for a title it already has.
+    for (const [title, error] of [
+      ['  ', /Write a title/],
+      ['x'.repeat(101), /100 characters/],
+      ['Cats <3 boxes', /< or >/],
+      [A, /already/],
+    ] as const) {
+      const refused = await change(slow, title)
+      expect(refused.status).toBe(400)
+      expect((await refused.json()).error).toMatch(error)
+    }
+    expect(retitleVideo).not.toHaveBeenCalled()
+
+    // YouTube has the video in Spanish too: its title is translated in the same request.
+    retitleVideo.mockImplementationOnce(async (_client, _videoId, _title, translate) => ({
+      previous: A,
+      localized: await translate(['es'], 'en'),
+    }))
+    vi.mocked(ai.translateTitle).mockResolvedValueOnce({
+      es: 'La verdadera razón por la que los gatos amasan',
+    })
+    const full = await ok<ProjectFull>(await change(slow, `  ${B}  `))
+    expect(retitleVideo).toHaveBeenCalledTimes(1)
+    expect(retitleVideo.mock.calls[0].slice(1, 3)).toEqual(['chance-slow', B])
+    expect(ai.translateTitle).toHaveBeenCalledTimes(1)
+    expect(ai.translateTitle).toHaveBeenCalledWith({ title: B, from: 'en', to: ['es'] })
+    expect(full.project.post).toMatchObject({
+      title: B,
+      description,
+      titleOptions: options,
+      titleChanges: [{ videoId: 'chance-slow', from: A, at: expect.any(String), views: 20 }],
+      translations: [
+        {
+          language: 'es',
+          title: 'La verdadera razón por la que los gatos amasan',
+          description: 'Los gatos amasan.',
+          basis: translationBasis(B, description),
+        },
+      ],
+    })
+
+    // Not offered again right away: the new title gets a week.
+    expect(await listSlow()).toEqual([])
+    expect(await panel(slow)).toMatchObject({
+      slow: false,
+      title: B,
+      // The title it had comes back through "Change back", not as an idea.
+      options: options.slice(2),
+      changes: [{ from: A, views: 20 }],
+    })
+
+    // The browser saving the post (without the history, or with an old copy) never loses it.
+    const saved = await projectRoute.PATCH(
+      new Request('http://localhost/api', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ post: { ...full.project.post, titleChanges: [], description: 'Edited.' } }),
+      }),
+      ctx(slow),
+    )
+    expect(saved.status).toBe(200)
+    expect((await projects.getProjectRow(slow)).post).toMatchObject({
+      description: 'Edited.',
+      titleChanges: [{ from: A }],
+    })
+
+    // Changing it back is another change, kept the same way.
+    retitleVideo.mockResolvedValueOnce({ previous: B, localized: {} })
+    const back = await ok<ProjectFull>(await change(slow, A))
+    expect(retitleVideo.mock.calls[1].slice(1, 3)).toEqual(['chance-slow', A])
+    expect(back.project.post.title).toBe(A)
+    expect(back.project.post.titleChanges?.map((c) => c.from)).toEqual([A, B])
+    expect(await panel(slow)).toMatchObject({ title: A, options: options.slice(2) })
+
+    // A week after the last change, still slow: offered again.
+    const database = await db()
+    const project = await projects.getProjectRow(slow)
+    const weekAgo = new Date(Date.now() - 8 * day).toISOString()
+    await database
+      .update(schema.projects)
+      .set({
+        post: {
+          ...project.post,
+          titleChanges: project.post.titleChanges?.map((c) => ({ ...c, at: weekAgo })),
+        },
+      })
+      .where(eq(schema.projects.id, slow))
+    expect((await listSlow()).map((s) => s.id)).toEqual([slow])
+    expect(await panel(slow)).toMatchObject({ slow: true })
+
+    // Posted again as a new upload: its history starts afresh.
+    await database
+      .update(schema.projects)
+      .set({ youtubeVideoId: 'chance-slow-2' })
+      .where(eq(schema.projects.id, slow))
+    expect(await panel(slow)).toMatchObject({ changes: [], options: options.slice(1) })
+    expect(retitleVideo).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the title as it was when YouTube or Gemini says no', async () => {
+    const before = (await projects.getProjectRow(slow)).post
+    retitleVideo.mockRejectedValueOnce(
+      Object.assign(new Error('quota'), { errors: [{ reason: 'quotaExceeded' }] }),
+    )
+    const quota = await change(slow, 'Kneading, explained')
+    expect(quota.status).toBe(400)
+    expect((await quota.json()).error).toMatch(/quota/)
+
+    retitleVideo.mockImplementationOnce(async (_client, _videoId, _title, translate) => ({
+      previous: A,
+      localized: await translate(['es'], 'en'),
+    }))
+    vi.mocked(ai.translateTitle).mockRejectedValueOnce(
+      new ai.AiError('Gemini free-tier limit reached. Wait a minute and try again.', 'rate_limited'),
+    )
+    const gemini = await change(slow, 'Kneading, explained')
+    expect(gemini.status).toBe(429)
+    expect((await gemini.json()).error).toMatch(/Gemini/)
+    expect((await projects.getProjectRow(slow)).post).toEqual(before)
+
+    // Not on YouTube, or its channel disconnected: nothing is sent.
+    retitleVideo.mockClear()
+    const draft = await change(await newProject(), 'A new title')
+    expect(draft.status).toBe(400)
+    expect((await draft.json()).error).toMatch(/YouTube/)
+    const away = await posted('chance-away', 5, 10, { channelId: null, channelYoutubeId: 'UC-gone' })
+    const disconnected = await change(away, 'A new title')
+    expect(disconnected.status).toBe(400)
+    expect((await disconnected.json()).error).toMatch(/channel/)
+    expect(retitleVideo).not.toHaveBeenCalled()
   })
 })

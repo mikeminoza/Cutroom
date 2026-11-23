@@ -124,6 +124,25 @@ describe('what to do next', () => {
     expect(moves[1]).toEqual({ kind: 'finish', project: making })
   })
 
+  it('offers a slow starter a new title before the video being made, after fresh comments', () => {
+    const fresh = video({
+      status: 'scheduled',
+      scheduledAt: new Date(now.getTime() - 5 * 3_600_000).toISOString(),
+    })
+    const making = video({ status: 'timed', updatedAt: daysAgo(0) })
+    const slowStart = {
+      id: 'p-slow',
+      title: 'Why cats knead',
+      format: 'landscape' as const,
+      views: 20,
+      usual: 300,
+    }
+    const moves = nextMoves(input({ projects: [fresh, making], slowStart }))
+    expect(moves.map((m) => m.kind)).toEqual(['reply', 'second-chance', 'finish'])
+    expect(moves[1]).toEqual({ kind: 'second-chance', video: slowStart })
+    expect(nextMoves(input({ projects: [making], slowStart: null })).map((m) => m.kind)).toEqual(['finish'])
+  })
+
   it('doubles down on the best video once ten are out, before the one-time steps', () => {
     const projects = Array.from({ length: 10 }, (_, i) =>
       video({ stats: { views: 100 * (i + 1), averageViewPercent: 40, publishedAt: daysAgo(30 + i) } }),

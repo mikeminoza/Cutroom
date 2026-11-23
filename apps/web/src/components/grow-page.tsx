@@ -16,7 +16,7 @@ import { ArrowRight, ExternalLink } from 'lucide-react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { ProjectSummary } from '@/lib/dto'
+import type { ProjectSummary, SlowStarterDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useLibrary, useProjects, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
 import { nextStep, type StepId } from '@/lib/stage'
@@ -79,6 +79,12 @@ export function GrowPage() {
     retry: false,
   })
   const yt = youtube.data?.details ?? null
+  // Videos off to a slow start, from the stored stats: no YouTube call.
+  const slowStarters = useQuery({
+    queryKey: keys.slowStarters,
+    queryFn: () => api.get<SlowStarterDTO[]>('/api/second-chance'),
+    enabled: channels.length > 0,
+  })
 
   if (!settings || !status || !projects) {
     return (
@@ -234,6 +240,8 @@ export function GrowPage() {
     foundation: foundation.map((f) => ({ id: f.id, done: f.state === 'done' })),
     breakoutsScannedAt: settings.breakouts.scannedAt,
     canScanBreakouts: channels.length > 0 && status.gemini.configured,
+    // The newest: a new title helps most while the video is new.
+    slowStart: slowStarters.data?.[0] ?? null,
   })
 
   const describe = (
@@ -273,6 +281,20 @@ export function GrowPage() {
                 Video
               </ButtonLink>
             </>
+          ),
+        }
+      }
+      case 'second-chance': {
+        const { video } = move
+        const kind = video.format === 'portrait' ? 'Shorts' : 'videos'
+        return {
+          key: `second-chance-${video.id}`,
+          title: `Give "${video.title}" a second chance`,
+          detail: `It has ${compact.format(video.views)} views; your ${kind} out at least as long usually have ${compact.format(video.usual)}. A new title can get YouTube to try it with viewers again: pick one of its other title ideas or write your own. Nothing changes on YouTube until you click.`,
+          action: (
+            <ButtonLink href={`/projects/${video.id}?step=publish#second-chance`} size="sm" variant="go">
+              New title
+            </ButtonLink>
           ),
         }
       }

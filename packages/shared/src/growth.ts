@@ -119,6 +119,8 @@ export type NextMove =
   | { kind: 'connect' }
   /** A video went public in the last day: answer its comments while it is new. */
   | { kind: 'reply'; project: GrowthProject; hours: number }
+  /** A video doing much worse than usual a few days in: try another title (second-chance.ts). */
+  | { kind: 'second-chance'; video: SlowStartVideo }
   | { kind: 'finish'; project: GrowthProject }
   /** Nothing is being made: start the next video. */
   | { kind: 'start'; upcoming: number; slots: number }
@@ -127,6 +129,16 @@ export type NextMove =
   | { kind: 'double-down'; project: GrowthProject }
   /** The niche hasn't been searched for breakouts in a week. */
   | { kind: 'breakouts'; days: number | null }
+
+/** A video off to a slow start, as the Grow page gets it from the server. */
+export interface SlowStartVideo {
+  id: string
+  title: string
+  format: VideoFormat
+  views: number
+  /** What the channel's videos of this format usually have (hits.ts, withUsual). */
+  usual: number
+}
 
 export interface GrowthInput {
   now: Date
@@ -140,12 +152,15 @@ export interface GrowthInput {
   breakoutsScannedAt: string | null
   /** Searching for breakouts needs Gemini and a connected channel. */
   canScanBreakouts: boolean
+  /** The newest video off to a slow start, if any. */
+  slowStart?: SlowStartVideo | null
 }
 
 /**
  * The few things most worth doing now, most urgent first: comments on a video that just went
- * out, the next video, then the channel's one-time steps, doubling down once there are ten videos
- * to compare, and a look at what is breaking out in the niche.
+ * out, a new title for one off to a slow start (it helps most while the video is new), the next
+ * video, then the channel's one-time steps, doubling down once there are ten videos to compare,
+ * and a look at what is breaking out in the niche.
  */
 export function nextMoves(input: GrowthInput, limit = 3): NextMove[] {
   const { now, projects } = input
@@ -162,6 +177,8 @@ export function nextMoves(input: GrowthInput, limit = 3): NextMove[] {
       project: justOut.project,
       hours: Math.floor((now.getTime() - justOut.at.getTime()) / 3_600_000),
     })
+
+  if (input.slowStart) moves.push({ kind: 'second-chance', video: input.slowStart })
 
   const making = inProgress(projects)[0]
   const { upcoming, long } = pace(projects, now)

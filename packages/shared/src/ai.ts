@@ -1550,6 +1550,54 @@ ${input.description}
   return results.flat().filter((t) => !seen.has(t.language) && seen.add(t.language))
 }
 
+/**
+ * A posted video's new title in its other languages, when it gets a second chance: one call for
+ * them all on the Flash-Lite model, since a title is short. Returns the titles by language code;
+ * languages it leaves out are just missing.
+ */
+export async function translateTitle(input: {
+  title: string
+  /** The language it is written in. */
+  from: string
+  to: string[]
+}): Promise<Record<string, string>> {
+  const codes = [...new Set(input.to.filter((code) => code && code !== input.from))]
+  if (!codes.length) return {}
+  const prompt = `Translate this YouTube title${input.from ? ` from ${languageName(input.from)}` : ''} into each of these languages: ${codes.map((c) => `${c} (${languageName(c)})`).join(', ')}.
+
+Write like a native YouTuber in each language, not word for word: keep the meaning and the hook. Each title max 100 characters, ideally under 60 with the hook first.
+
+Title:
+${input.title}`
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        titles: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { language: { type: 'string', enum: codes }, title: str },
+            required: ['language', 'title'],
+          },
+        },
+      },
+      required: ['titles'],
+    },
+    z.object({ titles: z.array(z.object({ language: z.string(), title: z.string() })) }),
+    'You translate YouTube titles for creators, so they read as if written in each language.',
+    { task: `title translation (${codes.join(', ')})`, lite: true },
+  )
+  const titles: Record<string, string> = {}
+  for (const t of result.titles) {
+    // YouTube refuses < and > in a title.
+    const title = t.title.replace(/[<>]/g, '').trim().slice(0, 100)
+    if (codes.includes(t.language) && title && !titles[t.language]) titles[t.language] = title
+  }
+  return titles
+}
+
 export function composeDescription(
   body: string,
   chapters: Chapter[],

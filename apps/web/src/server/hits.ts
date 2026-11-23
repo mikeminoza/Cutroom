@@ -15,7 +15,8 @@ import { appUrl, getSettings } from './settings'
 
 type Found = HitCandidate & Hit & { project: ProjectRow; channelRow: ChannelRow | null }
 
-const titleOf = (project: ProjectRow) => (project.post?.title || project.title).trim() || 'Untitled video'
+export const titleOf = (project: ProjectRow) =>
+  (project.post?.title || project.title).trim() || 'Untitled video'
 
 /**
  * Posted videos as the hit rule sees them. Only public ones: private and unlisted videos get views
@@ -47,13 +48,18 @@ function candidates(projects: ProjectRow[], channels: ChannelRow[]) {
   })
 }
 
-async function currentHits(): Promise<Found[]> {
+/** The posted videos as the hit rule sees them, with their projects (second chances use them too). */
+export async function postedVideos() {
   const database = await db()
   const [projects, channels] = await Promise.all([
     database.select().from(schema.projects).where(isNotNull(schema.projects.youtubeVideoId)),
     listChannels(),
   ])
-  return findHits(candidates(projects, channels))
+  return candidates(projects, channels)
+}
+
+async function currentHits(): Promise<Found[]> {
+  return findHits(await postedVideos())
 }
 
 export async function listHits(): Promise<HitDTO[]> {

@@ -32,6 +32,9 @@ export const keys = {
   performance: ['performance'] as const,
   comments: ['comments'] as const,
   replies: (channelId: string) => ['replies', channelId] as const,
+  /** Videos off to a slow start; a project's Second chance panel sits under it. */
+  slowStarters: ['second-chance'] as const,
+  secondChance: (projectId: string) => ['second-chance', projectId] as const,
   voices: ['voices'] as const,
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
   channel: (channelId: string | null) => ['channel', channelId ?? 'default'] as const,

@@ -1,6 +1,7 @@
 'use client'
 
 import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
+import { titleProblem } from '@cutroom/shared/second-chance'
 import { formatChapterTime, totalDuration } from '@cutroom/shared/timing'
 import {
   languageName,
@@ -24,6 +25,7 @@ import {
   Send,
   Sparkles,
   Square,
+  Undo2,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -46,8 +48,8 @@ import {
 import { api, errorText } from '@/lib/api'
 import { resolveChannel } from '@/lib/channels'
 import { cn } from '@/lib/cn'
-import type { JobDTO, ProjectFull } from '@/lib/dto'
-import { formatWhen } from '@/lib/format'
+import type { JobDTO, ProjectFull, SecondChanceDTO } from '@/lib/dto'
+import { formatWhen, plural, timeAgo } from '@/lib/format'
 import { keys, usePlaylists, useProjectAction, useSaver, useSettings, useStatus } from '@/lib/hooks'
 import type { StepId, Tone } from '@/lib/stage'
 import { downloadHref } from '@/lib/upload'
@@ -63,6 +65,7 @@ export function PublishStep({ data, goTo }: StepProps) {
   return (
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="flex flex-col gap-5">
+        <SecondChancePanel data={data} />
         <PostDetailsPanel data={data} />
         <TranslationsPanel data={data} />
         <ThumbnailPanel data={data} />
@@ -71,6 +74,190 @@ export function PublishStep({ data, goTo }: StepProps) {
       <div className="flex flex-col gap-5 xl:sticky xl:top-4">
         {showJob ? <JobPanel data={data} job={job} /> : <FinishPanel data={data} goTo={goTo} />}
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- second chance
+
+const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
+
+/**
+ * A posted video doing much worse than the channel's usual can go out under another title: one of
+ * its other title ideas, or your own (server/second-chance.ts). Shown while it is off to a slow
+ * start, and once its title was changed here, to change it back. YouTube changes only on a click,
+ * after a confirm.
+ */
+function SecondChancePanel({ data }: { data: ProjectFull }) {
+  const { project } = data
+  const client = useQueryClient()
+  const action = useProjectAction(project.id)
+  const { confirm, element } = useConfirm()
+  const [picked, setPicked] = useState('')
+  const [own, setOwn] = useState('')
+  const [busy, setBusy] = useState<'new' | 'back' | null>(null)
+  const { data: chance } = useQuery({
+    queryKey: keys.secondChance(project.id),
+    queryFn: () => api.get<SecondChanceDTO>(`/api/projects/${project.id}/second-chance`),
+    enabled: Boolean(project.youtubeVideoId),
+  })
+  if (!project.youtubeVideoId || !chance || (!chance.slow && chance.changes.length === 0)) return null
+
+  const kind = project.format === 'portrait' ? 'Shorts' : 'long videos'
+  const last = chance.changes.at(-1) ?? null
+  const typed = own.trim()
+  const next = typed || picked
+  const problem = typed ? titleProblem(typed) : null
+
+  const change = async (title: string, which: 'new' | 'back') => {
+    const ok = await confirm({
+      title: 'Change the title on YouTube?',
+      body: (
+        <>
+          <span className="block text-[12.5px] text-ink-3">From</span>
+          <span className="block text-ink">{chance.title}</span>
+          <span className="mt-2 block text-[12.5px] text-ink-3">To</span>
+          <span className="block font-medium text-ink">{title}</span>
+          <span className="mt-3 block">
+            {chance.languages.length > 0 &&
+              `Gemini translates it for its titles in ${chance.languages.map(languageName).join(', ')}. `}
+            The description, tags and everything else stay as they are.
+          </span>
+        </>
+      ),
+      action: 'Change title',
+    })
+    if (!ok) return
+    setBusy(which)
+    const full = await action(
+      `/api/projects/${project.id}/second-chance`,
+      { title },
+      'Title changed on YouTube',
+    )
+    setBusy(null)
+    if (full) {
+      setPicked('')
+      setOwn('')
+      // The Grow page's list and this panel: both are under this key.
+      void client.invalidateQueries({ queryKey: keys.slowStarters })
+    }
+  }
+
+  return (
+    <div id="second-chance" className="scroll-mt-6">
+      <Panel
+        title="Second chance"
+        description={
+          chance.slow
+            ? 'It’s doing much worse than your usual. A new title can get YouTube to try it with viewers again.'
+            : 'You changed its title here. Give the new one a few days before judging it.'
+        }
+      >
+        <div className="flex flex-col gap-5 px-5 py-5">
+          <div>
+            <p className="text-[12.5px] text-ink-3">On YouTube now</p>
+            <p className="mt-0.5 text-[14.5px] font-medium">{chance.title}</p>
+            {chance.views !== null && chance.usual !== null && chance.days !== null && (
+              <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+                <span className="rounded-full bg-kodak-wash px-2 py-0.5 font-semibold text-kodak-ink">
+                  {Math.round((chance.views / Math.max(chance.usual, 1)) * 100)}% of usual
+                </span>
+                <span className="text-ink-2">
+                  {compact.format(chance.views)} views after {plural(chance.days, 'day')}; your {kind} out at
+                  least as long usually have {compact.format(chance.usual)}
+                </span>
+              </p>
+            )}
+          </div>
+          {last && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-control)] border border-line bg-sunk px-3 py-2.5">
+              <p className="min-w-48 flex-1 text-[13.5px] leading-snug text-ink-2">
+                Changed {timeAgo(last.at)} from “{last.from}”, at {compact.format(last.views)} views
+                {chance.views !== null && chance.views > last.views
+                  ? ` (${compact.format(chance.views - last.views)} more since)`
+                  : ''}
+                .
+              </p>
+              <Button
+                variant="plain"
+                size="sm"
+                busy={busy === 'back'}
+                disabled={busy !== null}
+                onClick={() => change(last.from, 'back')}
+                icon={<Undo2 className="size-3.5" />}
+              >
+                Change back
+              </Button>
+            </div>
+          )}
+          {chance.options.length > 0 && (
+            <Field
+              label="Its other title ideas"
+              hint="Written with the post details. Pick one, or write your own."
+            >
+              <div role="radiogroup" aria-label="Other title ideas" className="flex flex-col gap-1.5">
+                {chance.options.map((option) => {
+                  const active = !typed && option === picked
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => {
+                        setPicked(option)
+                        setOwn('')
+                      }}
+                      className={cn(
+                        'flex items-center gap-2.5 rounded-[var(--radius-control)] border px-3 py-2 text-left text-[14px] transition-colors',
+                        active ? 'border-ink bg-kodak-wash' : 'border-line hover:border-line-strong',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'grid size-4 shrink-0 place-items-center rounded-full border',
+                          active ? 'border-ink bg-ink' : 'border-line-strong',
+                        )}
+                      >
+                        {active && <span className="size-1.5 rounded-full bg-kodak" />}
+                      </span>
+                      {option}
+                    </button>
+                  )
+                })}
+              </div>
+            </Field>
+          )}
+          <Field
+            label={chance.options.length > 0 ? 'Or write your own' : 'Write a new title'}
+            aside={`${typed.length} / 100`}
+            error={problem}
+          >
+            <Input
+              value={own}
+              onChange={(e) => setOwn(e.target.value)}
+              placeholder="The same idea, sold another way"
+              aria-label="New title"
+            />
+          </Field>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <Button
+              variant="go"
+              busy={busy === 'new'}
+              disabled={!next || Boolean(problem) || busy !== null}
+              onClick={() => change(next, 'new')}
+              icon={<Send className="size-4" />}
+            >
+              Change on YouTube
+            </Button>
+            <p className="min-w-48 flex-1 text-[12.5px] leading-snug text-ink-3">
+              Uses 51 of YouTube’s 10,000 free quota units a day
+              {chance.languages.length > 0 ? ', and one Gemini call for the translations' : ''}.
+            </p>
+          </div>
+        </div>
+      </Panel>
+      {element}
     </div>
   )
 }

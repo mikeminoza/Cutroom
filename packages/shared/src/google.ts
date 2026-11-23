@@ -486,6 +486,67 @@ export async function reschedule(
   })
 }
 
+/**
+ * Changes a posted video's title on YouTube and nothing else (second-chance titles): 1 quota unit
+ * to read the video, 50 to update it. An update replaces the whole snippet, clearing whatever it
+ * leaves out, so the snippet is read first and sent back with only the title changed. Viewers who
+ * watch YouTube in another language see the video's title in theirs (its localizations), which
+ * would still be the old one: `translate` turns the new title into those languages, called only
+ * when the video has some, and each keeps its description. Returns the title the video had and
+ * its new titles in other languages. Throws before changing anything when the video is gone or
+ * the translation fails.
+ */
+export async function retitleVideo(
+  client: OAuthClient,
+  videoId: string,
+  title: string,
+  translate: (languages: string[], from: string) => Promise<Record<string, string>>,
+): Promise<{ previous: string; localized: Record<string, string> }> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  // Localizations too: reading costs 1 unit whatever the parts, and only YouTube knows for sure
+  // which languages the video has (some may have been added in Studio).
+  const res = await yt.videos.list({ part: ['snippet', 'localizations'], id: [videoId] })
+  const video = res.data.items?.[0]
+  const snippet = video?.snippet
+  if (!snippet) {
+    throw new Error("YouTube can't find this video on the channel. It may have been deleted.")
+  }
+  const own = snippet.defaultLanguage ?? ''
+  const existing = Object.entries(video?.localizations ?? {})
+  const languages = existing.map(([code]) => code).filter((code) => code !== own)
+  const translated = languages.length ? await translate(languages, own) : {}
+  // A language the translation left out gets the new title as it is: no viewer keeps the old one.
+  const localized = Object.fromEntries(
+    languages.map((code) => [code, translated[code]?.trim().slice(0, 100) || title]),
+  )
+  const localizations = existing.length
+    ? Object.fromEntries(
+        existing.map(([code, l]) => [
+          code,
+          { title: localized[code] ?? title, description: l.description ?? '' },
+        ]),
+      )
+    : null
+  await yt.videos.update({
+    // Without localizations in `part`, YouTube leaves the video's own ones as they are.
+    part: localizations ? ['snippet', 'localizations'] : ['snippet'],
+    requestBody: {
+      id: videoId,
+      snippet: {
+        title,
+        // Everything YouTube lets you set in a snippet, as it is now (the rest it sets itself).
+        description: snippet.description ?? undefined,
+        tags: snippet.tags ?? undefined,
+        categoryId: snippet.categoryId ?? undefined,
+        defaultLanguage: snippet.defaultLanguage ?? undefined,
+        defaultAudioLanguage: snippet.defaultAudioLanguage ?? undefined,
+      },
+      ...(localizations ? { localizations } : {}),
+    },
+  })
+  return { previous: snippet.title ?? '', localized }
+}
+
 export interface VideoStatistics {
   views: number
   likes: number

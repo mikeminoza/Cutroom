@@ -364,6 +364,23 @@ export interface PostDetails {
    * (not needed for cartoons or obvious fantasy).
    */
   syntheticMedia?: boolean
+  /**
+   * Titles changed on YouTube from Cutroom after posting (second-chance titles), oldest first.
+   * Only the server writes it: the browser's saves keep what is stored.
+   */
+  titleChanges?: TitleChange[]
+}
+
+/** One title change on a posted video: enough to say "changed 3 days ago from …" and undo it. */
+export interface TitleChange {
+  /** The upload it was changed on: posting the project again starts a new history. */
+  videoId: string
+  /** The title before the change. */
+  from: string
+  /** When it was changed (ISO). */
+  at: string
+  /** Its views then, as last counted. */
+  views: number
 }
 
 export interface PostTranslation {

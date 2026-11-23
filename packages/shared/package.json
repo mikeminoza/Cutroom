@@ -21,6 +21,7 @@
     "./retention": "./src/retention.ts",
     "./breakouts": "./src/breakouts.ts",
     "./hits": "./src/hits.ts",
+    "./second-chance": "./src/second-chance.ts",
     "./replies": "./src/replies.ts",
     "./review": "./src/review.ts",
     "./growth": "./src/growth.ts",

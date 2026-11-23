@@ -21,6 +21,7 @@ import type {
   Resolution,
   SceneInput,
   SeriesTemplate,
+  TitleChange,
   Transcript,
   VideoFormat,
   VideoInsights,
@@ -217,6 +218,42 @@ export interface HitDTO {
   publishedAt: string
   /** When the daily check found it and told you; null = not yet. */
   foundAt: string | null
+}
+
+/** One of your videos off to a slow start, for a second-chance title (server/second-chance.ts). */
+export interface SlowStarterDTO {
+  /** The project. */
+  id: string
+  title: string
+  format: VideoFormat
+  youtubeVideoId: string
+  views: number
+  /** What the channel's videos of this format usually have (see shared/hits.ts). */
+  usual: number
+  /** How many videos the usual comes from. */
+  peers: number
+  publishedAt: string
+}
+
+/** A posted video's Second chance panel on the Publish step. */
+export interface SecondChanceDTO {
+  /** Off to a slow start and not just retitled: worth a new title now. */
+  slow: boolean
+  /** As last counted; null before the first count. */
+  views: number | null
+  /** What the channel's videos usually have; null when there are too few to compare with. */
+  usual: number | null
+  peers: number
+  /** Whole days it had been public when its views were counted. */
+  days: number | null
+  /** Its title now, as Cutroom last set it. */
+  title: string
+  /** Its title ideas not tried on this upload yet. */
+  options: string[]
+  /** The title changes made on this upload, oldest first. */
+  changes: TitleChange[]
+  /** The languages it has a translated title in: a change translates the new one too. */
+  languages: string[]
 }
 
 /** A video breaking out in the niche (server/breakouts.ts). */
