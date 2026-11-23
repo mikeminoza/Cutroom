@@ -1,14 +1,14 @@
 // AI work that keeps going when the page is closed, kept in the tasks table. Two uses:
 //  - The queue: work a page used to drive one request at a time (Ideas → Create drafts → write
-//    them). Queued tasks run one at a time on the server (server/task-runner.ts) whether or not a
-//    page is open.
+//    them, Images → Generate missing). Queued tasks run one at a time on the server
+//    (server/task-runner.ts) whether or not a page is open.
 //  - Tracking: a button's AI request already finishes on the server when its page closes. It
 //    records itself here while it runs, so a reopened page shows it still going instead of
 //    offering the button again (and spending the free quota twice).
 // A run holds its task with a lease it keeps renewing. When the run dies (its request was cut off),
 // the lease runs out: a queued task is tried once more, then given up with a plain message.
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, notExists, or, sql } from 'drizzle-orm'
-import type { TaskDTO } from '@/lib/dto'
+import type { PictureBatchDTO, TaskDTO } from '@/lib/dto'
 import { SAME_WORK, TASK_LABEL, type TaskInput, type TaskKind, type TaskResult } from '@/lib/tasks'
 import { db, schema } from './db'
 import type { TaskRow } from './db/schema'
@@ -26,6 +26,13 @@ const DIED = 'This stopped before it was done.'
 const DIED_TWICE = 'This stopped before it was done, twice. Try it again from its project page.'
 const SKIPPED = 'Not started, because the part before it did not finish.'
 
+/**
+ * Queued work where each task builds on the one before it for the same project (a draft's post
+ * details need its script): when one fails, the rest of that project's part of the batch is
+ * skipped. Pictures stand alone: one Gemini won't make leaves the others to go on.
+ */
+const CHAINED: TaskKind[] = ['draft', 'post']
+
 const lease = () => new Date(Date.now() + LEASE_MS)
 
 export function toTaskDTO(row: TaskRow): TaskDTO {
@@ -35,6 +42,7 @@ export function toTaskDTO(row: TaskRow): TaskDTO {
     status: row.status,
     startedAt: row.startedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    sceneIds: row.input.sceneIds ?? [],
   }
 }
 
@@ -86,6 +94,17 @@ export async function activeTasks(projectId: string): Promise<TaskRow[]> {
     .orderBy(asc(schema.tasks.createdAt), asc(schema.tasks.position))
 }
 
+/**
+ * Whether work of `kind` on `input` would clash with a task (SAME_WORK). Pictures only clash on the
+ * same scene: another scene's picture can be made meanwhile.
+ */
+function clashes(kind: TaskKind, input: TaskInput, task: TaskRow): boolean {
+  if (!SAME_WORK[kind].includes(task.kind)) return false
+  if (kind !== 'picture') return true
+  const scenes = task.input.sceneIds ?? []
+  return (input.sceneIds ?? []).some((id) => scenes.includes(id))
+}
+
 /** Plain words for what went wrong, for the task's record (the route still answers as usual). */
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Something went wrong.'
@@ -99,8 +118,9 @@ function messageOf(error: unknown): string {
 export async function startTracking(
   projectId: string,
   kind: TaskKind,
+  input: TaskInput = {},
 ): Promise<{ done(): Promise<void>; failed(error: unknown): Promise<void> }> {
-  const busy = (await activeTasks(projectId)).find((t) => SAME_WORK[kind].includes(t.kind))
+  const busy = (await activeTasks(projectId)).find((t) => clashes(kind, input, t))
   if (busy) {
     badRequest(
       `${TASK_LABEL[busy.kind]} is ${busy.status === 'queued' ? 'queued' : 'still running'} for this video. Wait for it to finish.`,
@@ -113,6 +133,7 @@ export async function startTracking(
       id: newId(),
       kind,
       projectId,
+      input,
       inline: true,
       status: 'running',
       attempts: 1,
@@ -133,8 +154,13 @@ export async function startTracking(
 }
 
 /** Runs a button's AI work on a project, recorded as a task while it runs (see startTracking). */
-export async function tracked<T>(projectId: string, kind: TaskKind, work: () => Promise<T>): Promise<T> {
-  const task = await startTracking(projectId, kind)
+export async function tracked<T>(
+  projectId: string,
+  kind: TaskKind,
+  work: () => Promise<T>,
+  input: TaskInput = {},
+): Promise<T> {
+  const task = await startTracking(projectId, kind, input)
   try {
     const result = await work()
     await task.done()
@@ -252,9 +278,30 @@ export async function cancelBatch(batchId: string, reason: string, projectId?: s
     )
 }
 
-/** Cancels what is left of the task's project in its batch: the rest of that draft. */
+/** Cancels a project's queued tasks of this kind, saying why. */
+export async function cancelQueued(projectId: string, kind: TaskKind, reason: string): Promise<void> {
+  const database = await db()
+  const now = new Date()
+  await database
+    .update(schema.tasks)
+    .set({ status: 'cancelled', error: reason, finishedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(schema.tasks.projectId, projectId),
+        eq(schema.tasks.kind, kind),
+        eq(schema.tasks.status, 'queued'),
+      ),
+    )
+}
+
+/**
+ * Cancels what is left of the task's project in its batch when that builds on this task (CHAINED):
+ * the rest of that draft. Anything else goes on.
+ */
 export async function skipRest(task: TaskRow, reason = SKIPPED): Promise<void> {
-  if (task.batchId && task.projectId) await cancelBatch(task.batchId, reason, task.projectId)
+  if (task.batchId && task.projectId && CHAINED.includes(task.kind)) {
+    await cancelBatch(task.batchId, reason, task.projectId)
+  }
 }
 
 /**
@@ -306,16 +353,56 @@ export async function batchTasks(batchId: string): Promise<TaskRow[]> {
     .orderBy(asc(schema.tasks.position))
 }
 
-/** The newest batch with a task of this kind, or null. */
-export async function latestBatchId(kind: TaskKind): Promise<string | null> {
+/** The newest batch with a task of this kind (for this project, if given), or null. */
+export async function latestBatchId(kind: TaskKind, projectId?: string): Promise<string | null> {
   const database = await db()
   const [row] = await database
     .select({ batchId: schema.tasks.batchId })
     .from(schema.tasks)
-    .where(and(eq(schema.tasks.kind, kind), isNotNull(schema.tasks.batchId)))
+    .where(
+      and(
+        eq(schema.tasks.kind, kind),
+        isNotNull(schema.tasks.batchId),
+        projectId ? eq(schema.tasks.projectId, projectId) : undefined,
+      ),
+    )
     .orderBy(desc(schema.tasks.createdAt))
     .limit(1)
   return row?.batchId ?? null
+}
+
+/**
+ * How far the project's newest Images → Generate missing got, as the Images step shows it: counted
+ * in scenes (a task makes up to two), with the ones Gemini didn't make and why. Null before the
+ * first.
+ */
+export async function pictureBatch(projectId: string): Promise<PictureBatchDTO | null> {
+  const id = await latestBatchId('picture', projectId)
+  const tasks = id ? await batchTasks(id) : []
+  if (!id || tasks.length === 0) return null
+  const open = (t: TaskRow) => t.status === 'queued' || t.status === 'running'
+  const scenes = (t: TaskRow) => t.input.sceneIds ?? []
+  const count = (list: TaskRow[]) => list.reduce((n, t) => n + scenes(t).length, 0)
+  const done = tasks.filter((t) => t.status === 'done')
+  // A task that failed as a whole (no key, or its run died twice) failed each of its scenes.
+  const failed = tasks.flatMap((t) =>
+    t.status === 'failed'
+      ? scenes(t).map((sceneId) => ({ sceneId, error: t.error ?? 'Something went wrong.' }))
+      : (t.result?.failed ?? []),
+  )
+  const running = tasks.some(open)
+  return {
+    id,
+    done: count(tasks.filter((t) => !open(t))),
+    total: count(tasks),
+    running,
+    made: count(done) - done.reduce((n, t) => n + (t.result?.failed?.length ?? 0), 0),
+    failed,
+    stopped: tasks.find((t) => t.status === 'cancelled')?.error ?? null,
+    finishedAt: running
+      ? null
+      : new Date(Math.max(...tasks.map((t) => (t.finishedAt ?? t.createdAt).getTime()))).toISOString(),
+  }
 }
 
 /** Clears tasks that ended (or whose request died) more than two weeks ago. Returns how many. */

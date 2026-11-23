@@ -22,7 +22,7 @@ import { db, schema } from './db'
 import type { CharacterRow, JobRow, ProjectRow, SceneRow } from './db/schema'
 import { badRequest, newId, notFound } from './http'
 import { getSettings } from './settings'
-import { activeTasks, toTaskDTO } from './tasks'
+import { activeTasks, pictureBatch, toTaskDTO } from './tasks'
 
 export function toProjectDTO(row: ProjectRow): ProjectDTO {
   return {
@@ -280,13 +280,14 @@ export async function latestJob(projectId: string, type: JobType): Promise<JobRo
 
 export async function getProjectFull(id: string): Promise<ProjectFull> {
   const project = await getProjectRow(id)
-  const [scenes, characters, retime, publish, voice, tasks] = await Promise.all([
+  const [scenes, characters, retime, publish, voice, tasks, pictures] = await Promise.all([
     getScenes(id),
     getCharacters(id),
     latestJob(id, 'retime'),
     latestJob(id, 'publish'),
     latestJob(id, 'voice'),
     activeTasks(id),
+    pictureBatch(id),
   ])
   const dto = toProjectDTO(project)
   dto.status = effectiveStatus({
@@ -308,6 +309,7 @@ export async function getProjectFull(id: string): Promise<ProjectFull> {
       voice: voice ? toJobDTO(voice) : null,
     },
     tasks: tasks.map(toTaskDTO),
+    pictures,
   }
 }
 

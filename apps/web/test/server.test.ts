@@ -35,6 +35,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     generateIdeas: vi.fn(actual.generateIdeas),
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
     writePostDetails: vi.fn(actual.writePostDetails),
+    generateImage: vi.fn(actual.generateImage),
     // Stubbed: each test says what Gemini writes.
     followUpIdeas: vi.fn(),
     draftReplies: vi.fn(),
@@ -156,6 +157,9 @@ const runTasksRoute = await import('../src/app/api/tasks/run/route')
 const draftsRoute = await import('../src/app/api/ideas/drafts/route')
 const stopDraftsRoute = await import('../src/app/api/ideas/drafts/stop/route')
 const postRoute = await import('../src/app/api/projects/[id]/ai/post/route')
+const picturesRoute = await import('../src/app/api/projects/[id]/ai/pictures/route')
+const stopPicturesRoute = await import('../src/app/api/projects/[id]/ai/pictures/stop/route')
+const sceneImageRoute = await import('../src/app/api/scenes/[id]/image/route')
 
 // Work the task runner starts after a response waits here until a test runs it, so nothing runs
 // in the background (Vercel's after() needs a real request).
@@ -3842,5 +3846,291 @@ describe('AI work that keeps going when the page is closed', () => {
     expect((await refused.json()).error).toBe(
       'Writing the script and scenes is queued for this video. Wait for it to finish.',
     )
+  })
+
+  it('still skips a draft’s post details when its script failed, and goes on with the next draft', async () => {
+    vi.mocked(ai.draftScript).mockImplementation(async (brief) => {
+      asked.push(`draft:${brief.topic}`)
+      if (brief.topic === 'Refused')
+        throw new ai.AiError('Gemini returned an empty script. Try again.', 'bad_output')
+      return { title: brief.topic, script: 'A script.', scenes: [scene('A script.')], storyboardError: null }
+    })
+    postWell()
+    await createDrafts(await addIdeas('Refused', 'Fine'))
+    await runLater()
+    expect(asked).toEqual(['draft:Refused', 'draft:Fine', 'post:Fine'])
+    expect((await taskRows()).map((t) => [t.kind, t.status, t.error])).toEqual([
+      ['draft', 'failed', 'Gemini returned an empty script. Try again.'],
+      ['post', 'cancelled', 'Not started, because the part before it did not finish.'],
+      ['draft', 'done', null],
+      ['post', 'done', null],
+    ])
+  })
+
+  describe('pictures made on the server', () => {
+    /** Pictures being made right now, and the most at once. */
+    let painting = 0
+    let mostAtOnce = 0
+    /**
+     * The first picture of each two waits (a while at most) for the second to be asked for, so a
+     * task that makes them one after the other would show.
+     */
+    let pairUp = false
+    /** Scenes Gemini won't make a picture for (by narration), and what it says. */
+    let refuse: Record<string, Error> = {}
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    beforeEach(() => {
+      painting = 0
+      mostAtOnce = 0
+      pairUp = false
+      refuse = {}
+      // "picture:<narration>" in `asked`, in the order Gemini was asked.
+      vi.mocked(ai.generateImage).mockImplementation(async ({ prompt }) => {
+        const name = /An image showing: (\w+)/.exec(prompt)?.[1] ?? '?'
+        asked.push(`picture:${name}`)
+        painting++
+        mostAtOnce = Math.max(mostAtOnce, painting)
+        try {
+          for (let i = 0; pairUp && asked.length % 2 === 1 && i < 100; i++) await sleep(5)
+          if (refuse[name]) throw refuse[name]
+          return { data: Buffer.from(`picture of ${name}`), mimeType: 'image/png' }
+        } finally {
+          painting--
+        }
+      })
+    })
+    afterEach(() => {
+      vi.mocked(ai.generateImage).mockReset()
+    })
+
+    /** A project with a scene per name, each narrated "<name>." */
+    const withScenes = async (...names: string[]) => {
+      const id = await newProject()
+      await projects.replaceScenes(
+        id,
+        names.map((name, i) => ({ start: i * 4, end: i * 4 + 4, narration: `${name}.` })),
+      )
+      return { id, scenes: await projects.getScenes(id) }
+    }
+    /** Images → Generate missing. */
+    const generateMissing = async (id: string) => {
+      const response = await picturesRoute.POST(json({}), ctx(id))
+      return { status: response.status, body: await response.json() }
+    }
+    const pictured = async (id: string) =>
+      (await projects.getScenes(id)).map((s) => (s.imageUrl ? 'picture' : 'none'))
+
+    it('makes every missing picture on the server, two side by side, in scene order', async () => {
+      pairUp = true
+      const { id, scenes } = await withScenes('One', 'Two', 'Three', 'Four', 'Five')
+      // Scene two has a picture of its own: left as it is.
+      const own = await putFile(`projects/${id}/scenes/own.png`, Buffer.from('own'), 'image/png')
+      await sceneRoute.PATCH(json({ imageUrl: own.url }), ctx(scenes[1].id))
+
+      const queued = await generateMissing(id)
+      expect(queued.status).toBe(200)
+      const full = queued.body as ProjectFull
+      // Answered at once: the pictures are made after the response, two to a task.
+      expect(asked).toEqual([])
+      expect(later).toHaveLength(1)
+      expect(full.pictures).toMatchObject({ running: true, done: 0, total: 4, failed: [], stopped: null })
+      expect(full.tasks.map((t) => [t.kind, t.status, t.sceneIds])).toEqual([
+        ['picture', 'queued', [scenes[0].id, scenes[2].id]],
+        ['picture', 'queued', [scenes[3].id, scenes[4].id]],
+      ])
+
+      await runLater()
+      // Side by side within a task, and one task at a time.
+      expect(mostAtOnce).toBe(2)
+      expect(asked.slice(0, 2).sort()).toEqual(['picture:One', 'picture:Three'])
+      expect(asked.slice(2).sort()).toEqual(['picture:Five', 'picture:Four'])
+      // The first run started the second in a request of its own.
+      expect(callRunRoute).toHaveBeenCalledTimes(1)
+      const after = await projects.getProjectFull(id)
+      expect(await pictured(id)).toEqual(['picture', 'picture', 'picture', 'picture', 'picture'])
+      expect(after.scenes[1].imageUrl).toBe(own.url)
+      expect(after.scenes[0].imageUrl).toMatch(new RegExp(`projects/${id}/scenes/\\w+-scene-001\\.png$`))
+      for (const s of after.scenes) expect(stored(keyOfUrl(s.imageUrl as string))).toBe(true)
+      expect(after.tasks).toEqual([])
+      expect(after.pictures).toMatchObject({
+        running: false,
+        done: 4,
+        total: 4,
+        made: 4,
+        failed: [],
+        stopped: null,
+      })
+    })
+
+    it('fails only the scene of a picture Gemini won’t make, and makes the rest', async () => {
+      const { id, scenes } = await withScenes('One', 'Two', 'Three', 'Four', 'Five')
+      const blocked =
+        'Gemini would not make this image (PROHIBITED_CONTENT). Reword the prompt and try again.'
+      refuse.Two = new ai.AiError(blocked, 'bad_output')
+      refuse.Four = new ai.AiError('Gemini did not return an image. Try again.', 'bad_output')
+      await generateMissing(id)
+      await runLater()
+      expect([...asked].sort()).toEqual([
+        'picture:Five',
+        'picture:Four',
+        'picture:One',
+        'picture:Three',
+        'picture:Two',
+      ])
+      expect(await pictured(id)).toEqual(['picture', 'none', 'picture', 'none', 'picture'])
+      const full = await projects.getProjectFull(id)
+      expect(full.pictures).toMatchObject({ running: false, done: 5, total: 5, made: 3, stopped: null })
+      // Each says why on its scene.
+      expect(full.pictures?.failed).toEqual([
+        { sceneId: scenes[1].id, error: blocked },
+        { sceneId: scenes[3].id, error: 'Gemini did not return an image. Try again.' },
+      ])
+      expect((await taskRows()).map((t) => t.status)).toEqual(['done', 'done', 'done'])
+    })
+
+    it('goes on with the other pictures when a run dies twice', async () => {
+      const { id, scenes } = await withScenes('One', 'Two', 'Three')
+      await generateMissing(id)
+      later.length = 0
+      const first = await tasks.claimTask()
+      await expireLease(first?.id as string)
+      await tasks.recoverStale()
+      expect(await tasks.claimTask()).toMatchObject({ id: first?.id, attempts: 2 })
+      await expireLease(first?.id as string)
+      await tasks.recoverStale()
+      // Given up, but the next picture is still queued: it doesn't build on this one.
+      expect((await taskRows()).map((t) => t.status)).toEqual(['failed', 'queued'])
+      await taskRunner.runNextTask('http://localhost')
+      expect(asked).toEqual(['picture:Three'])
+      const full = await projects.getProjectFull(id)
+      expect(full.pictures?.failed.map((f) => f.sceneId)).toEqual([scenes[0].id, scenes[1].id])
+      expect(full.pictures?.failed[0].error).toMatch(/stopped before it was done, twice/)
+      expect(full.pictures).toMatchObject({ running: false, made: 1, stopped: null })
+    })
+
+    it('stops the rest when every picture would fail the same way: billing, the daily limit, no key', async () => {
+      const billing =
+        'This Gemini model is not on the free tier. Turn on billing for the Google Cloud project of your Gemini API key, or choose another model in the environment settings.'
+      const { id, scenes } = await withScenes('One', 'Two', 'Three', 'Four', 'Five', 'Six')
+      refuse.Three = new ai.AiError(billing, 'billing')
+      await generateMissing(id)
+      await runLater()
+      // Not asked again: every picture after it would fail the same way. The one made beside it is kept.
+      expect([...asked].sort()).toEqual(['picture:Four', 'picture:One', 'picture:Three', 'picture:Two'])
+      expect(await pictured(id)).toEqual(['picture', 'picture', 'none', 'picture', 'none', 'none'])
+      const full = await projects.getProjectFull(id)
+      expect(full.pictures).toMatchObject({
+        running: false,
+        made: 3,
+        stopped: billing,
+        failed: [{ sceneId: scenes[2].id, error: billing }],
+      })
+      expect((await taskRows()).map((t) => [t.status, t.error])).toEqual([
+        ['done', null],
+        ['done', null],
+        ['cancelled', billing],
+      ])
+
+      const limit = "Gemini's free daily limit is used up. It resets at midnight Pacific time."
+      refuse = { Three: new ai.AiError(limit, 'daily_limit') }
+      asked = []
+      await generateMissing(id)
+      await runLater()
+      expect([...asked].sort()).toEqual(['picture:Five', 'picture:Three'])
+      expect(await pictured(id)).toEqual(['picture', 'picture', 'none', 'picture', 'picture', 'none'])
+      expect((await projects.getProjectFull(id)).pictures).toMatchObject({ stopped: limit, made: 1 })
+
+      // No key: refused at once. A key removed while they wait stops them at the first.
+      vi.stubEnv('GEMINI_API_KEY', '')
+      const noKey = await generateMissing(id)
+      expect(noKey.status).toBe(400)
+      expect(noKey.body.error).toMatch(/GEMINI_API_KEY/)
+      vi.stubEnv('GEMINI_API_KEY', 'test-key')
+      await generateMissing(id)
+      vi.stubEnv('GEMINI_API_KEY', '')
+      asked = []
+      await runLater()
+      expect(asked).toEqual([])
+      expect((await projects.getProjectFull(id)).pictures?.stopped).toBeNull()
+      expect((await projects.getProjectFull(id)).pictures?.failed[0].error).toMatch(/GEMINI_API_KEY/)
+    })
+
+    it('stops making the rest when you ask', async () => {
+      const { id } = await withScenes('One', 'Two', 'Three', 'Four', 'Five')
+      await generateMissing(id)
+      // The first two are made; that run starts the next in a request of its own.
+      await later.shift()?.()
+      expect(later).toHaveLength(1)
+      const response = await stopPicturesRoute.POST(json({}), ctx(id))
+      expect(response.status).toBe(200)
+      const stopped = (await response.json()) as ProjectFull
+      expect(stopped.tasks).toEqual([])
+      expect(stopped.pictures).toMatchObject({
+        running: false,
+        done: 5,
+        total: 5,
+        made: 2,
+        failed: [],
+        stopped: 'Stopped by you.',
+      })
+      await runLater()
+      expect([...asked].sort()).toEqual(['picture:One', 'picture:Two'])
+      expect(await pictured(id)).toEqual(['picture', 'picture', 'none', 'none', 'none'])
+    })
+
+    it('records a scene’s Generate while it runs, and never makes one scene’s picture twice at once', async () => {
+      const { id, scenes } = await withScenes('One', 'Two', 'Three')
+      let finish: () => void = () => {}
+      vi.mocked(ai.generateImage).mockImplementationOnce(async () => {
+        asked.push('picture:One')
+        await new Promise<void>((resolve) => {
+          finish = resolve
+        })
+        return { data: Buffer.from('picture of One'), mimeType: 'image/png' }
+      })
+      const pending = sceneImageRoute.POST(json({}), ctx(scenes[0].id))
+      await vi.waitFor(async () => expect((await projects.getProjectFull(id)).tasks).toHaveLength(1))
+      expect((await projects.getProjectFull(id)).tasks).toMatchObject([
+        { kind: 'picture', status: 'running', sceneIds: [scenes[0].id] },
+      ])
+      // Pressed again (after reopening the page, or in another tab): refused, no second picture.
+      const again = await sceneImageRoute.POST(json({}), ctx(scenes[0].id))
+      expect(again.status).toBe(400)
+      expect((await again.json()).error).toBe(
+        "Making this scene's picture is still running for this video. Wait for it to finish.",
+      )
+
+      // Generate missing leaves it out, and asking again queues nothing more.
+      const queued = await generateMissing(id)
+      expect(queued.body.pictures).toMatchObject({ running: true, total: 2 })
+      expect((queued.body as ProjectFull).tasks.map((t) => t.sceneIds)).toEqual([
+        [scenes[0].id],
+        [scenes[1].id, scenes[2].id],
+      ])
+      const twice = await generateMissing(id)
+      expect(twice.status).toBe(400)
+      expect(twice.body.error).toBe('Every scene without a picture is already being made.')
+      // A queued scene can't be made on its own meanwhile.
+      const waiting = await sceneImageRoute.POST(json({}), ctx(scenes[1].id))
+      expect(waiting.status).toBe(400)
+      expect((await waiting.json()).error).toBe(
+        "Making this scene's picture is queued for this video. Wait for it to finish.",
+      )
+
+      finish()
+      const done = await pending
+      expect(done.status).toBe(200)
+      expect((await done.json()).imageUrl).toMatch(new RegExp(`projects/${id}/scenes/\\w+-scene-001\\.png$`))
+      await runLater()
+      expect([...asked].sort()).toEqual(['picture:One', 'picture:Three', 'picture:Two'])
+      expect((await taskRows()).map((t) => [t.kind, t.inline, t.status])).toEqual([
+        ['picture', true, 'done'],
+        ['picture', false, 'done'],
+      ])
+      expect(await pictured(id)).toEqual(['picture', 'picture', 'picture'])
+      const all = await generateMissing(id)
+      expect(all.status).toBe(400)
+      expect(all.body.error).toBe('Every scene has a picture.')
+    })
   })
 })

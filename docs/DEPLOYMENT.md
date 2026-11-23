@@ -423,8 +423,9 @@ Then make a short test video, to see the whole pipeline in a few minutes:
 ### What keeps going when you close the window
 
 - **Rendering and uploading** run on the worker, as above.
-- **AI buttons** (Write with AI, splitting with AI, post details, translations, effects, Library pictures, thumbnails) finish and save on the server even if you close the tab. Open the project again and it says Gemini is still at work ("started 40 s ago"), with the button off until the result is in, so the free quota is never spent twice.
+- **AI buttons** (Write with AI, splitting with AI, post details, translations, effects, Library pictures, a scene's picture, thumbnails) finish and save on the server even if you close the tab. Open the project again and it says Gemini is still at work ("started 40 s ago"), with the button off until the result is in, so the free quota is never spent twice.
 - **Ideas → Create drafts → write each one** is a queue on the server: each draft's script and scenes, then its post details, one part at a time (so it stays within Gemini's free per-minute limit), each in a request of its own, so a long batch is never cut off by Vercel's 300-second limit. A part whose request was cut off is tried once more. When the key is missing or Gemini's free daily limit runs out, the rest of the batch stops with that reason. Open Ideas any time to see how far it got, or to stop it.
+- **Images → Generate with AI** is a queue on the server too: two pictures side by side per request, as the page used to make them, and each shows on its scene once it's saved. A picture Gemini won't make (a blocked prompt) fails only that scene, which says why; when billing is off or a limit runs out, the rest stop with that reason. Open the project to see how far it got ("Making pictures: 12 of 40…"), or to stop it.
 
 Nothing to set up. The app starts each next part by calling its own `/api/tasks/run` with a key derived from `SESSION_SECRET` (or `APP_PASSWORD` while that is empty), which no visitor can know. If that call can't get through, the queue waits until you open Ideas or the project, or until the daily check.
 
@@ -460,7 +461,7 @@ Each of these is off until you set it up. Change the variables, then redeploy (s
 
 ### AI pictures and thumbnails
 
-The Images step gets **Generate with AI** buttons, and the thumbnail ideas get **Generate**. Gemini paints each scene from its prompt with the characters' reference images attached.
+The Images step gets **Generate with AI** buttons, and the thumbnail ideas get **Generate**. Gemini paints each scene from its prompt with the characters' reference images attached, on the server, so you can close the window meanwhile.
 
 Image models are **not** on Gemini's free tier. Turn on billing for the Google Cloud project of your Gemini key: open https://aistudio.google.com/apikey, click your key's project, and set up billing. The default model costs about $0.04 a picture. No extra variable is needed; `GEMINI_IMAGE_MODEL` picks another model ([ENVIRONMENT.md](ENVIRONMENT.md#gemini_image_model-and-gemini_image_size)).
 

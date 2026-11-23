@@ -13,7 +13,8 @@ import type { TaskKind, TaskResult } from '@/lib/tasks'
 import { internalKey, safeEqual } from './auth'
 import type { TaskRow } from './db/schema'
 import { draftProject, writePost } from './drafting'
-import { badRequest, describeError } from './http'
+import { badRequest, describeError, HttpError } from './http'
+import { makeScenePicture } from './images'
 import { cancelBatch, claimTask, finishTask, holdLease, queueState, recoverStale, skipRest } from './tasks'
 
 function projectOf(task: TaskRow): string {
@@ -21,29 +22,50 @@ function projectOf(task: TaskRow): string {
   return task.projectId
 }
 
-/**
- * What each kind does when it runs from the queue: the same server functions as its button.
- * `skipRest`: why the rest of its draft should not run.
- */
-const RUN: Partial<Record<TaskKind, (task: TaskRow) => Promise<{ result?: TaskResult; skipRest?: string }>>> =
-  {
-    draft: async (task) => {
-      if (!hasGeminiKey()) badRequest('Add GEMINI_API_KEY to your environment to use AI features.')
-      const { storyboardError } = await draftProject(projectOf(task), task.input.notes ?? '')
-      // As before: a script without its scenes gets no post details. You finish it on its page.
-      return {
-        result: { storyboardError },
-        skipRest: storyboardError ? 'Not written, because the scenes are not written yet.' : undefined,
-      }
-    },
-    post: async (task) => {
-      await writePost(projectOf(task))
-      return {}
-    },
-  }
+const NO_KEY = 'Add GEMINI_API_KEY to your environment to use AI features.'
 
 /** No key, no billing or the free limit (see describeError): every task after it would fail the same way. */
 const STOPS_BATCH = [400, 402, 429]
+
+/**
+ * What each kind does when it runs from the queue: the same server functions as its button.
+ * `skipRest`: why the rest of its draft should not run. `stopBatch`: why none of the rest of the
+ * batch should, though this task got done.
+ */
+const RUN: Partial<
+  Record<TaskKind, (task: TaskRow) => Promise<{ result?: TaskResult; skipRest?: string; stopBatch?: string }>>
+> = {
+  draft: async (task) => {
+    if (!hasGeminiKey()) badRequest(NO_KEY)
+    const { storyboardError } = await draftProject(projectOf(task), task.input.notes ?? '')
+    // As before: a script without its scenes gets no post details. You finish it on its page.
+    return {
+      result: { storyboardError },
+      skipRest: storyboardError ? 'Not written, because the scenes are not written yet.' : undefined,
+    }
+  },
+  post: async (task) => {
+    await writePost(projectOf(task))
+    return {}
+  },
+  picture: async (task) => {
+    if (!hasGeminiKey()) badRequest(NO_KEY)
+    const ids = task.input.sceneIds ?? []
+    // Side by side, as the Images step made them. Each scene's picture fails on its own.
+    const outcomes = await Promise.allSettled(ids.map((id) => makeScenePicture(id, true)))
+    const failed: { sceneId: string; error: string }[] = []
+    let stopBatch: string | undefined
+    for (const [i, outcome] of outcomes.entries()) {
+      if (outcome.status === 'fulfilled') continue
+      const { status, body } = describeError(outcome.reason)
+      failed.push({ sceneId: ids[i], error: body.error })
+      // Gemini would refuse every picture the same way (billing, the limit): the rest stop. A
+      // problem with this scene alone (no prompt) fails only it.
+      if (!(outcome.reason instanceof HttpError) && STOPS_BATCH.includes(status)) stopBatch ??= body.error
+    }
+    return { result: { failed }, stopBatch }
+  },
+}
 
 /**
  * One run: takes the next task (none while another runs), runs it and records how it went; when
@@ -57,9 +79,10 @@ export async function runNextTask(origin: string): Promise<TaskRow | null> {
   try {
     const run = RUN[task.kind]
     if (!run) throw new Error(`Cutroom can't run "${task.kind}" in the background.`)
-    const { result, skipRest: reason } = await run(task)
+    const { result, skipRest: reason, stopBatch } = await run(task)
     await finishTask(task, { status: 'done', result })
-    if (reason) await skipRest(task, reason)
+    if (task.batchId && stopBatch) await cancelBatch(task.batchId, stopBatch)
+    else if (reason) await skipRest(task, reason)
   } catch (error) {
     // Logged too: nobody is waiting on this request to see it.
     const { status, body } = describeError(error)

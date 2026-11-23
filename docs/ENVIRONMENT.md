@@ -174,7 +174,7 @@ The password for the login page. When it's empty, anyone who knows the address c
 
 ### `SESSION_SECRET`
 
-Signs the login cookie, and the app's calls to itself that start the next queued AI task (`/api/tasks/run`, for Ideas → Create drafts), so nobody else can start them. Optional: if it's empty, a key derived from `APP_PASSWORD` is used. Set it if you want to change the password without signing out existing sessions, or the other way round.
+Signs the login cookie, and the app's calls to itself that start the next queued AI task (`/api/tasks/run`, for Ideas → Create drafts and Images → Generate with AI), so nobody else can start them. Optional: if it's empty, a key derived from `APP_PASSWORD` is used. Set it if you want to change the password without signing out existing sessions, or the other way round.
 
 ### `CONTACT_EMAIL`
 

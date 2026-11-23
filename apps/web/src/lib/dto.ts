@@ -107,6 +107,8 @@ export interface TaskDTO {
   /** Set once it runs. */
   startedAt: string | null
   createdAt: string
+  /** For pictures: the scenes it makes them for. */
+  sceneIds: string[]
 }
 
 export interface ProjectFull {
@@ -116,6 +118,25 @@ export interface ProjectFull {
   jobs: { retime: JobDTO | null; publish: JobDTO | null; voice: JobDTO | null }
   /** AI work on it that is running, or queued, on the server, oldest first. */
   tasks: TaskDTO[]
+  /** The newest Images → Generate missing, made on the server; null before the first. */
+  pictures: PictureBatchDTO | null
+}
+
+/** Images → Generate missing: the scene pictures Gemini makes on the server (server/tasks.ts). */
+export interface PictureBatchDTO {
+  id: string
+  /** Scenes done (made, not made, or not started after a stop) of all, for the progress bar. */
+  done: number
+  total: number
+  /** Still being made. */
+  running: boolean
+  /** Pictures put on their scenes. */
+  made: number
+  /** The scenes Gemini didn't make a picture for, and why, in scene order. */
+  failed: { sceneId: string; error: string }[]
+  /** Why the rest was not made: you stopped it, or an error every picture would hit (billing). */
+  stopped: string | null
+  finishedAt: string | null
 }
 
 /** Ideas → Create drafts → written by Gemini on the server (server/drafting.ts draftBatch). */

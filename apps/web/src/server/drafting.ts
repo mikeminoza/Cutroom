@@ -27,6 +27,7 @@ import {
 } from '@cutroom/shared/types'
 import { and, desc, eq, gte, inArray } from 'drizzle-orm'
 import type { DraftBatchDTO } from '@/lib/dto'
+import { STOPPED_BY_YOU } from '@/lib/tasks'
 import { retentionLessons, searchTermsFor, topTitles } from './analytics'
 import { db, schema } from './db'
 import type { TaskRow } from './db/schema'
@@ -433,7 +434,7 @@ export async function latestDraftBatch(): Promise<DraftBatchDTO | null> {
 export async function stopDraftBatch(): Promise<DraftBatchDTO | null> {
   const id = await latestBatchId('draft')
   if (!id) return null
-  await cancelBatch(id, 'Stopped by you.')
+  await cancelBatch(id, STOPPED_BY_YOU)
   return draftBatch(id)
 }
 

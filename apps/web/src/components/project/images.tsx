@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
   Download,
+  Hourglass,
   ImagePlus,
   Images,
   Layers,
@@ -46,13 +47,14 @@ import {
   useConfirm,
   useFilePicker,
 } from '@/components/ui'
-import { ApiError, api, errorText } from '@/lib/api'
+import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { flowProject, sendToFlow, useFlowExtension } from '@/lib/flow-extension'
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { downloadScenePrompts, scenePrompts } from '@/lib/scene-prompts'
+import { STOPPED_BY_YOU } from '@/lib/tasks'
 import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
 import { LayeredPicture } from './layered-picture'
@@ -63,12 +65,12 @@ import type { StepProps } from './workspace'
 type Progress = Record<string, number>
 
 /**
- * Image generation in progress. It lives outside the component so it carries on, and stays
- * visible, when you switch to another step and back: no scene is requested (and billed) twice.
+ * Scene pictures this tab asked Gemini for (each scene's Generate button). It lives outside the
+ * component so it stays visible when you switch to another step and back: no scene is requested
+ * (and billed) twice. Generate missing runs on the server instead (ProjectFull.pictures).
  */
 const generation = {
   scenes: new Set<string>(),
-  batches: new Map<string, { done: number; total: number; stop: boolean }>(),
   version: 0,
   listeners: new Set<() => void>(),
 }
@@ -105,8 +107,27 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const [filter, setFilter] = useState<Filter>('all')
   const [view, setView] = useImagesView()
   useGeneration()
-  const generating = generation.scenes
-  const batch = generation.batches.get(project.id) ?? null
+  // Generate missing runs on the server: shown whenever the page is open, also after a reload.
+  const pictures = data.pictures
+  const batchRunning = pictures?.running === true
+  const [queueing, setQueueing] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  // Pictures being made on the server (Generate missing, or a scene's Generate pressed in another
+  // tab or before a reload) and the ones waiting their turn, by scene.
+  const making = new Set<string>()
+  const waiting = new Set<string>()
+  for (const task of data.tasks) {
+    if (task.kind !== 'picture') continue
+    for (const id of task.sceneIds) (task.status === 'running' ? making : waiting).add(id)
+  }
+  const isGenerating = (scene: SceneDTO) => generation.scenes.has(scene.id) || making.has(scene.id)
+  // Why Gemini didn't make a scene's picture last time, for scenes still without one.
+  const withoutPicture = new Set(scenes.filter((s) => !hasPicture(s)).map((s) => s.id))
+  const notMade = new Map(
+    (pictures?.failed ?? []).filter((f) => withoutPicture.has(f.sceneId)).map((f) => [f.sceneId, f.error]),
+  )
+  // An error every picture would hit (billing, the daily limit) stopped the rest.
+  const geminiStopped = pictures?.stopped && pictures.stopped !== STOPPED_BY_YOU ? pictures.stopped : null
   const done = scenes.filter(hasPicture).length
   const scenesRef = useRef(scenes)
   scenesRef.current = scenes
@@ -155,10 +176,13 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     }
   }
 
-  /** Gemini paints one scene. Returns 'stop' when nothing else will work either (billing, key). */
+  /**
+   * Gemini paints one scene, in this tab's request. The server records it while it runs, so the
+   * scene shows it still being made after a reload, and it can't be asked for twice.
+   */
   const generateOne = useCallback(
-    async (scene: SceneDTO): Promise<'ok' | 'failed' | 'stop'> => {
-      if (generation.scenes.has(scene.id)) return 'failed'
+    async (scene: SceneDTO) => {
+      if (generation.scenes.has(scene.id)) return
       generation.scenes.add(scene.id)
       emitGeneration()
       try {
@@ -166,14 +190,19 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
         await saver.flushAll()
         const updated = await api.post<SceneDTO | { ok: false }>(`/api/scenes/${scene.id}/image`)
         if ('id' in updated) {
+          // Its task ended with this answer: the scene doesn't wait for the next check to say so.
           client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
-            prev ? { ...prev, scenes: prev.scenes.map((s) => (s.id === updated.id ? updated : s)) } : prev,
+            prev
+              ? {
+                  ...prev,
+                  scenes: prev.scenes.map((s) => (s.id === updated.id ? updated : s)),
+                  tasks: prev.tasks.filter((t) => t.kind !== 'picture' || !t.sceneIds.includes(updated.id)),
+                }
+              : prev,
           )
         }
-        return 'ok'
       } catch (error) {
         toast.error(`Scene ${scene.index + 1}: ${errorText(error)}`)
-        return error instanceof ApiError && [400, 401, 402].includes(error.status) ? 'stop' : 'failed'
       } finally {
         generation.scenes.delete(scene.id)
         emitGeneration()
@@ -197,37 +226,37 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   }
 
   /**
-   * Every scene still without an image, two at a time. It keeps going if you open another step
-   * (its progress lives outside this component), and only one batch runs per project.
+   * Every scene still without a picture, made by Gemini on the server two at a time: it goes on
+   * with this window closed, and each picture shows on its scene once it's saved.
    */
   const generateMissing = async () => {
-    if (generation.batches.has(project.id)) return
-    const targets = scenesRef.current.filter((s) => !hasPicture(s) && !generation.scenes.has(s.id))
-    if (targets.length === 0) return
-    const run = { done: 0, total: targets.length, stop: false }
-    generation.batches.set(project.id, run)
-    emitGeneration()
-    let next = 0
-    let made = 0
-    try {
-      await Promise.all(
-        [0, 1].map(async () => {
-          while (next < targets.length && !run.stop) {
-            const scene = targets[next++]
-            const outcome = await generateOne(scene)
-            run.done++
-            if (outcome === 'ok') made++
-            if (outcome === 'stop') run.stop = true
-            emitGeneration()
-          }
-        }),
-      )
-    } finally {
-      generation.batches.delete(project.id)
-      emitGeneration()
-    }
-    if (made) toast.success(`Generated ${plural(made, 'image')}`)
+    setQueueing(true)
+    await action(`/api/projects/${project.id}/ai/pictures`, {})
+    setQueueing(false)
   }
+
+  /** The pictures not started are left; the ones being made are finished. */
+  const stopMissing = async () => {
+    setStopping(true)
+    await action(`/api/projects/${project.id}/ai/pictures/stop`, {})
+    setStopping(false)
+  }
+
+  // Finished while you watch: told at once, as before.
+  const wasRunning = useRef(batchRunning)
+  const notMadeCount = notMade.size
+  useEffect(() => {
+    if (wasRunning.current && pictures && !pictures.running) {
+      if (pictures.made) toast.success(`Generated ${plural(pictures.made, 'image')}`)
+      if (geminiStopped) toast.error(geminiStopped)
+      else if (notMadeCount) {
+        toast.error(`Gemini didn’t make ${plural(notMadeCount, 'picture')}`, {
+          description: 'Each of those scenes says why.',
+        })
+      }
+    }
+    wasRunning.current = batchRunning
+  }, [pictures, batchRunning, geminiStopped, notMadeCount])
 
   const uploadTo = useCallback(
     async (scene: SceneDTO, file: File) => {
@@ -389,34 +418,21 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 <ProgressBar value={done / scenes.length} tone="you" className="mt-2 max-w-md" />
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {canGenerate &&
-                  (batch ? (
+                {canGenerate && !complete && !batchRunning && (
+                  <Tip
+                    content={`Uses ${status?.gemini.imageModel}. Image models need billing on your Gemini key.`}
+                  >
                     <Button
-                      variant="plain"
-                      onClick={() => {
-                        batch.stop = true
-                        emitGeneration()
-                      }}
-                      icon={<Square className="size-3.5" />}
+                      variant={hasLayers ? 'plain' : 'go'}
+                      busy={queueing}
+                      onClick={generateMissing}
+                      icon={<Sparkles className="size-4" />}
                     >
-                      Stop ({batch.done} of {batch.total})
+                      Generate {scenes.length - done} with AI
                     </Button>
-                  ) : (
-                    !complete && (
-                      <Tip
-                        content={`Uses ${status?.gemini.imageModel}. Image models need billing on your Gemini key.`}
-                      >
-                        <Button
-                          variant={hasLayers ? 'plain' : 'go'}
-                          onClick={generateMissing}
-                          icon={<Sparkles className="size-4" />}
-                        >
-                          Generate {scenes.length - done} with AI
-                        </Button>
-                      </Tip>
-                    )
-                  ))}
-                {canGenerate && hasLayers && !complete && !batch && (
+                  </Tip>
+                )}
+                {canGenerate && hasLayers && !complete && !batchRunning && (
                   <Tip content="Free: the AI reads each scene and picks a background and a character pose from your Library.">
                     <Button
                       variant="go"
@@ -465,6 +481,42 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             </div>
             {composingElsewhere && (
               <StillRunning task={composingElsewhere} className="border-t border-line px-5 py-3" />
+            )}
+            {pictures?.running && (
+              <div
+                aria-live="polite"
+                className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-5 py-3"
+              >
+                <Spinner className="shrink-0 text-ink-3" />
+                <span className="text-[14px]">
+                  Making pictures: {pictures.done} of {pictures.total}…
+                </span>
+                <ProgressBar
+                  value={pictures.done / pictures.total}
+                  tone="you"
+                  className="min-w-32 max-w-64 flex-1"
+                />
+                <Button
+                  variant="plain"
+                  size="sm"
+                  busy={stopping}
+                  onClick={stopMissing}
+                  className="ml-auto"
+                  icon={<Square className="size-3.5" />}
+                >
+                  Stop
+                </Button>
+                <p className="basis-full text-[12.5px] text-ink-3">
+                  You can close this window: Gemini keeps making them on the server, and each one shows on its
+                  scene once it’s saved.
+                </p>
+              </div>
+            )}
+            {!pictures?.running && geminiStopped && !complete && (
+              <p className="flex items-start gap-2 border-t border-line px-5 py-3 text-[13px] text-bad">
+                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                <span>Gemini stopped making pictures: {geminiStopped}</span>
+              </p>
             )}
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-line px-5 py-3 text-[13px] text-ink-2">
               <p className="max-w-[78ch] flex-1">
@@ -539,7 +591,9 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
               scene={scene}
               format={project.format}
               selected={scene.id === selectedSceneId}
-              busy={progress[scene.id] !== undefined || generating.has(scene.id)}
+              busy={progress[scene.id] !== undefined || isGenerating(scene)}
+              waiting={waiting.has(scene.id)}
+              notMade={notMade.get(scene.id) ?? null}
               onOpen={() => {
                 selectScene(scene.id)
                 setView('list')
@@ -560,8 +614,14 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
               progress={progress[scene.id]}
               onSelect={() => selectScene(scene.id)}
               onFile={(file) => uploadOne(scene, file)}
-              generating={generating.has(scene.id)}
-              onGenerate={canGenerate && !batch ? () => generateScene(scene) : undefined}
+              generating={isGenerating(scene)}
+              waiting={waiting.has(scene.id)}
+              notMade={notMade.get(scene.id) ?? null}
+              onGenerate={
+                canGenerate && !batchRunning && !waiting.has(scene.id)
+                  ? () => generateScene(scene)
+                  : undefined
+              }
             />
           ))}
         </ol>
@@ -610,6 +670,8 @@ function SceneTile({
   format,
   selected,
   busy,
+  waiting,
+  notMade,
   onOpen,
   onFile,
 }: {
@@ -617,6 +679,10 @@ function SceneTile({
   format: SceneFormat
   selected: boolean
   busy: boolean
+  /** Its picture waits its turn on the server. */
+  waiting: boolean
+  /** Why Gemini didn't make its picture last time. */
+  notMade: string | null
   onOpen: () => void
   onFile: (file: File) => void
 }) {
@@ -631,8 +697,8 @@ function SceneTile({
           <button
             type="button"
             onClick={onOpen}
-            title={scene.narration}
-            aria-label={`Scene ${scene.index + 1}: ${scene.narration}`}
+            title={notMade ? `Not made: ${notMade}` : scene.narration}
+            aria-label={`Scene ${scene.index + 1}: ${scene.narration}${notMade ? `. Not made: ${notMade}` : ''}`}
             className={cn(
               'relative block w-full overflow-hidden rounded-[var(--radius-frame)] bg-film',
               format === 'portrait' ? 'aspect-[9/16]' : 'aspect-video',
@@ -651,13 +717,18 @@ function SceneTile({
                 <LayeredPicture layer={scene.layer} fit={scene.fit} format={format} className="size-full" />
               </span>
             ) : (
-              <span className="hatch absolute inset-0 grid place-items-center bg-sunk text-[11.5px] text-ink-3">
-                No picture
+              <span className="hatch absolute inset-0 grid place-items-center bg-sunk px-1 text-center text-[11.5px] text-ink-3">
+                {waiting ? 'Waiting its turn' : 'No picture'}
               </span>
             )}
             {busy && (
               <span className="absolute inset-0 grid place-items-center bg-film/60 text-film-ink">
                 <Spinner />
+              </span>
+            )}
+            {notMade && !busy && !waiting && (
+              <span className="absolute top-1 right-1 rounded-[3px] bg-paper/90 p-0.5 text-bad" aria-hidden>
+                <TriangleAlert className="size-3.5" />
               </span>
             )}
             <span className="tc absolute top-1 left-1 rounded-[3px] bg-ink/85 px-1 text-[11px] font-semibold text-paper">
@@ -683,6 +754,8 @@ function SceneImageRow({
   onSelect,
   onFile,
   generating,
+  waiting,
+  notMade,
   onGenerate,
 }: {
   data: ProjectFull
@@ -693,6 +766,10 @@ function SceneImageRow({
   onSelect: () => void
   onFile: (file: File) => void
   generating: boolean
+  /** Its picture waits its turn on the server. */
+  waiting: boolean
+  /** Why Gemini didn't make its picture last time. */
+  notMade: string | null
   /** Undefined when AI images are not available (no Gemini key, or a batch is running). */
   onGenerate?: () => void
 }) {
@@ -738,6 +815,7 @@ function SceneImageRow({
             dragging={dragging}
             progress={progress}
             generating={generating}
+            waiting={waiting}
             onPick={open}
             onFocusPoint={(x, y) => set({ focusX: x, focusY: y })}
           />
@@ -799,6 +877,12 @@ function SceneImageRow({
             )}
           </div>
         </div>
+        {notMade && !generating && !waiting && (
+          <p className="mt-2 flex gap-1.5 text-[12.5px] leading-snug text-bad">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            Not made: {notMade}
+          </p>
+        )}
         {!scene.imageUrl && (
           <LayerPicker scene={scene} characters={characters} onChange={(layer) => set({ layer })} />
         )}
@@ -887,6 +971,7 @@ function Frame({
   dragging,
   progress,
   generating,
+  waiting,
   onPick,
   onFocusPoint,
 }: {
@@ -896,6 +981,7 @@ function Frame({
   dragging: boolean
   progress: number | undefined
   generating: boolean
+  waiting: boolean
   onPick: () => void
   onFocusPoint: (x: number, y: number) => void
 }) {
@@ -947,6 +1033,12 @@ function Frame({
           <>
             <span>Uploading</span>
             <ProgressBar value={progress} tone="you" className="w-3/4" />
+          </>
+        ) : waiting ? (
+          // A picture dropped meanwhile is kept: Gemini then skips this scene.
+          <>
+            <Hourglass className="size-5" aria-hidden />
+            <span className="px-2 text-center leading-tight">Waiting its turn for Gemini</span>
           </>
         ) : (
           <>
