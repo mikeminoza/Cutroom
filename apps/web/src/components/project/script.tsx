@@ -32,6 +32,7 @@ import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { SyncedInput, SyncedTextarea } from './fields'
 import { ScenePromptsPanel } from './scene-prompts'
 import { ScriptDoctor } from './script-doctor'
+import { runningTask, StillRunning } from './still-running'
 import type { StepProps } from './workspace'
 
 export const MOTION_LABEL: Record<Motion, string> = {
@@ -76,6 +77,10 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight
   })
   const words = countWords(live ? live.script : project.script)
+  // Gemini writing or splitting this script for a request this page didn't make (it was closed
+  // and opened again, or Ideas queued it): its buttons wait until the result is saved.
+  const elsewhere = busy === null ? runningTask(data, ['draft', 'script', 'scenes']) : null
+  const rewriting = elsewhere !== null && elsewhere.kind !== 'scenes'
   const aiReady = status?.gemini.configured !== false
   const [method, setMethod] = useSplitMethod()
   // Without a Gemini key, AI splitting isn't on offer: fall back to your own paragraphs.
@@ -131,6 +136,8 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
         else if (event.type === 'part')
           setLive((now) => now && { ...now, parts: { done: event.done, started: event.started } })
       })
+      // A check on the project still under way would bring back the script from before.
+      await client.cancelQueries({ queryKey: keys.project(project.id) })
       client.setQueryData(keys.project(project.id), full)
       void client.invalidateQueries({ queryKey: keys.projects })
       if (storyboardError) {
@@ -161,7 +168,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
               size="sm"
               icon={<Sparkles className="size-3.5" />}
               busy={busy === 'write'}
-              disabled={busy !== null}
+              disabled={busy !== null || elsewhere !== null}
               onClick={() => setWriting(true)}
             >
               Write with AI
@@ -177,6 +184,15 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 value={live.script}
                 placeholder="Gemini is starting to write…"
                 className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
+              />
+            ) : rewriting ? (
+              // Replaced when Gemini is done, so edits made now would be lost.
+              <Textarea
+                readOnly
+                aria-label="Script, being rewritten by Gemini"
+                value={project.script}
+                placeholder="Gemini is writing your script…"
+                className="min-h-[46vh] text-[15px] leading-[1.7] text-ink-2 xl:min-h-[52vh]"
               />
             ) : (
               <SyncedTextarea
@@ -205,7 +221,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 <Button
                   variant={scenes.length ? 'plain' : 'go'}
                   busy={busy === 'split'}
-                  disabled={!project.script.trim() || busy === 'write'}
+                  disabled={!project.script.trim() || busy === 'write' || elsewhere !== null}
                   onClick={split}
                   icon={<Scissors className="size-4" />}
                 >
@@ -220,6 +236,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                   ? `A new picture about every ${project.pace} seconds: long sentences are cut at their pauses, and short punchlines get a quick picture of their own.`
                   : `Gemini picks the cuts, about every ${project.pace} seconds but quicker on jokes and fast moments, and writes a picture description and image prompt for every scene. You can edit all of it.`}
             </p>
+            <StillRunning task={elsewhere} className="mt-3" />
             {busy === 'split' && (
               <p className="mt-3 text-[13px] text-ink-2">
                 Gemini is storyboarding your script. Long scripts take up to a minute.

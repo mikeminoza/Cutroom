@@ -29,6 +29,7 @@ import type {
   VideoStats,
   VoiceSettings,
 } from '@cutroom/shared/types'
+import type { TaskKind, TaskStatus } from './tasks'
 
 export interface ProjectDTO {
   id: string
@@ -98,11 +99,50 @@ export interface JobDTO {
   finishedAt: string | null
 }
 
+/** AI work on the server (server/tasks.ts). */
+export interface TaskDTO {
+  id: string
+  kind: TaskKind
+  status: TaskStatus
+  /** Set once it runs. */
+  startedAt: string | null
+  createdAt: string
+}
+
 export interface ProjectFull {
   project: ProjectDTO
   scenes: SceneDTO[]
   characters: CharacterDTO[]
   jobs: { retime: JobDTO | null; publish: JobDTO | null; voice: JobDTO | null }
+  /** AI work on it that is running, or queued, on the server, oldest first. */
+  tasks: TaskDTO[]
+}
+
+/** Ideas → Create drafts → written by Gemini on the server (server/drafting.ts draftBatch). */
+export interface DraftBatchDTO {
+  id: string
+  /** The new drafts, in the order they are written. */
+  drafts: {
+    projectId: string
+    title: string
+    /** Waiting its turn, being written, or how it ended. */
+    state: 'waiting' | 'writing' | 'full' | 'partial' | 'unwritten'
+    /** What went wrong, for a draft not fully written. */
+    note: string | null
+  }[]
+  /** What is written now (or next): which draft, counted from 1, and which part of it. */
+  current: { draft: number; kind: TaskKind } | null
+  /** Parts written (or given up) of all parts, for the progress bar. */
+  done: number
+  total: number
+  /** Still being written. */
+  running: boolean
+  full: number
+  partial: number
+  /** Why the rest was not written: no Gemini key, the free daily limit, or you stopped it. */
+  stopped: string | null
+  createdAt: string
+  finishedAt: string | null
 }
 
 export interface ProjectSummary {

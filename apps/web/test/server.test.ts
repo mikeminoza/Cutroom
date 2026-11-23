@@ -7,7 +7,14 @@ import { localPath, putFile } from '@cutroom/shared/storage'
 import { type PostDetails, translationBasis } from '@cutroom/shared/types'
 import { eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ProjectFull, RepliesDTO, SecondChanceDTO, SentRepliesDTO, SlowStarterDTO } from '../src/lib/dto'
+import type {
+  DraftBatchDTO,
+  ProjectFull,
+  RepliesDTO,
+  SecondChanceDTO,
+  SentRepliesDTO,
+  SlowStarterDTO,
+} from '../src/lib/dto'
 
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
@@ -27,6 +34,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     suggestEffects: vi.fn(actual.suggestEffects),
     generateIdeas: vi.fn(actual.generateIdeas),
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
+    writePostDetails: vi.fn(actual.writePostDetails),
     // Stubbed: each test says what Gemini writes.
     followUpIdeas: vi.fn(),
     draftReplies: vi.fn(),
@@ -142,6 +150,19 @@ const slowStartersRoute = await import('../src/app/api/second-chance/route')
 const secondChanceRoute = await import('../src/app/api/projects/[id]/second-chance/route')
 const videoRoute = await import('../src/app/api/projects/[id]/video/route')
 const crossPostsRoute = await import('../src/app/api/projects/[id]/cross-posts/route')
+const tasks = await import('../src/server/tasks')
+const taskRunner = await import('../src/server/task-runner')
+const runTasksRoute = await import('../src/app/api/tasks/run/route')
+const draftsRoute = await import('../src/app/api/ideas/drafts/route')
+const stopDraftsRoute = await import('../src/app/api/ideas/drafts/stop/route')
+const postRoute = await import('../src/app/api/projects/[id]/ai/post/route')
+
+// Work the task runner starts after a response waits here until a test runs it, so nothing runs
+// in the background (Vercel's after() needs a real request).
+const later: (() => Promise<unknown>)[] = []
+taskRunner.runner.later = (work) => {
+  later.push(work)
+}
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -3422,5 +3443,404 @@ describe('TikTok and Reels', () => {
       title: 'From the worker',
       crossPosts: kept,
     })
+  })
+})
+
+describe('AI work that keeps going when the page is closed', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const json = (body: unknown, url = 'http://localhost/api') =>
+    new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const scene = (narration: string) => ({
+    narration,
+    visual: '',
+    imagePrompt: '',
+    characters: [],
+    shot: '',
+    motion: 'zoom-in' as const,
+    onScreenText: '',
+    transition: 'cut' as const,
+    accent: 'none' as const,
+    accentWord: '',
+    notes: '',
+  })
+  const postDraft = (title: string) => ({
+    titleOptions: [title],
+    description: `All about ${title}.`,
+    tags: ['animals'],
+    hashtags: [],
+    chapters: [],
+    thumbnailIdeas: [],
+    thumbnailText: '',
+    comment: '',
+  })
+  /** What Gemini was asked to write, in order: "draft:<topic>" and "post:<topic>". */
+  let asked: string[] = []
+  const draftWell = () =>
+    vi.mocked(ai.draftScript).mockImplementation(async (brief) => {
+      asked.push(`draft:${brief.topic}`)
+      return {
+        title: brief.topic,
+        script: `All about ${brief.topic}.`,
+        scenes: [scene(brief.topic)],
+        storyboardError: null,
+      }
+    })
+  const postWell = () =>
+    vi.mocked(ai.writePostDetails).mockImplementation(async (input) => {
+      asked.push(`post:${input.topic}`)
+      return postDraft(input.topic)
+    })
+  /** New ideas to draft, by title. */
+  const addIdeas = async (...titles: string[]) => {
+    const database = await db()
+    const rows = titles.map((title) => ({ id: crypto.randomUUID(), title, angle: '' }))
+    await database.insert(schema.ideas).values(rows)
+    return rows.map((r) => r.id)
+  }
+  /** The run route, as the runner's own call to it reaches the app. */
+  const callRunRoute = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+    runTasksRoute.POST(new Request(url, init), undefined),
+  )
+  /** Runs the work each response started afterwards, as Vercel would, until none is left. */
+  const runLater = async () => {
+    for (let i = 0; i < 50 && later.length > 0; i++) await later.shift()?.()
+  }
+  const createDrafts = async (ids: string[]) => {
+    const response = await draftsRoute.POST(
+      json({ ids, write: true }, 'http://localhost/api/ideas/drafts'),
+      undefined,
+    )
+    expect(response.status).toBe(200)
+    return (await response.json()) as {
+      created: { ideaId: string; projectId: string }[]
+      batch: DraftBatchDTO
+    }
+  }
+  const latestBatch = async () => {
+    const response = await draftsRoute.GET(new Request('http://localhost/api/ideas/drafts'), undefined)
+    return ((await response.json()) as { batch: DraftBatchDTO | null }).batch
+  }
+  const taskRows = async () => {
+    const database = await db()
+    return database.select().from(schema.tasks).orderBy(schema.tasks.createdAt, schema.tasks.position)
+  }
+  const expireLease = async (id: string) => {
+    const database = await db()
+    await database
+      .update(schema.tasks)
+      .set({ leaseUntil: new Date(Date.now() - 1000) })
+      .where(eq(schema.tasks.id, id))
+  }
+
+  beforeEach(async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-key')
+    later.length = 0
+    asked = []
+    callRunRoute.mockClear()
+    vi.stubGlobal('fetch', callRunRoute)
+    const database = await db()
+    await database.delete(schema.tasks)
+    await database.update(schema.ideas).set({ status: 'dismissed' })
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.mocked(ai.draftScript).mockReset()
+    vi.mocked(ai.writePostDetails).mockReset()
+  })
+
+  it('lets one run claim a task, and runs one task at a time', async () => {
+    const [a, b] = [await newProject(), await newProject()]
+    await tasks.queueBatch([
+      { kind: 'draft', projectId: a },
+      { kind: 'draft', projectId: b },
+    ])
+    // Two runners asking at the same moment: one gets the first task, the other nothing.
+    const claims = await Promise.all([tasks.claimTask(), tasks.claimTask()])
+    const won = claims.filter((c) => c !== null)
+    expect(won).toHaveLength(1)
+    expect(won[0]).toMatchObject({ projectId: a, status: 'running', attempts: 1 })
+    expect(won[0]?.leaseUntil?.getTime()).toBeGreaterThan(Date.now())
+    // The second task waits for the first, so two never use Gemini's per-minute limit at once.
+    expect(await tasks.claimTask()).toBeNull()
+    await tasks.finishTask(won[0], { status: 'done' })
+    expect(await tasks.claimTask()).toMatchObject({ projectId: b, status: 'running' })
+  })
+
+  it('writes queued drafts in order, each run starting the next in a new request', async () => {
+    draftWell()
+    postWell()
+    const ids = await addIdeas('Octopus hearts', 'Squid ink')
+    const { created, batch } = await createDrafts(ids)
+    // Answered at once: the writing starts after the response.
+    expect(asked).toEqual([])
+    expect(later).toHaveLength(1)
+    expect(batch).toMatchObject({ running: true, done: 0, total: 4, current: { draft: 1, kind: 'draft' } })
+    expect(batch.drafts.map((d) => d.state)).toEqual(['waiting', 'waiting'])
+
+    await runLater()
+    expect(asked).toEqual([
+      'draft:Octopus hearts',
+      'post:Octopus hearts',
+      'draft:Squid ink',
+      'post:Squid ink',
+    ])
+    // Every run but the last started the next by calling the app's run route, with its key.
+    expect(callRunRoute).toHaveBeenCalledTimes(3)
+    const [url, init] = callRunRoute.mock.calls[0]
+    expect(String(url)).toMatch(/\/api\/tasks\/run$/)
+    expect(new Headers(init?.headers).get('authorization')).toMatch(/^Bearer \S+/)
+    expect((await taskRows()).map((t) => t.status)).toEqual(['done', 'done', 'done', 'done'])
+
+    const first = await projects.getProjectFull(created[0].projectId)
+    expect(first.project.script).toBe('All about Octopus hearts.')
+    expect(first.project.post.title).toBe('Octopus hearts')
+    expect(first.tasks).toEqual([])
+    // Shown from the server, also after a reload.
+    expect(await latestBatch()).toMatchObject({
+      running: false,
+      done: 4,
+      total: 4,
+      full: 2,
+      partial: 0,
+      stopped: null,
+      current: null,
+    })
+  })
+
+  it('never lets a visitor without the key start the runner', async () => {
+    const call = (authorization?: string) =>
+      runTasksRoute.POST(
+        new Request('http://localhost/api/tasks/run', {
+          method: 'POST',
+          headers: authorization ? { authorization } : {},
+        }),
+        undefined,
+      )
+    vi.stubEnv('APP_PASSWORD', 'secret')
+    expect((await call()).status).toBe(401)
+    expect((await call('Bearer secret')).status).toBe(401)
+    expect(later).toHaveLength(0)
+    // The app's own call works, with the key derived from the login secret.
+    expect((await call(`Bearer ${await taskRunner.runKey()}`)).status).toBe(202)
+    expect(later).toHaveLength(1)
+  })
+
+  it('counts drafts fully and partly written, as before', async () => {
+    vi.mocked(ai.draftScript).mockImplementation(async (brief) => {
+      asked.push(`draft:${brief.topic}`)
+      if (brief.topic === 'Busy')
+        throw new ai.AiError('Gemini is busy right now. Try again in a minute.', 'busy')
+      const noScenes = brief.topic === 'No scenes'
+      return {
+        title: brief.topic,
+        script: `All about ${brief.topic}.`,
+        scenes: noScenes ? null : [scene(brief.topic)],
+        storyboardError: noScenes ? 'Gemini is busy right now. Try again in a minute.' : null,
+      }
+    })
+    vi.mocked(ai.writePostDetails).mockImplementation(async (input) => {
+      asked.push(`post:${input.topic}`)
+      if (input.topic === 'No post')
+        throw new ai.AiError('Gemini answered with something unreadable.', 'bad_output')
+      return postDraft(input.topic)
+    })
+    const { created } = await createDrafts(await addIdeas('Full', 'No scenes', 'No post', 'Busy', 'Last'))
+    await runLater()
+    // A draft without scenes gets no post details; one that failed doesn't stop the others.
+    expect(asked).toEqual([
+      'draft:Full',
+      'post:Full',
+      'draft:No scenes',
+      'draft:No post',
+      'post:No post',
+      'draft:Busy',
+      'draft:Last',
+      'post:Last',
+    ])
+    const batch = await latestBatch()
+    expect(batch).toMatchObject({ running: false, full: 2, partial: 2, stopped: null, done: 10, total: 10 })
+    expect(batch?.drafts.map((d) => d.state)).toEqual(['full', 'partial', 'partial', 'unwritten', 'full'])
+    expect(batch?.drafts[1].note).toBe(
+      'The script is written, but not its scenes: Gemini is busy right now. Try again in a minute.',
+    )
+    expect(batch?.drafts[2].note).toBe('Gemini answered with something unreadable.')
+    expect(batch?.drafts[3].note).toBe('Gemini is busy right now. Try again in a minute.')
+    // The partly written one keeps its script; its scenes are left as they were (none).
+    const partly = await projects.getProjectFull(created[1].projectId)
+    expect(partly.project.script).toBe('All about No scenes.')
+    expect(partly.scenes).toEqual([])
+  })
+
+  it('stops the rest of the batch when Gemini’s free daily limit is used up, or there is no key', async () => {
+    const limit = "Gemini's free daily limit is used up. It resets at midnight Pacific time."
+    vi.mocked(ai.draftScript).mockImplementation(async (brief) => {
+      asked.push(`draft:${brief.topic}`)
+      if (brief.topic === 'Second') throw new ai.AiError(limit, 'daily_limit')
+      return { title: brief.topic, script: 'A script.', scenes: [scene('A script.')], storyboardError: null }
+    })
+    postWell()
+    await createDrafts(await addIdeas('First', 'Second', 'Third'))
+    await runLater()
+    // Not asked again: every following draft would fail the same way.
+    expect(asked).toEqual(['draft:First', 'post:First', 'draft:Second'])
+    const batch = await latestBatch()
+    expect(batch).toMatchObject({ running: false, full: 1, partial: 0, stopped: limit })
+    expect(batch?.drafts.map((d) => d.state)).toEqual(['full', 'unwritten', 'unwritten'])
+    expect((await taskRows()).slice(-3).map((t) => [t.status, t.error])).toEqual([
+      ['cancelled', limit],
+      ['cancelled', limit],
+      ['cancelled', limit],
+    ])
+
+    vi.stubEnv('GEMINI_API_KEY', '')
+    await createDrafts(await addIdeas('No key', 'Still no key'))
+    await runLater()
+    expect(asked).toHaveLength(3)
+    const noKey = await latestBatch()
+    expect(noKey?.stopped).toMatch(/GEMINI_API_KEY/)
+    expect(noKey?.drafts.map((d) => d.state)).toEqual(['unwritten', 'unwritten'])
+  })
+
+  it('tries a task whose run died once more, then gives up with a plain message', async () => {
+    const id = await newProject()
+    await tasks.queueBatch([
+      { kind: 'draft', projectId: id },
+      { kind: 'post', projectId: id },
+    ])
+    const first = await tasks.claimTask()
+    expect(first).toMatchObject({ kind: 'draft', attempts: 1 })
+    // Its run was cut off: once the lease runs out, the next run takes it again.
+    await expireLease(first?.id as string)
+    await tasks.recoverStale()
+    expect(await tasks.claimTask()).toMatchObject({ id: first?.id, attempts: 2 })
+    await expireLease(first?.id as string)
+    await tasks.recoverStale()
+    const [draft, post] = await taskRows()
+    expect(draft.status).toBe('failed')
+    expect(draft.error).toMatch(/stopped before it was done, twice/)
+    // The rest of that draft is skipped.
+    expect(post.status).toBe('cancelled')
+    expect(await tasks.claimTask()).toBeNull()
+  })
+
+  it('starts the runner again when a page showing tasks is opened, or by the daily cron, if none runs', async () => {
+    const id = await newProject()
+    await tasks.queueBatch([{ kind: 'draft', projectId: id }])
+    // Its run never started (the call to start it failed): opening Ideas starts it.
+    await latestBatch()
+    expect(later).toHaveLength(1)
+    later.length = 0
+    // So does opening the project.
+    await projectRoute.GET(new Request(`http://localhost/api/projects/${id}`), ctx(id))
+    expect(later).toHaveLength(1)
+    later.length = 0
+    // While a task runs, nothing more is started.
+    const running = await tasks.claimTask()
+    await latestBatch()
+    expect(later).toHaveLength(0)
+    // Once that run has died, the daily cron starts one again, after its answer, through the run
+    // route: in a request of its own, with its full 300 s.
+    await expireLease(running?.id as string)
+    expect(await taskRunner.resumeTasks('http://localhost')).toBe(true)
+    expect(later).toHaveLength(1)
+    await later.shift()?.()
+    expect(callRunRoute).toHaveBeenCalledTimes(1)
+    expect(later).toHaveLength(1)
+  })
+
+  it('stops writing the rest when you ask, and writes one batch at a time', async () => {
+    draftWell()
+    postWell()
+    const ids = await addIdeas('One', 'Two', 'Three')
+    await createDrafts(ids.slice(0, 2))
+    const busy = await draftsRoute.POST(
+      json({ ids: [ids[2]], write: true }, 'http://localhost/api/ideas/drafts'),
+      undefined,
+    )
+    expect(busy.status).toBe(400)
+    expect((await busy.json()).error).toMatch(/still writing/)
+    const stopped = await stopDraftsRoute.POST(json({}), undefined)
+    expect(stopped.status).toBe(200)
+    await runLater()
+    expect(asked).toEqual([])
+    expect(await latestBatch()).toMatchObject({
+      running: false,
+      full: 0,
+      partial: 0,
+      stopped: 'Stopped by you.',
+    })
+  })
+
+  it('records a button’s AI work while it runs, shows it on the project, and refuses it twice', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'Octopuses have three hearts.' })
+    let answer: (draft: ReturnType<typeof postDraft>) => void = () => {}
+    vi.mocked(ai.writePostDetails).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve
+        }),
+    )
+    const pending = postRoute.POST(json({}), ctx(id))
+    await vi.waitFor(async () => expect((await projects.getProjectFull(id)).tasks).toHaveLength(1))
+    const [running] = (await projects.getProjectFull(id)).tasks
+    expect(running).toMatchObject({ kind: 'post', status: 'running' })
+    expect(running.startedAt).toBeTruthy()
+    // Pressed again (after reopening the page, or in another tab): refused, no second request.
+    const again = await postRoute.POST(json({}), ctx(id))
+    expect(again.status).toBe(400)
+    expect((await again.json()).error).toBe(
+      'Writing the post details is still running for this video. Wait for it to finish.',
+    )
+    expect(vi.mocked(ai.writePostDetails)).toHaveBeenCalledTimes(1)
+    answer(postDraft('Three hearts'))
+    expect((await pending).status).toBe(200)
+    expect((await projects.getProjectFull(id)).tasks).toEqual([])
+    expect((await taskRows()).map((t) => [t.kind, t.status, t.inline])).toEqual([['post', 'done', true]])
+
+    vi.mocked(ai.writePostDetails).mockRejectedValueOnce(
+      new ai.AiError('Gemini is busy right now. Try again in a minute.', 'busy'),
+    )
+    expect((await postRoute.POST(json({}), ctx(id))).status).toBe(503)
+    expect((await taskRows()).at(-1)).toMatchObject({
+      status: 'failed',
+      error: 'Gemini is busy right now. Try again in a minute.',
+    })
+  })
+
+  it('marks Write with AI as running until the script and scenes are saved, even if the page goes', async () => {
+    const id = await newProject()
+    let seen: unknown[] = []
+    vi.mocked(ai.draftScript).mockImplementationOnce(async () => {
+      seen = (await projects.getProjectFull(id)).tasks
+      return {
+        title: 'Octopus hearts',
+        script: 'Three hearts.',
+        scenes: [scene('Three hearts.')],
+        storyboardError: null,
+      }
+    })
+    const response = await draftRoute.POST(json({ notes: '' }), ctx(id))
+    // The page is closed straight away.
+    await response.body?.cancel()
+    await vi.waitFor(async () => expect((await taskRows()).at(-1)?.status).toBe('done'))
+    expect(seen).toMatchObject([{ kind: 'draft', status: 'running' }])
+    const full = await projects.getProjectFull(id)
+    expect(full.project.script).toBe('Three hearts.')
+    expect(full.scenes.map((s) => s.narration)).toEqual(['Three hearts.'])
+    expect(full.tasks).toEqual([])
+
+    // A draft queued from Ideas shows on its project, and Write with AI waits for it.
+    await tasks.queueBatch([{ kind: 'draft', projectId: id }])
+    expect((await projects.getProjectFull(id)).tasks).toMatchObject([{ kind: 'draft', status: 'queued' }])
+    const refused = await draftRoute.POST(json({ notes: '' }), ctx(id))
+    expect(refused.status).toBe(400)
+    expect((await refused.json()).error).toBe(
+      'Writing the script and scenes is queued for this video. Wait for it to finish.',
+    )
   })
 })

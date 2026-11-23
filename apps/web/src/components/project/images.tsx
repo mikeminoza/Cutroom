@@ -57,6 +57,7 @@ import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
 import { LayeredPicture } from './layered-picture'
 import { MOTION_LABEL, TRANSITION_LABEL } from './script'
+import { runningTask, StillRunning } from './still-running'
 import type { StepProps } from './workspace'
 
 type Progress = Record<string, number>
@@ -115,6 +116,8 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const { data: library } = useLibrary()
   const hasLayers = (backgrounds?.length ?? 0) > 0 || (library ?? []).some((c) => c.poses.length > 0)
   const [composing, setComposing] = useState(false)
+  // Picked on the server for a request this page didn't make: the pictures show once saved.
+  const composingElsewhere = composing ? null : runningTask(data, ['compose'])
   const flow = useFlowExtension()
   const [sendingToFlow, setSendingToFlow] = useState(false)
 
@@ -418,6 +421,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                     <Button
                       variant="go"
                       busy={composing}
+                      disabled={composingElsewhere !== null}
                       onClick={compose}
                       icon={<Layers className="size-4" />}
                     >
@@ -459,6 +463,9 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 )}
               </div>
             </div>
+            {composingElsewhere && (
+              <StillRunning task={composingElsewhere} className="border-t border-line px-5 py-3" />
+            )}
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-line px-5 py-3 text-[13px] text-ink-2">
               <p className="max-w-[78ch] flex-1">
                 {dragging ? (

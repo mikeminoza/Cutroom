@@ -9,6 +9,7 @@ import {
   toCharacterDTO,
   updateProject,
 } from '@/server/projects'
+import { tracked } from '@/server/tasks'
 
 // Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
 // default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
@@ -20,17 +21,19 @@ type Ctx = { params: Promise<{ id: string }> }
 export const POST = route(async (request, { params }: Ctx) => {
   const { id } = await params
   const { prompt } = await readJson(request, z.object({ prompt: z.string().trim().min(1).max(4000) }))
-  const project = await getProjectRow(id)
-  const characters = (await getCharacters(id)).map(toCharacterDTO)
-  const image = await generateAndStore({
-    projectId: id,
-    folder: 'thumbnail',
-    name: 'thumbnail',
-    prompt,
-    characters,
-    aspectRatio: '16:9',
+  await tracked(id, 'thumbnail', async () => {
+    const project = await getProjectRow(id)
+    const characters = (await getCharacters(id)).map(toCharacterDTO)
+    const image = await generateAndStore({
+      projectId: id,
+      folder: 'thumbnail',
+      name: 'thumbnail',
+      prompt,
+      characters,
+      aspectRatio: '16:9',
+    })
+    if (project.thumbnailUrl && project.thumbnailUrl !== image.url) await deleteFile(project.thumbnailUrl)
+    await updateProject(id, { thumbnailUrl: image.url })
   })
-  if (project.thumbnailUrl && project.thumbnailUrl !== image.url) await deleteFile(project.thumbnailUrl)
-  await updateProject(id, { thumbnailUrl: image.url })
   return getProjectFull(id)
 })

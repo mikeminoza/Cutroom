@@ -49,6 +49,7 @@ import type { SceneDTO } from '@/lib/dto'
 import { useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { useUploader } from './fields'
 import { poseStyle } from './layered-picture'
+import { runningTask, StillRunning } from './still-running'
 import type { StepProps } from './workspace'
 
 /**
@@ -427,6 +428,8 @@ function EditingPanel({ data }: { data: StepProps['data'] }) {
   const { data: status } = useStatus()
   const [busy, setBusy] = useState(false)
   const summary = effectsSummary(scenes)
+  // Picked on the server for a request this page didn't make: they show once saved.
+  const elsewhere = busy ? null : runningTask(data, ['effects'])
 
   const addEffects = async () => {
     setBusy(true)
@@ -447,6 +450,7 @@ function EditingPanel({ data }: { data: StepProps['data'] }) {
             variant="plain"
             size="sm"
             busy={busy}
+            disabled={elsewhere !== null}
             onClick={addEffects}
             icon={<Sparkles className="size-3.5" />}
           >
@@ -456,6 +460,7 @@ function EditingPanel({ data }: { data: StepProps['data'] }) {
       }
     >
       <div className="flex flex-col gap-4 px-5 py-4">
+        <StillRunning task={elsewhere} />
         <p className="text-[12.5px] leading-snug text-ink-3">
           {summary
             ? `${summary[0].toUpperCase()}${summary.slice(1)}. Change any scene under Picture details on the Script step.`

@@ -2,11 +2,12 @@
 
 import type { AppSettings } from '@cutroom/shared/types'
 import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from './api'
 import type {
   CommentInsightsDTO,
+  DraftBatchDTO,
   IdeaDTO,
   LibraryBackgroundDTO,
   LibraryCharacterDTO,
@@ -29,6 +30,8 @@ export const keys = {
   library: ['library'] as const,
   backgrounds: ['backgrounds'] as const,
   ideas: ['ideas'] as const,
+  /** Ideas → Create drafts → the newest batch Gemini writes on the server. */
+  draftBatch: ['draft-batch'] as const,
   performance: ['performance'] as const,
   comments: ['comments'] as const,
   replies: (channelId: string) => ['replies', channelId] as const,
@@ -61,6 +64,15 @@ export function useBackgrounds() {
 
 export function useIdeas() {
   return useQuery({ queryKey: keys.ideas, queryFn: () => api.get<IdeaDTO[]>('/api/ideas') })
+}
+
+/** The newest batch of drafts Gemini writes on the server: checked every few seconds while it runs. */
+export function useDraftBatch() {
+  return useQuery({
+    queryKey: keys.draftBatch,
+    queryFn: async () => (await api.get<{ batch: DraftBatchDTO | null }>('/api/ideas/drafts')).batch,
+    refetchInterval: (query) => (query.state.data?.running ? 3000 : false),
+  })
 }
 
 export function useCommentInsights() {
@@ -131,6 +143,8 @@ export function useProject(id: string) {
     queryKey: keys.project(id),
     queryFn: () => api.get<ProjectFull>(`/api/projects/${id}`),
     refetchInterval: (query) => {
+      // AI work running on the server: its script, scenes or post details show once saved.
+      if (query.state.data?.tasks.length) return 3000
       const jobs = query.state.data?.jobs
       const statuses = [jobs?.retime?.status, jobs?.publish?.status, jobs?.voice?.status]
       if (statuses.some((s) => s === 'queued' || s === 'running')) return 3000
@@ -138,6 +152,18 @@ export function useProject(id: string) {
       return false
     },
   })
+}
+
+/** The time now, updated every `ms` while `on`: for "started 40 s ago". */
+export function useNow(on: boolean, ms = 1000): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!on) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(timer)
+  }, [on, ms])
+  return now
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +315,9 @@ export function useProjectAction(id: string) {
       await saver.flushAll()
       try {
         const full = await api.post<ProjectFull>(url, body)
+        // A check on the project still under way (it is checked often while AI work runs) would
+        // bring back how it was before this.
+        await client.cancelQueries({ queryKey: keys.project(id) })
         client.setQueryData(keys.project(id), full)
         void client.invalidateQueries({ queryKey: keys.projects })
         if (success) toast.success(success)

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, readJson, route } from '@/server/http'
 import { getProjectRow, updateProject } from '@/server/projects'
 import { getSettings } from '@/server/settings'
+import { tracked } from '@/server/tasks'
 
 // A few Gemini calls for many languages (AI_BUDGET_MS ends them in time to answer clearly).
 export const maxDuration = 300
@@ -25,14 +26,16 @@ export const POST = route(async (request, { params }: Ctx) => {
   if (!post.title.trim()) badRequest('Write the title first.')
   const languages = body.languages ?? (await getSettings()).defaults.translateTo
   if (languages.length === 0) badRequest('Pick languages to translate into in Settings first.')
-  const added = await translatePost({
-    title: post.title,
-    description: post.description,
-    from: post.language,
-    to: languages,
+  return tracked(id, 'translate', async () => {
+    const added = await translatePost({
+      title: post.title,
+      description: post.description,
+      from: post.language,
+      to: languages,
+    })
+    const kept = (post.translations ?? []).filter((t) => !added.some((a) => a.language === t.language))
+    const next = { ...post, translations: [...kept, ...added] }
+    await updateProject(id, { post: next })
+    return next
   })
-  const kept = (post.translations ?? []).filter((t) => !added.some((a) => a.language === t.language))
-  const next = { ...post, translations: [...kept, ...added] }
-  await updateProject(id, { post: next })
-  return next
 })

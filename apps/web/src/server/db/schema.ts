@@ -29,7 +29,18 @@ import type {
   VoiceSettings,
 } from '@cutroom/shared/types'
 import { sql } from 'drizzle-orm'
-import { boolean, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core'
+import type { TaskInput, TaskKind, TaskResult, TaskStatus } from '../../lib/tasks'
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 const updated = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
@@ -327,6 +338,47 @@ export const workerChecks = pgTable('worker_checks', {
   updatedAt: updated(),
 })
 
+/**
+ * AI work run on the server, so it finishes, and shows, whether or not a page is open
+ * (server/tasks.ts). Queued tasks wait for the runner, which runs them one at a time, each in a
+ * request of its own. A button's AI request records itself here too while it runs (inline), so a
+ * reopened page can tell it is still going.
+ */
+export const tasks = pgTable(
+  'tasks',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind').$type<TaskKind>().notNull(),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    /** Tasks queued together, such as Ideas → "Create 5 drafts". They run in `position` order. */
+    batchId: text('batch_id'),
+    position: integer('position').notNull().default(0),
+    input: jsonb('input').$type<TaskInput>().notNull().default({}),
+    result: jsonb('result').$type<TaskResult>(),
+    /** Run by the request that made it (a button's), not by the queue: never run again. */
+    inline: boolean('inline').notNull().default(false),
+    status: text('status').$type<TaskStatus>().notNull().default('queued'),
+    /** Why it failed, or why it was cancelled. */
+    error: text('error'),
+    /** Runs started. A run that died is tried once more. */
+    attempts: integer('attempts').notNull().default(0),
+    /**
+     * While running: the run renews this as it works, so once it has passed the run is gone (its
+     * request ended or was cut off) and the task can be picked up again.
+     */
+    leaseUntil: timestamp('lease_until', { withTimezone: true }),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: created(),
+    updatedAt: updated(),
+  },
+  (t) => [
+    index('tasks_status').on(t.status),
+    index('tasks_project').on(t.projectId),
+    index('tasks_batch').on(t.batchId),
+  ],
+)
+
 export type ProjectRow = typeof projects.$inferSelect
 export type SceneRow = typeof scenes.$inferSelect
 export type CharacterRow = typeof characters.$inferSelect
@@ -338,3 +390,4 @@ export type LibraryBackgroundRow = typeof libraryBackgrounds.$inferSelect
 export type IdeaRow = typeof ideas.$inferSelect
 export type CommentReplyRow = typeof commentReplies.$inferSelect
 export type WorkerCheckRow = typeof workerChecks.$inferSelect
+export type TaskRow = typeof tasks.$inferSelect

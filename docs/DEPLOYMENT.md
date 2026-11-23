@@ -420,6 +420,14 @@ Then make a short test video, to see the whole pipeline in a few minutes:
 7. When it says **Ready for your approval**, read the title and description, then click **Approve and upload**.
 8. When it says **Scheduled**, open **YouTube Studio** from the buttons. The video is there as Scheduled. Open **Drive folder** to see the video, captions and project files.
 
+### What keeps going when you close the window
+
+- **Rendering and uploading** run on the worker, as above.
+- **AI buttons** (Write with AI, splitting with AI, post details, translations, effects, Library pictures, thumbnails) finish and save on the server even if you close the tab. Open the project again and it says Gemini is still at work ("started 40 s ago"), with the button off until the result is in, so the free quota is never spent twice.
+- **Ideas → Create drafts → write each one** is a queue on the server: each draft's script and scenes, then its post details, one part at a time (so it stays within Gemini's free per-minute limit), each in a request of its own, so a long batch is never cut off by Vercel's 300-second limit. A part whose request was cut off is tried once more. When the key is missing or Gemini's free daily limit runs out, the rest of the batch stops with that reason. Open Ideas any time to see how far it got, or to stop it.
+
+Nothing to set up. The app starts each next part by calling its own `/api/tasks/run` with a key derived from `SESSION_SECRET` (or `APP_PASSWORD` while that is empty), which no visitor can know. If that call can't get through, the queue waits until you open Ideas or the project, or until the daily check.
+
 ## 9. Updating the app later
 
 - **Code changes:** push to `main`. Vercel redeploys the web app and Render redeploys the worker automatically.
@@ -542,6 +550,7 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | Settings → Storage is red | `BLOB_READ_WRITE_TOKEN` missing on Vercel | Step 4.5 |
 | Image or voice-over upload fails in production | Blob store created as **Private**, or token missing | Create a new **Public** store, connect it, update the token on Vercel and Render |
 | Worker log: "Could not reach the web app to resume jobs" on start | Web app address wrong or protected | Check `APP_URL` on Render. Vercel → **Settings → Deployment Protection**: production must not require Vercel login |
+| Ideas stays on "Writing draft 2 of 5…" while no page is open | The call that starts the next part couldn't reach the app | Open Ideas or the project: it starts again. Check that `APP_URL` on Vercel is your production address, and that production doesn't require Vercel login (**Settings → Deployment Protection**) |
 | `/api/cron` answers "Set CRON_SECRET to enable the daily check" | `APP_PASSWORD` is set but `CRON_SECRET` isn't | Add `CRON_SECRET` on Vercel ([1](#1-prepare-three-secrets)) and redeploy |
 | "This video's YouTube channel was disconnected" | The video is tied to a channel you disconnected. It waits rather than going out on another channel | Reconnect that channel in **Settings**, then **Approve** or **Retry**. Or pick another channel on the Publish step |
 | "This video was archived to Drive, so its files are gone" | Its working files were moved to Drive after posting | Make the Short or series from a video that isn't archived |

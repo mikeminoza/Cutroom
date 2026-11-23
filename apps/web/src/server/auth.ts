@@ -8,7 +8,7 @@ export function authEnabled(): boolean {
   return Boolean(process.env.APP_PASSWORD)
 }
 
-function key(): Uint8Array {
+function key(): Uint8Array<ArrayBuffer> {
   const secret = process.env.SESSION_SECRET || process.env.APP_PASSWORD || 'local-development'
   return new TextEncoder().encode(`cutroom:${secret}`)
 }
@@ -54,6 +54,16 @@ export function safeEqual(a: string, b: string): boolean {
   let diff = left.length ^ right.length
   for (let i = 0; i < Math.max(left.length, right.length); i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0)
   return diff === 0
+}
+
+/**
+ * A key for the app's calls to itself (`purpose` says which), derived from the same secret as the
+ * login cookie: nothing to set up, and nobody without that secret can work it out.
+ */
+export async function internalKey(purpose: string): Promise<string> {
+  const hmac = await crypto.subtle.importKey('raw', key(), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const signature = await crypto.subtle.sign('HMAC', hmac, new TextEncoder().encode(`internal:${purpose}`))
+  return Array.from(new Uint8Array(signature), (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 export function isWorker(request: Request): boolean {

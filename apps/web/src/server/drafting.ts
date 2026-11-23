@@ -12,14 +12,24 @@ import {
   type ScriptBrief,
   splitScript,
   suggestEffects,
+  writePostDetails,
   writeScript,
 } from '@cutroom/shared/ai'
 import { alignScenes } from '@cutroom/shared/align'
-import { layoutByEstimate } from '@cutroom/shared/timing'
-import { normalizeTransition, type SceneLayer, type SeriesTemplate } from '@cutroom/shared/types'
-import { and, desc, eq, gte } from 'drizzle-orm'
+import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
+import { layoutByEstimate, totalDuration } from '@cutroom/shared/timing'
+import {
+  EMPTY_POST,
+  normalizeTransition,
+  type PostDetails,
+  type SceneLayer,
+  type SeriesTemplate,
+} from '@cutroom/shared/types'
+import { and, desc, eq, gte, inArray } from 'drizzle-orm'
+import type { DraftBatchDTO } from '@/lib/dto'
 import { retentionLessons, searchTermsFor, topTitles } from './analytics'
 import { db, schema } from './db'
+import type { TaskRow } from './db/schema'
 import { badRequest } from './http'
 import { notify } from './notify'
 import {
@@ -28,11 +38,13 @@ import {
   getProjectRow,
   getScenes,
   replaceScenes,
+  toCharacterDTO,
   touchProject,
   updateProject,
 } from './projects'
 import { getSeries } from './series'
 import { appUrl, getSettings } from './settings'
+import { batchTasks, cancelBatch, latestBatchId, queueBatch } from './tasks'
 
 type ProjectRow = Awaited<ReturnType<typeof getProjectRow>>
 
@@ -96,6 +108,54 @@ export async function draftProject(
   await updateProject(id, { script: draft.script, title: project.title.trim() || draft.title })
   if (draft.scenes) await placeScenes(id, draft.scenes)
   return { storyboardError: draft.storyboardError }
+}
+
+/**
+ * Gemini writes the post details from the script and scenes: title ideas (and the title, unless you
+ * wrote one), description, tags, chapters, thumbnail ideas and the comment for viewers (unless you
+ * wrote one). Saved, and returned.
+ */
+export async function writePost(id: string): Promise<PostDetails> {
+  const project = await getProjectRow(id)
+  const scenes = await getScenes(id)
+  if (scenes.length === 0 && !project.script.trim()) badRequest('Add a script or scenes first.')
+  const settings = await getSettings()
+  const characters = (await getCharacters(id)).map(toCharacterDTO)
+  const draft = await writePostDetails({
+    title: project.title,
+    topic: project.topic,
+    audience: project.audience,
+    language: project.language,
+    format: project.format,
+    duration: project.voiceoverDuration ?? totalDuration(scenes),
+    script: project.script,
+    scenes: scenes.map((s) => ({ start: s.start, narration: s.narration })),
+    defaultTags: settings.defaults.tags,
+    descriptionFooter: settings.defaults.descriptionFooter,
+    topTitles: await topTitles(project.channelId, project.channelYoutubeId),
+    searchTerms: (await searchTermsFor(project.channelId, project.channelYoutubeId)).map((t) => t.term),
+    market: settings.niche.market,
+  })
+  const current = { ...EMPTY_POST, ...project.post }
+  const post = {
+    ...current,
+    titleOptions: draft.titleOptions,
+    title: current.title.trim() || draft.titleOptions[0] || '',
+    description: draft.description,
+    tags: draft.tags,
+    hashtags: draft.hashtags,
+    chapters: draft.chapters,
+    thumbnailIdeas: draft.thumbnailIdeas,
+    // A comment you wrote yourself stays.
+    comment: current.comment?.trim() || draft.comment,
+    thumbnailPrompt: buildThumbnailPrompt(draft.thumbnailIdeas[0] ?? project.topic, {
+      artStyle: project.artStyle,
+      characters,
+      text: draft.thumbnailText,
+    }),
+  }
+  await updateProject(id, { post })
+  return post
 }
 
 /** Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one. */
@@ -289,6 +349,92 @@ export async function draftFromIdea(
   })
   await database.update(schema.ideas).set({ status: 'used', projectId }).where(eq(schema.ideas.id, idea.id))
   return projectId
+}
+
+/**
+ * Queues writing new drafts on the server (Ideas → Create drafts → write them), one part at a time
+ * as the page used to: each draft's script and scenes, then its post details. Returns the batch.
+ */
+export async function queueDraftWriting(projectIds: string[]): Promise<string> {
+  return queueBatch(
+    projectIds.flatMap((projectId) => [
+      { kind: 'draft' as const, projectId },
+      { kind: 'post' as const, projectId },
+    ]),
+  )
+}
+
+/** How far a batch of drafts got, as the Ideas page shows it; null when it is gone. */
+export async function draftBatch(batchId: string): Promise<DraftBatchDTO | null> {
+  const tasks = await batchTasks(batchId)
+  if (tasks.length === 0) return null
+  const ids = [...new Set(tasks.flatMap((t) => (t.projectId ? [t.projectId] : [])))]
+  const database = await db()
+  const titles = ids.length
+    ? await database
+        .select({ id: schema.projects.id, title: schema.projects.title })
+        .from(schema.projects)
+        .where(inArray(schema.projects.id, ids))
+    : []
+  const open = (t: TaskRow) => t.status === 'queued' || t.status === 'running'
+  const drafts = ids.map((projectId) => {
+    const parts = tasks.filter((t) => t.projectId === projectId)
+    const script = parts.find((t) => t.kind === 'draft')
+    const storyboardError = script?.result?.storyboardError ?? null
+    const problem = parts.find((t) => t.status === 'failed' || t.status === 'cancelled')
+    // As before: a script without its scenes, or without its post details, is partly written.
+    const state: DraftBatchDTO['drafts'][number]['state'] = parts.some(open)
+      ? parts.some((t) => !open(t) || t.status === 'running')
+        ? 'writing'
+        : 'waiting'
+      : script?.status !== 'done'
+        ? 'unwritten'
+        : storyboardError || problem
+          ? 'partial'
+          : 'full'
+    const note =
+      script && script.status !== 'done' && !open(script)
+        ? script.error
+        : storyboardError
+          ? `The script is written, but not its scenes: ${storyboardError}`
+          : (problem?.error ?? null)
+    return { projectId, title: titles.find((t) => t.id === projectId)?.title ?? '', state, note }
+  })
+  const next = tasks.find(open)
+  const running = Boolean(next)
+  return {
+    id: batchId,
+    drafts,
+    current: next?.projectId ? { draft: ids.indexOf(next.projectId) + 1, kind: next.kind } : null,
+    done: tasks.filter((t) => !open(t)).length,
+    total: tasks.length,
+    running,
+    full: drafts.filter((d) => d.state === 'full').length,
+    partial: drafts.filter((d) => d.state === 'partial').length,
+    // A draft that never started: the batch was stopped, by you or by an error every draft would hit.
+    stopped: tasks.find((t) => t.kind === 'draft' && t.status === 'cancelled')?.error ?? null,
+    createdAt: tasks[0].createdAt.toISOString(),
+    finishedAt: running
+      ? null
+      : new Date(Math.max(...tasks.map((t) => (t.finishedAt ?? t.createdAt).getTime()))).toISOString(),
+  }
+}
+
+/** The newest batch of drafts written on the server, or null. */
+export async function latestDraftBatch(): Promise<DraftBatchDTO | null> {
+  const id = await latestBatchId('draft')
+  return id ? draftBatch(id) : null
+}
+
+/**
+ * Stops writing the newest batch of drafts: the parts not started are cancelled, and the one being
+ * written finishes.
+ */
+export async function stopDraftBatch(): Promise<DraftBatchDTO | null> {
+  const id = await latestBatchId('draft')
+  if (!id) return null
+  await cancelBatch(id, 'Stopped by you.')
+  return draftBatch(id)
 }
 
 /** Monday 00:00 UTC of this week. */

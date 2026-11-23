@@ -110,4 +110,14 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "comment_replies" ADD CONSTRAINT "comment_replies_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;',
     ],
   },
+  {
+    tag: '0013_background_tasks',
+    statements: [
+      'CREATE TABLE "tasks" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"kind" text NOT NULL,\n\t"project_id" text,\n\t"batch_id" text,\n\t"position" integer DEFAULT 0 NOT NULL,\n\t"input" jsonb DEFAULT \'{}\'::jsonb NOT NULL,\n\t"result" jsonb,\n\t"inline" boolean DEFAULT false NOT NULL,\n\t"status" text DEFAULT \'queued\' NOT NULL,\n\t"error" text,\n\t"attempts" integer DEFAULT 0 NOT NULL,\n\t"lease_until" timestamp with time zone,\n\t"started_at" timestamp with time zone,\n\t"finished_at" timestamp with time zone,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL,\n\t"updated_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'ALTER TABLE "tasks" ADD CONSTRAINT "tasks_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;',
+      'CREATE INDEX "tasks_status" ON "tasks" USING btree ("status");',
+      'CREATE INDEX "tasks_project" ON "tasks" USING btree ("project_id");',
+      'CREATE INDEX "tasks_batch" ON "tasks" USING btree ("batch_id");',
+    ],
+  },
 ]

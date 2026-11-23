@@ -2,15 +2,23 @@
 
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, Lightbulb, Plus, RotateCcw, Sparkles, Trash2, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ArrowRight, Lightbulb, Plus, RotateCcw, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ApiError, api, errorText } from '@/lib/api'
+import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import { writeDraft } from '@/lib/draft'
-import type { IdeaDTO } from '@/lib/dto'
+import type { DraftBatchDTO, IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { keys, useIdeas, useProjects, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
+import {
+  keys,
+  useDraftBatch,
+  useIdeas,
+  useProjects,
+  useSeriesList,
+  useSettings,
+  useStatus,
+} from '@/lib/hooks'
+import { DRAFT_PART } from '@/lib/tasks'
 import { Breakouts } from './breakouts'
 import { Hits } from './hits'
 import {
@@ -27,9 +35,6 @@ import {
 } from './ui'
 
 type Tab = 'new' | 'used' | 'dismissed' | 'breakouts' | 'hits'
-
-/** A draft whose script is written but whose scenes aren't. */
-class PartlyWritten extends Error {}
 
 export function IdeasPage() {
   const { data: ideas, isLoading, error } = useIdeas()
@@ -60,7 +65,10 @@ export function IdeasPage() {
   const [suggesting, setSuggesting] = useState(false)
   // Each draft fully written by AI: script, scenes with image prompts, post details.
   const [writeDrafts, setWriteDrafts] = useState(true)
-  const [creating, setCreating] = useState<{ done: number; total: number; label: string } | null>(null)
+  const [creating, setCreating] = useState(false)
+  // The drafts Gemini is writing on the server, also after the page was closed and opened again.
+  const { data: batch } = useDraftBatch()
+  const writingBusy = writeDrafts && Boolean(batch?.running)
   const series = seriesList.data?.find((s) => s.id === seriesId) ?? null
   const draftFormat = series?.template.format ?? format
 
@@ -120,74 +128,35 @@ export function IdeasPage() {
   }
 
   /**
-   * Drafts for the picked ideas, then (optionally) each one written by AI, one at a time: the
-   * script in the channel's narrator voice, its scenes with image prompts, then the title,
-   * description and tags. You then only record the voice-over and add the pictures.
+   * Drafts for the picked ideas. With "write them", Gemini then writes each one on the server, one
+   * at a time, as before: the script in the channel's narrator voice, its scenes with image
+   * prompts, then the title, description and tags. It keeps going when this page is closed; the
+   * panel above the list shows how far it got. You then only record the voice-over and add the
+   * pictures.
    */
   const createDrafts = async () => {
-    const ids = picked.map((i) => i.id)
-    setCreating({ done: 0, total: ids.length, label: 'Creating drafts…' })
+    setCreating(true)
     try {
-      const { created } = await api.post<{ created: { ideaId: string; projectId: string }[] }>(
-        '/api/ideas/drafts',
-        { ids, format: draftFormat },
-      )
+      const { created, batch: started } = await api.post<{
+        created: { ideaId: string; projectId: string }[]
+        batch: DraftBatchDTO | null
+      }>('/api/ideas/drafts', { ids: picked.map((i) => i.id), format: draftFormat, write: writeDrafts })
       setSelected(new Set())
+      if (started) client.setQueryData(keys.draftBatch, started)
       await Promise.all([
         client.invalidateQueries({ queryKey: keys.ideas }),
         client.invalidateQueries({ queryKey: keys.projects }),
       ])
-      const steps = [
-        {
-          // Written live and storyboarded as it goes: both in about the time of the writing.
-          label: 'script, scenes and image prompts',
-          run: async (projectId: string) => {
-            const { storyboardError } = await writeDraft(projectId, '')
-            if (storyboardError)
-              throw new PartlyWritten(`The script is written, but not its scenes: ${storyboardError}`)
-          },
-        },
-        {
-          label: 'title, description and tags',
-          run: (projectId: string) => api.post(`/api/projects/${projectId}/ai/post`, {}),
-        },
-      ] as const
-      let complete = 0
-      let partial = 0
-      if (writeDrafts) {
-        drafts: for (const [i, { projectId }] of created.entries()) {
-          for (const [j, step] of steps.entries()) {
-            setCreating({
-              done: i * steps.length + j,
-              total: created.length * steps.length,
-              label: `Writing draft ${i + 1} of ${created.length}: ${step.label}…`,
-            })
-            try {
-              await step.run(projectId)
-            } catch (err) {
-              if (j > 0 || err instanceof PartlyWritten) partial++
-              toast.error(errorText(err), {
-                description: 'Finish this draft from its project page: each step has its own button there.',
-              })
-              // No key, no billing or the free limit: the next drafts would fail the same way.
-              if (err instanceof ApiError && [400, 402, 429].includes(err.status)) break drafts
-              continue drafts
-            }
-          }
-          complete++
-        }
-        await client.invalidateQueries({ queryKey: keys.projects })
-      }
       toast.success(`${plural(created.length, 'draft')} created`, {
-        description: writeDrafts
-          ? `${plural(complete, 'draft')} fully written${partial ? `, ${partial} partly` : ''}. Record the voice-over and add the pictures on the Projects page.`
+        description: started
+          ? 'Gemini is writing them now. You can close this window: it keeps going.'
           : 'Find them on the Projects page.',
       })
       setTab('used')
     } catch (err) {
       toast.error(errorText(err))
     } finally {
-      setCreating(null)
+      setCreating(false)
     }
   }
 
@@ -369,42 +338,39 @@ export function IdeasPage() {
             className="max-w-full self-start overflow-x-auto"
           />
 
+          {batch && <DraftBatchPanel key={batch.id} batch={batch} />}
+
           {tab === 'breakouts' && <Breakouts />}
           {tab === 'hits' && <Hits />}
 
-          {tab === 'new' && (picked.length > 0 || creating) && (
+          {tab === 'new' && picked.length > 0 && (
             <div className="sticky top-2 z-10 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper">
-              {creating ? (
-                <div className="flex w-full items-center gap-3">
-                  <span className="text-[14px]">{creating.label}</span>
-                  <ProgressBar
-                    value={creating.done / creating.total}
-                    tone="you"
-                    className="max-w-64 flex-1"
-                  />
-                  <span className="ml-auto text-[12.5px] text-paper/70">Keep this page open</span>
-                </div>
-              ) : (
-                <>
-                  <span className="text-[14px]">{plural(picked.length, 'idea')} picked</span>
-                  <label className="flex items-center gap-2 text-[14px]">
-                    <input
-                      type="checkbox"
-                      checked={writeDrafts}
-                      onChange={(e) => setWriteDrafts(e.target.checked)}
-                      className="size-4 accent-kodak"
-                    />
-                    Write each one with AI: script, scenes and post details
-                  </label>
-                  <Button
-                    variant="go"
-                    className="ml-auto"
-                    onClick={createDrafts}
-                    icon={<ArrowRight className="size-4" />}
-                  >
-                    Create {plural(picked.length, 'draft')}
-                  </Button>
-                </>
+              <span className="text-[14px]">{plural(picked.length, 'idea')} picked</span>
+              <label className="flex items-center gap-2 text-[14px]">
+                <input
+                  type="checkbox"
+                  checked={writeDrafts}
+                  onChange={(e) => setWriteDrafts(e.target.checked)}
+                  className="size-4 accent-kodak"
+                />
+                Write each one with AI: script, scenes and post details
+              </label>
+              <Button
+                variant="go"
+                className="ml-auto"
+                busy={creating}
+                disabled={writingBusy}
+                title={writingBusy ? 'Gemini is still writing your last drafts.' : undefined}
+                onClick={createDrafts}
+                icon={<ArrowRight className="size-4" />}
+              >
+                Create {plural(picked.length, 'draft')}
+              </Button>
+              {writingBusy && (
+                <p className="w-full text-[12.5px] text-paper/70">
+                  Gemini is still writing your last drafts. Wait for them, or untick writing to just create
+                  these.
+                </p>
               )}
             </div>
           )}
@@ -461,7 +427,7 @@ export function IdeasPage() {
                       <input
                         type="checkbox"
                         checked={on}
-                        disabled={Boolean(creating)}
+                        disabled={creating}
                         onChange={() => toggle(idea.id)}
                         aria-label={`Pick “${idea.title}”`}
                         className="mt-1 size-4 accent-ink"
@@ -530,5 +496,153 @@ export function IdeasPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+/** What a finished batch of drafts came to, as the toast said before. */
+function batchSummary(batch: DraftBatchDTO) {
+  return {
+    title: `${plural(batch.drafts.length, 'draft')} created`,
+    description: `${plural(batch.full, 'draft')} fully written${batch.partial ? `, ${batch.partial} partly` : ''}. Record the voice-over and add the pictures on the Projects page.`,
+  }
+}
+
+const SEEN_KEY = 'cutroom-drafts-seen'
+
+/**
+ * The drafts Gemini writes on the server (Create drafts → write them): how far it got while it
+ * runs, then what it came to, until you close it. Shown from the server, so it is the same after
+ * closing the window and coming back.
+ */
+function DraftBatchPanel({ batch }: { batch: DraftBatchDTO }) {
+  const client = useQueryClient()
+  const [stopping, setStopping] = useState(false)
+  // The finished batch you closed, remembered in this browser.
+  const [seen, setSeen] = useState<string | null>(null)
+  useEffect(() => {
+    try {
+      setSeen(localStorage.getItem(SEEN_KEY))
+    } catch {
+      // Storage blocked: it shows until the page reloads.
+    }
+  }, [])
+  const close = () => {
+    setSeen(batch.id)
+    try {
+      localStorage.setItem(SEEN_KEY, batch.id)
+    } catch {
+      // Storage blocked: closed until the page reloads.
+    }
+  }
+
+  // Finished while you watch: told at once, as before, and the drafts are refreshed.
+  const wasRunning = useRef(batch.running)
+  useEffect(() => {
+    if (wasRunning.current && !batch.running) {
+      const { title, description } = batchSummary(batch)
+      if (batch.full === batch.drafts.length) toast.success(title, { description })
+      else toast(title, { description })
+      void client.invalidateQueries({ queryKey: keys.projects })
+    }
+    wasRunning.current = batch.running
+  }, [batch, client])
+
+  const stop = async () => {
+    setStopping(true)
+    try {
+      const { batch: next } = await api.post<{ batch: DraftBatchDTO | null }>('/api/ideas/drafts/stop')
+      client.setQueryData(keys.draftBatch, next)
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  if (batch.running) {
+    const part = batch.current ? DRAFT_PART[batch.current.kind] : null
+    return (
+      <div
+        aria-live="polite"
+        className="flex flex-col gap-2 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper"
+      >
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="text-[14px]">
+            {batch.current
+              ? `Writing draft ${batch.current.draft} of ${batch.drafts.length}${part ? `: ${part}` : ''}…`
+              : 'Writing your drafts…'}
+          </span>
+          <ProgressBar value={batch.done / batch.total} tone="you" className="min-w-32 max-w-64 flex-1" />
+          <Button
+            variant="ghost"
+            size="sm"
+            busy={stopping}
+            onClick={stop}
+            className="ml-auto text-paper/80 hover:bg-paper/10 hover:text-paper"
+            icon={<Square className="size-3.5" />}
+          >
+            Stop
+          </Button>
+        </div>
+        <p className="text-[12.5px] text-paper/70">
+          You can close this window: Gemini keeps writing them on the server, and this shows how far it got
+          when you come back.
+        </p>
+      </div>
+    )
+  }
+
+  // Finished: shown until you close it, for a week at most.
+  const recent = Date.now() - new Date(batch.finishedAt ?? batch.createdAt).getTime() < 7 * 86_400_000
+  if (seen === batch.id || !recent) return null
+  const { title, description } = batchSummary(batch)
+  const unfinished = batch.drafts.filter((d) => d.state !== 'full')
+  return (
+    <Panel
+      title={title}
+      description={description}
+      actions={
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Close"
+          title="Close"
+          onClick={close}
+          icon={<X className="size-3.5" />}
+        />
+      }
+    >
+      {(batch.stopped || unfinished.length > 0) && (
+        <div className="flex flex-col gap-2 px-5 py-4">
+          {batch.stopped && <p className="text-[13.5px] text-ink-2">Stopped: {batch.stopped}</p>}
+          {unfinished.length > 0 && (
+            <p className="text-[13px] text-ink-3">
+              Finish these from their project page: each step has its own button there.
+            </p>
+          )}
+          <ul className="flex flex-col gap-1.5">
+            {unfinished.map((d) => (
+              <li key={d.projectId} className="flex items-start gap-3 text-[13.5px]">
+                <div className="min-w-0 flex-1">
+                  <span className="font-medium">{d.title || 'Untitled video'}</span>
+                  <span className="text-ink-2">
+                    {' '}
+                    · {d.state === 'partial' ? 'partly written' : 'not written'}
+                    {d.note && d.note !== batch.stopped ? `: ${d.note}` : ''}
+                  </span>
+                </div>
+                <ButtonLink
+                  href={`/projects/${d.projectId}`}
+                  size="sm"
+                  icon={<ArrowRight className="size-3.5" aria-hidden />}
+                >
+                  Open
+                </ButtonLink>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
   )
 }

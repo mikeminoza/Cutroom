@@ -11,15 +11,18 @@ import {
   updateProject,
 } from '@/server/projects'
 import { getSeries } from '@/server/series'
+import { appUrl } from '@/server/settings'
+import { resumeTasks } from '@/server/task-runner'
 import { projectPatchSchema } from '@/server/validation'
 
 type Ctx = { params: Promise<{ id: string }> }
 
-export const GET = route(async (_request, { params }: Ctx) => {
+export const GET = route(async (request, { params }: Ctx) => {
   const { id } = await params
-  // Checking on a project also keeps its running jobs moving.
+  // Checking on a project also keeps its running jobs moving, and the queued AI work.
   const jobs = await Promise.all([latestJob(id, 'retime'), latestJob(id, 'publish'), latestJob(id, 'voice')])
   await Promise.all(jobs.map((job) => job && watchJob(job)))
+  await resumeTasks(appUrl(request))
   return getProjectFull(id)
 })
 

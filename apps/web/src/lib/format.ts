@@ -32,6 +32,12 @@ export function timeAgo(iso: string): string {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(iso))
 }
 
+/** How long ago `iso` was, short: "40 s", "3 min". */
+export function elapsedSince(iso: string, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min`
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   const units = ['KB', 'MB', 'GB', 'TB']

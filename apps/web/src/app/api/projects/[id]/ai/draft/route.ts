@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { assertDraftable, draftProject } from '@/server/drafting'
 import { badRequest, describeError, readJson, route } from '@/server/http'
 import { getProjectFull } from '@/server/projects'
+import { startTracking } from '@/server/tasks'
 
 // The script and its storyboard in one request: the Hobby plan allows 300 s with Fluid compute (on
 // by default), and the AI's budget ends the work in time to answer with a clear message.
@@ -22,6 +23,8 @@ export const POST = route(async (request, { params }: Ctx) => {
   const { notes } = await readJson(request, z.object({ notes: z.string().max(4000).default('') }))
   if (!hasGeminiKey()) badRequest('Add GEMINI_API_KEY to your environment to use AI features.')
   await assertDraftable(id)
+  // Recorded while it runs, so a page opened meanwhile shows Gemini still writing, and waits.
+  const task = await startTracking(id, 'draft')
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -39,8 +42,10 @@ export const POST = route(async (request, { params }: Ctx) => {
           onRestart: () => send({ type: 'restart' }),
           onPart: (done, started) => send({ type: 'part', done, started }),
         })
+        await task.done()
         send({ type: 'done', project: await getProjectFull(id), storyboardError })
       } catch (error) {
+        await task.failed(error)
         send({ type: 'error', ...describeError(error).body })
       } finally {
         try {

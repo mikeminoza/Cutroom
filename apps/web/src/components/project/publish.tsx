@@ -58,6 +58,7 @@ import { downloadHref } from '@/lib/upload'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import { FinalCheck, finalChecks } from './final-check'
 import { JobSteps, Warnings } from './job-panel'
+import { runningTask, StillRunning } from './still-running'
 import { ThumbnailMaker } from './thumbnail-maker'
 import { type StepProps, stageOf } from './workspace'
 
@@ -473,6 +474,8 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   const playlists = usePlaylists(channel?.id ?? null, Boolean(channel))
   const tagChars = post.tags.reduce((n, t) => n + t.length + (t.includes(' ') ? 2 : 0) + 1, 0)
   const locked = Boolean(project.youtubeVideoId)
+  // Written (or translated) on the server for a request this page didn't make: wait for it.
+  const elsewhere = writing ? null : runningTask(data, ['post', 'translate'])
 
   const write = async () => {
     setWriting(true)
@@ -481,6 +484,8 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
       client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
         prev ? { ...prev, project: { ...prev.project, post: next } } : prev,
       )
+      // Its record of running is done now too.
+      void client.invalidateQueries({ queryKey: keys.project(project.id) })
       toast.success('Post details written')
     } catch (error) {
       toast.error(errorText(error))
@@ -502,6 +507,7 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
           variant="plain"
           size="sm"
           busy={writing}
+          disabled={elsewhere !== null}
           onClick={write}
           icon={<Sparkles className="size-3.5" />}
         >
@@ -510,6 +516,7 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
       }
     >
       <div className="flex flex-col gap-5 px-5 py-5">
+        <StillRunning task={elsewhere?.kind === 'post' ? elsewhere : null} />
         {post.titleOptions.length > 0 && (
           <Field label="Title ideas" hint="Pick one, then edit it below.">
             <div role="radiogroup" aria-label="Title ideas" className="flex flex-col gap-1.5">
@@ -789,6 +796,8 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
   const locked = Boolean(project.youtubeVideoId)
   const basis = translationBasis(post.title, post.description)
   const stale = translations.some((t) => t.basis && t.basis !== basis)
+  // Translated (or the details written) on the server for a request this page didn't make.
+  const elsewhere = busy ? null : runningTask(data, ['translate', 'post'])
 
   const translate = async () => {
     setBusy(true)
@@ -797,6 +806,7 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
       client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
         prev ? { ...prev, project: { ...prev.project, post: next } } : prev,
       )
+      void client.invalidateQueries({ queryKey: keys.project(project.id) })
       toast.success(`Translated into ${next.translations?.length ?? 0} languages`)
     } catch (error) {
       toast.error(errorText(error))
@@ -853,7 +863,7 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
             variant="plain"
             size="sm"
             busy={busy}
-            disabled={!post.title.trim()}
+            disabled={!post.title.trim() || elsewhere !== null}
             onClick={translate}
             icon={<Languages className="size-3.5" />}
           >
@@ -862,6 +872,9 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
         )
       }
     >
+      {elsewhere?.kind === 'translate' && (
+        <StillRunning task={elsewhere} className="border-b border-line px-5 py-2.5" />
+      )}
       {stale && !locked && (
         <p className="border-b border-line bg-kodak-wash px-5 py-2.5 text-[13px] text-kodak-ink">
           The title or description changed after translating. Translate again to bring them up to date.
@@ -926,6 +939,9 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
   const [making, setMaking] = useState(false)
   const ideas = project.post.thumbnailIdeas
   const canGenerate = status?.gemini.configured === true
+  // Made on the server for a request this page didn't make: it shows here once saved.
+  const elsewhere = generating === null ? runningTask(data, ['thumbnail']) : null
+  const designing = generating !== null || elsewhere !== null
 
   const onFiles = async ([file]: File[]) => {
     try {
@@ -961,9 +977,9 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
       description="1280×720 works best. Custom thumbnails need a phone-verified YouTube channel."
     >
       <div className="grid gap-5 px-5 py-5 md:grid-cols-[320px_1fr]">
-        <DropZone accept="image/*" onFiles={onFiles} disabled={generating !== null}>
+        <DropZone accept="image/*" onFiles={onFiles} disabled={designing}>
           {({ open, dragging }) =>
-            generating !== null ? (
+            designing ? (
               <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-control)] bg-film text-[13px] text-film-ink/80">
                 <Spinner />
                 Gemini is designing your thumbnail…
@@ -1005,6 +1021,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
           }
         </DropZone>
         <div className="flex flex-col gap-3">
+          <StillRunning task={elsewhere} />
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-control)] border border-line bg-sunk px-3 py-2.5">
             <p className="min-w-48 flex-1 text-[13.5px] leading-snug text-ink-2">
               Make one here from a background, your character's pose and big text. Free, nothing to install.
@@ -1012,7 +1029,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
             <Button
               variant={canGenerate ? 'plain' : 'go'}
               size="sm"
-              disabled={generating !== null || progress !== null}
+              disabled={designing || progress !== null}
               onClick={() => setMaking(true)}
               icon={<Palette className="size-3.5" />}
             >
@@ -1043,7 +1060,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
                         variant="dark"
                         size="sm"
                         busy={generating === `idea-${i}`}
-                        disabled={generating !== null}
+                        disabled={designing}
                         onClick={() => generate(`idea-${i}`, prompt)}
                         icon={<Sparkles className="size-3.5" />}
                       >
@@ -1068,7 +1085,7 @@ function ThumbnailPanel({ data }: { data: ProjectFull }) {
                 <Button
                   variant="plain"
                   busy={generating === 'own'}
-                  disabled={!own.trim() || generating !== null}
+                  disabled={!own.trim() || designing}
                   onClick={() =>
                     generate('own', buildThumbnailPrompt(own, { artStyle: project.artStyle, characters }))
                   }

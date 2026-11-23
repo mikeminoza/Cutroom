@@ -88,6 +88,7 @@ It ends with a troubleshooting table for the common problems: redirect mismatch,
   - For personal, non-commercial use.
   - Blob storage is 1 GB, so finished videos go to Drive, and working files can be cleared from Blob after posting (Settings → Storage).
   - Scheduled jobs run at most once a day, which is fine because YouTube handles the publish time.
+  - A request may run for 300 seconds. AI work finishes on the server when you close the window, and a reopened page shows it still running. Ideas → Create drafts writes its drafts as a queue, one part per request, so a long batch is never cut off; a part whose request died is tried once more, and the daily check restarts a stalled queue ([DEPLOYMENT.md](docs/DEPLOYMENT.md#what-keeps-going-when-you-close-the-window)).
 - **Gemini free tier:** rate-limited, and Google may use free-tier inputs to improve its products. Text and voice (TTS) models are on it; image models are not, so AI pictures need billing on the key's project (about $0.04 a picture with the default model).
 - **YouTube:** uploads have their own quota (100 a day), and the API allows 10,000 units a day: about 2,100 for an upload with its thumbnail, captions and playlist, 400 for each subtitle track. That is why a video gets subtitles in two languages at most (turn them off in Settings → Defaults on a day you post more than three videos). Scheduled videos are uploaded as private and YouTube makes them public at the slot time, so your computer and the worker can be off by then.
 

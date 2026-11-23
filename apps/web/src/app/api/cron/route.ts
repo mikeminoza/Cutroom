@@ -1,8 +1,8 @@
 // Daily Vercel cron: wakes the worker, nudges any job that stalled while nobody was watching,
 // tells you about jobs that have been stuck for an hour, refreshes YouTube stats and tells you
 // about your videos now doing far better than usual, once a week searches YouTube for videos
-// breaking out in the niche, and once a week per channel has Gemini read what viewers say in the
-// comments.
+// breaking out in the niche, once a week per channel has Gemini read what viewers say in the
+// comments, and starts queued AI work again whose run died while no page was open.
 
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
@@ -16,6 +16,8 @@ import { announceNewHits } from '@/server/hits'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
 import { appUrl } from '@/server/settings'
+import { resumeTasks } from '@/server/task-runner'
+import { pruneTasks } from '@/server/tasks'
 
 // Stats take up to 45 s; reading a channel's comments with Gemini can take longer. The Hobby plan
 // allows 300 s with Fluid compute (on by default).
@@ -70,6 +72,12 @@ export async function GET(request: Request): Promise<Response> {
   const comments = autopilot
     ? null
     : await readDueComments().catch((error) => (error instanceof Error ? error.message : String(error)))
+  // Queued AI work (Ideas → Create drafts) whose next run never started: started again in a
+  // request of its own, after this one, so it gets its full 300 s.
+  const tasks = await resumeTasks(appUrl(request)).catch((error) =>
+    error instanceof Error ? error.message : String(error),
+  )
+  await pruneTasks().catch(() => 0)
   return NextResponse.json({
     worker,
     nudged: active.length,
@@ -79,5 +87,6 @@ export async function GET(request: Request): Promise<Response> {
     breakouts,
     autopilot,
     comments,
+    tasks,
   })
 }
