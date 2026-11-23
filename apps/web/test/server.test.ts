@@ -36,6 +36,9 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
     writePostDetails: vi.fn(actual.writePostDetails),
     generateImage: vi.fn(actual.generateImage),
+    reviewScript: vi.fn(actual.reviewScript),
+    checkHook: vi.fn(actual.checkHook),
+    reviewPackaging: vi.fn(actual.reviewPackaging),
     // Stubbed: each test says what Gemini writes.
     followUpIdeas: vi.fn(),
     draftReplies: vi.fn(),
@@ -138,6 +141,8 @@ const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/r
 const monetizationRoute = await import('../src/app/api/channel/monetization/route')
 const scriptEditRoute = await import('../src/app/api/projects/[id]/script-edit/route')
 const reviewRoute = await import('../src/app/api/projects/[id]/ai/review/route')
+const hookRoute = await import('../src/app/api/projects/[id]/ai/hook/route')
+const packagingRoute = await import('../src/app/api/projects/[id]/ai/packaging/route')
 const workerCheck = await import('../src/server/worker-check')
 const hits = await import('../src/server/hits')
 const hitsRoute = await import('../src/app/api/hits/route')
@@ -2265,6 +2270,116 @@ describe('a channel set up to grow and earn', () => {
   })
 })
 
+/** A request from a page that reads the answer as Gemini writes it (lib/stream.ts). */
+const live = (body: unknown = {}, url = 'http://localhost/api') =>
+  new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+    body: JSON.stringify(body),
+  })
+
+/** A streamed answer's events, one per line. */
+const eventsOf = async (response: Response) => {
+  expect(response.headers.get('content-type')).toContain('application/x-ndjson')
+  return (await response.text())
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+}
+
+describe('AI answers sent as Gemini writes them', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  beforeEach(() => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-key')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('sends the script doctor’s edits as they are written, then the whole review', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'Look at you. Coffee blocks sleep for hours.' })
+    const edit = {
+      original: 'Look at you.',
+      suggestion: 'Look at you, goblin.',
+      kind: 'funnier' as const,
+      why: 'Sharper.',
+    }
+    vi.mocked(ai.reviewScript).mockImplementationOnce(async (input, events) => {
+      expect(input.script).toBe('Look at you. Coffee blocks sleep for hours.')
+      events?.onThought?.('Checking the sleep science')
+      events?.onPartial?.({ edits: [edit], claims: [] })
+      events?.onRestart?.()
+      events?.onPartial?.({ edits: [edit], claims: [] })
+      return { edits: [edit], claims: [] }
+    })
+    const events = await eventsOf(await reviewRoute.POST(live(), ctx(id)))
+    expect(events).toEqual([
+      { type: 'thinking', text: 'Checking the sleep science' },
+      { type: 'partial', data: { edits: [edit], claims: [] } },
+      { type: 'restart' },
+      { type: 'partial', data: { edits: [edit], claims: [] } },
+      { type: 'done', data: { edits: [edit], claims: [] } },
+    ])
+  })
+
+  it('ends with the error when Gemini fails, and answers as before when not asked to stream', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'Look at you. Coffee blocks sleep for hours.' })
+    vi.mocked(ai.checkHook).mockRejectedValueOnce(
+      new ai.AiError('Gemini is busy right now. Try again in a minute.', 'busy'),
+    )
+    expect(await eventsOf(await hookRoute.POST(live(), ctx(id)))).toEqual([
+      { type: 'error', error: 'Gemini is busy right now. Try again in a minute.', code: 'busy' },
+    ])
+
+    // The packaging notes, streamed in the shape of the whole answer.
+    const notes = [
+      { level: 'fix' as const, text: 'The title promises a fix.' },
+      { level: 'good' as const, text: 'The thumbnail works.' },
+    ]
+    vi.mocked(ai.reviewPackaging).mockImplementation(async (_input, events) => {
+      events?.onPartial?.(notes.slice(0, 1))
+      return notes
+    })
+    expect(await eventsOf(await packagingRoute.POST(live(), ctx(id)))).toEqual([
+      { type: 'partial', data: { notes: notes.slice(0, 1) } },
+      { type: 'done', data: { notes } },
+    ])
+    // Not asked to stream: one JSON answer, as before, and Gemini isn't streamed either.
+    const plain = await packagingRoute.POST(
+      new Request('http://localhost/api', { method: 'POST', body: '{}' }),
+      ctx(id),
+    )
+    expect(plain.headers.get('content-type')).toContain('application/json')
+    expect(await plain.json()).toEqual({ notes })
+    expect(vi.mocked(ai.reviewPackaging).mock.lastCall?.[1]).toBeUndefined()
+    vi.mocked(ai.reviewPackaging).mockReset()
+
+    // A problem found before Gemini starts answers as usual, with its status.
+    const empty = await newProject()
+    const refused = await reviewRoute.POST(live(), ctx(empty))
+    expect(refused.status).toBe(400)
+    expect((await refused.json()).error).toMatch(/script/)
+  })
+
+  it('sends new ideas as they are written, then the backlog with them in', async () => {
+    vi.mocked(ai.generateIdeas).mockImplementationOnce(async (input, events) => {
+      expect(input.niche).toContain('Deep sea')
+      events?.onPartial?.([{ title: 'Octopus dreams', angle: 'A' }])
+      return [
+        { title: 'Octopus dreams', angle: 'A' },
+        { title: 'Squid ink, explained', angle: 'B' },
+      ]
+    })
+    const events = await eventsOf(await ideasRoute.POST(live({ niche: 'Deep sea' }), undefined))
+    expect(events.map((e) => e.type)).toEqual(['partial', 'done'])
+    expect(events[0].data).toEqual({ ideas: [{ title: 'Octopus dreams', angle: 'A' }] })
+    const titles = events[1].data.map((idea: { title: string }) => idea.title)
+    expect(titles).toEqual(expect.arrayContaining(['Octopus dreams', 'Squid ink, explained']))
+  })
+})
+
 describe('the script doctor', () => {
   const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
   const post = (body?: unknown) =>
@@ -2669,6 +2784,32 @@ describe('your hits', () => {
       expect((await followUp(short)).status).toBe(400)
       expect((await followUp('no-such-video')).status).toBe(404)
       expect(ai.followUpIdeas).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('sends follow-up ideas as they are written, then the ones added', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'key')
+    try {
+      vi.mocked(ai.followUpIdeas).mockImplementationOnce(async (_input, events) => {
+        events?.onPartial?.([{ title: 'Why 5 AM is worse', angle: 'A.' }])
+        return [
+          { title: 'Why 5 AM is worse', angle: 'A.' },
+          { title: 'Why alarms feel louder', angle: 'B.' },
+        ]
+      })
+      const events = await eventsOf(
+        await hitIdeasRoute.POST(live({}, `http://localhost/api/hits/${hit}/ideas`), {
+          params: Promise.resolve({ id: hit }),
+        }),
+      )
+      expect(events.map((e) => e.type)).toEqual(['partial', 'done'])
+      expect(events[0].data).toEqual({ ideas: [{ title: 'Why 5 AM is worse', angle: 'A.' }] })
+      expect(events[1].data).toEqual([
+        expect.objectContaining({ title: 'Why 5 AM is worse', followUpOf: hit, status: 'new' }),
+        expect.objectContaining({ title: 'Why alarms feel louder', followUpOf: hit }),
+      ])
     } finally {
       vi.unstubAllEnvs()
     }
@@ -3814,6 +3955,68 @@ describe('AI work that keeps going when the page is closed', () => {
       status: 'failed',
       error: 'Gemini is busy right now. Try again in a minute.',
     })
+  })
+
+  it('sends post details as they are written, as the post they make, and saves them', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'Octopuses have three hearts.' })
+    let seen: unknown[] = []
+    vi.mocked(ai.writePostDetails).mockImplementationOnce(async (_input, events) => {
+      seen = (await projects.getProjectFull(id)).tasks
+      events?.onPartial?.({ titleOptions: ['Three hearts'] })
+      events?.onPartial?.({
+        titleOptions: ['Three hearts', 'Blue blood'],
+        description: 'All about Three hearts.',
+      })
+      return { ...postDraft('Three hearts'), titleOptions: ['Three hearts', 'Blue blood'] }
+    })
+    const events = await eventsOf(await postRoute.POST(live(), ctx(id)))
+    expect(events.map((e) => e.type)).toEqual(['partial', 'partial', 'done'])
+    // The post as it will be saved, as far as Gemini has written it.
+    expect(events[0].data).toMatchObject({
+      title: 'Three hearts',
+      titleOptions: ['Three hearts'],
+      description: '',
+      tags: [],
+    })
+    expect(events[1].data).toMatchObject({
+      titleOptions: ['Three hearts', 'Blue blood'],
+      description: 'All about Three hearts.',
+    })
+    const saved = (await projects.getProjectRow(id)).post
+    expect(events[2].data).toEqual(saved)
+    expect(saved).toMatchObject({ title: 'Three hearts', description: 'All about Three hearts.' })
+    // Recorded while it ran, as without streaming.
+    expect(seen).toMatchObject([{ kind: 'post', status: 'running' }])
+    expect((await taskRows()).map((t) => [t.kind, t.status])).toEqual([['post', 'done']])
+
+    vi.mocked(ai.writePostDetails).mockRejectedValueOnce(
+      new ai.AiError('Gemini is busy right now. Try again in a minute.', 'busy'),
+    )
+    expect(await eventsOf(await postRoute.POST(live(), ctx(id)))).toEqual([
+      { type: 'error', error: 'Gemini is busy right now. Try again in a minute.', code: 'busy' },
+    ])
+    expect((await taskRows()).at(-1)).toMatchObject({
+      kind: 'post',
+      status: 'failed',
+      error: 'Gemini is busy right now. Try again in a minute.',
+    })
+  })
+
+  it('still writes queued post details with no page listening', async () => {
+    postWell()
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'Octopuses have three hearts.' })
+    await tasks.queueBatch([{ kind: 'post', projectId: id }])
+    await taskRunner.runNextTask('http://localhost')
+    expect(asked).toEqual(['post:Octopuses'])
+    // Asked for in one piece: nobody is reading it as it's written.
+    expect(vi.mocked(ai.writePostDetails).mock.lastCall?.[1]).toBeUndefined()
+    expect((await projects.getProjectRow(id)).post).toMatchObject({
+      title: 'Octopuses',
+      description: 'All about Octopuses.',
+    })
+    expect((await taskRows()).map((t) => [t.kind, t.status])).toEqual([['post', 'done']])
   })
 
   it('marks Write with AI as running until the script and scenes are saved, even if the page goes', async () => {

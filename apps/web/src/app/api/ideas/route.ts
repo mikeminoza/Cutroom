@@ -1,3 +1,4 @@
+import { mapPartials } from '@cutroom/shared/ai'
 import { desc } from 'drizzle-orm'
 import { z } from 'zod'
 import type { IdeaDTO } from '@/lib/dto'
@@ -5,6 +6,7 @@ import { db, schema } from '@/server/db'
 import { addIdeas } from '@/server/drafting'
 import { notFound, readJson, route } from '@/server/http'
 import { getSeries } from '@/server/series'
+import { answer } from '@/server/stream'
 
 // Gemini can take a while on long scripts: the Hobby plan allows 300 s with Fluid compute (on by
 // default). AI_BUDGET_MS ends the AI work in time to answer with a clear message.
@@ -18,7 +20,10 @@ async function listIdeas(): Promise<IdeaDTO[]> {
 
 export const GET = route(async () => listIdeas())
 
-/** Asks Gemini for new ideas and adds them to the backlog. */
+/**
+ * Asks Gemini for new ideas and adds them to the backlog. When the page asks, each idea is sent as
+ * Gemini writes it, as { ideas } (server/stream.ts); the answer is the whole backlog either way.
+ */
 export const POST = route(async (request) => {
   const body = await readJson(
     request,
@@ -32,12 +37,11 @@ export const POST = route(async (request) => {
   )
   const series = body.seriesId ? await getSeries(body.seriesId) : null
   if (body.seriesId && !series) notFound('That series')
-  await addIdeas({
-    niche: body.niche,
-    series,
-    format: body.format,
-    count: body.count,
-    direction: body.direction,
+  return answer(request, async (events) => {
+    await addIdeas(
+      { niche: body.niche, series, format: body.format, count: body.count, direction: body.direction },
+      mapPartials(events, (ideas) => ({ ideas })),
+    )
+    return listIdeas()
   })
-  return listIdeas()
 })

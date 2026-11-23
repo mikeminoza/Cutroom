@@ -1,5 +1,6 @@
 'use client'
 
+import type { IdeaDraft } from '@cutroom/shared/ai'
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Lightbulb, Plus, RotateCcw, Sparkles, Square, Trash2, X } from 'lucide-react'
@@ -18,6 +19,7 @@ import {
   useSettings,
   useStatus,
 } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 import { DRAFT_PART } from '@/lib/tasks'
 import { Breakouts } from './breakouts'
 import { Hits } from './hits'
@@ -63,6 +65,8 @@ export function IdeasPage() {
   const [count, setCount] = useState('8')
   const [direction, setDirection] = useState('')
   const [suggesting, setSuggesting] = useState(false)
+  /** The ideas Gemini has written so far, shown while it writes the rest. */
+  const [arriving, setArriving] = useState<IdeaDraft[]>([])
   // Each draft fully written by AI: script, scenes with image prompts, post details.
   const [writeDrafts, setWriteDrafts] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -82,20 +86,20 @@ export function IdeasPage() {
 
   const suggest = async () => {
     setSuggesting(true)
+    setArriving([])
     try {
-      const next = await api.post<IdeaDTO[]>('/api/ideas', {
-        niche,
-        seriesId: seriesId || null,
-        format: draftFormat,
-        count: Number(count),
-        direction,
-      })
+      const next = await streamAnswer<IdeaDTO[], { ideas: IdeaDraft[] }>(
+        '/api/ideas',
+        { niche, seriesId: seriesId || null, format: draftFormat, count: Number(count), direction },
+        { partial: ({ ideas }) => setArriving(ideas), restart: () => setArriving([]) },
+      )
       client.setQueryData(keys.ideas, next)
       setTab('new')
       toast.success('New ideas added')
     } catch (err) {
       toast.error(errorText(err))
     } finally {
+      setArriving([])
       setSuggesting(false)
     }
   }
@@ -386,9 +390,22 @@ export function IdeasPage() {
             >
               <p className="flex items-center gap-2 border-b border-line px-4 py-3 text-[13.5px] text-ink-2">
                 <Spinner className="text-ink-3" />
-                Gemini is thinking up {count} ideas. This can take up to half a minute.
+                {arriving.length
+                  ? `${arriving.length} of ${count} ideas written…`
+                  : `Gemini is thinking up ${count} ideas. Each one shows here as soon as it’s written.`}
               </p>
-              {Array.from({ length: Math.min(Number(count), 4) }).map((_, i) => (
+              {arriving.map((idea, i) => (
+                <div key={i} className="border-b border-line px-4 py-3.5 last:border-b-0">
+                  <p className="text-[15px] font-semibold">{idea.title}</p>
+                  {idea.angle && <p className="mt-0.5 text-[13.5px] leading-snug text-ink-2">{idea.angle}</p>}
+                </div>
+              ))}
+              {/* Room for the ones still coming. */}
+              {Array.from({
+                length: arriving.length
+                  ? Math.min(Number(count) - arriving.length, 1)
+                  : Math.min(Number(count), 4),
+              }).map((_, i) => (
                 <div key={i} className="flex flex-col gap-2 border-b border-line px-4 py-4 last:border-b-0">
                   <div className="h-4 w-2/3 animate-pulse-soft rounded bg-line" />
                   <div className="h-3 w-full animate-pulse-soft rounded bg-line/60" />

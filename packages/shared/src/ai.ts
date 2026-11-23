@@ -3,6 +3,7 @@
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
 import { narrationHas } from './accents'
+import { finishedItems, isFinished, parsePartialJson } from './partial-json'
 import { findPassage } from './review'
 import { CADENCES, type Cadence, marketNote } from './setup'
 import { type Chapter, chaptersToText, countWords, normalizeChapters, sentencesOf } from './timing'
@@ -180,10 +181,14 @@ function httpStatus(error: unknown): number | null {
   return typeof status === 'number' ? status : null
 }
 
-/** What a Gemini call took, for the timing log: tries, and time spent waiting to ask again. */
+/**
+ * What a Gemini call took, for the timing log: tries, time spent waiting to ask again, and for a
+ * streamed answer, how soon after the call started the answer that was kept began to arrive.
+ */
 interface CallStats {
   tries: number
   waitedMs: number
+  firstWordsMs?: number
 }
 
 /** The token counts Gemini reports with an answer. */
@@ -195,7 +200,9 @@ interface Usage {
 /**
  * One line in the server's log per Gemini call (Vercel's logs, or the worker run's): how long it
  * took and where the time went, e.g. "AI script (gemini-3.8-flash): 18.2 s, 1 try, 310 thinking
- * + 2,040 written tokens". Writing is most of the wait, so the written tokens say the most.
+ * + 2,040 written tokens". Writing is most of the wait, so the written tokens say the most. A
+ * streamed answer also says when its first words came ("first words after 2.1 s"): from then on
+ * the page shows it being written.
  */
 function logCall(
   task: string,
@@ -216,10 +223,12 @@ function logCall(
     return
   }
   const count = (n: number | undefined) => (n ?? 0).toLocaleString('en-US')
+  const firstWords =
+    stats.firstWordsMs === undefined ? '' : `, first words after ${(stats.firstWordsMs / 1000).toFixed(1)} s`
   const tokens = usage
     ? `, ${count(usage.thoughtsTokenCount)} thinking + ${count(usage.candidatesTokenCount)} written tokens`
     : ''
-  console.info(`AI ${task} (${model}): ${seconds} s, ${tries}${waited}${tokens}`)
+  console.info(`AI ${task} (${model}): ${seconds} s, ${tries}${waited}${firstWords}${tokens}`)
 }
 
 /**
@@ -313,6 +322,118 @@ async function withRetry<T>(
   throw new AiError(`Gemini request failed: ${message.slice(0, 300)}`, 'failed')
 }
 
+/** What a streamed AI answer tells its caller while Gemini writes it. */
+export interface AnswerEvents<P> {
+  /**
+   * The answer so far, shaped as the whole answer will be: only the items Gemini has finished
+   * writing, each as the whole answer keeps it, so nothing shown goes away again.
+   */
+  onPartial?: (partial: P) => void
+  /** Gemini starts the answer over (a retry): everything handed over so far is dropped. */
+  onRestart?: () => void
+  /** What Gemini is thinking about, in a few words, while it thinks before answering. */
+  onThought?: (headline: string) => void
+}
+
+/** The same events, with each partial answer turned into what the caller takes. */
+export function mapPartials<A, B>(
+  events: AnswerEvents<B> | undefined,
+  map: (partial: A) => B,
+): AnswerEvents<A> | undefined {
+  if (!events) return undefined
+  const { onPartial } = events
+  return { ...events, onPartial: onPartial && ((partial: A) => onPartial(map(partial))) }
+}
+
+/** A JSON answer Gemini is still writing, read the way the whole answer will be read. */
+interface PartialAnswer {
+  /** A field once it is written in full, read with `schema`: undefined before, or if it doesn't fit. */
+  value<T>(key: string, schema: z.ZodType<T>): T | undefined
+  /**
+   * A list's items written in full so far, each read with `item` (one that doesn't fit is left out,
+   * as the whole answer would fail): undefined before the list starts.
+   */
+  items<T>(key: string, item: z.ZodType<T>): T[] | undefined
+}
+
+function partialAnswer(json: unknown): PartialAnswer {
+  const field = (key: string) =>
+    json && typeof json === 'object' && !Array.isArray(json) && Object.hasOwn(json, key)
+      ? (json as Record<string, unknown>)[key]
+      : undefined
+  const read = <T>(value: unknown, schema: z.ZodType<T>): T[] => {
+    const parsed = schema.safeParse(value)
+    return parsed.success ? [parsed.data] : []
+  }
+  return {
+    value(key, schema) {
+      const value = field(key)
+      return value === undefined || !isFinished(value) ? undefined : read(value, schema)[0]
+    },
+    items(key, item) {
+      const list = field(key)
+      return list === undefined ? undefined : finishedItems(list).flatMap((value) => read(value, item))
+    },
+  }
+}
+
+/**
+ * Events for generateJson from a feature's own: each partial JSON answer is shaped the way the
+ * feature shapes the whole one (`shape`), and handed over only when it shows something new. A
+ * restart is passed on only when something was handed over. Thought summaries only with
+ * `thoughts`, for answers Gemini thinks through at length: elsewhere it barely thinks before
+ * writing, and there would be nothing to show.
+ */
+function shaped<P>(
+  events: AnswerEvents<P> | undefined,
+  shape: (answer: PartialAnswer) => P,
+  { thoughts = false } = {},
+): AnswerEvents<unknown> | undefined {
+  if (!events) return undefined
+  const { onPartial, onRestart } = events
+  let last: string | null = null
+  return {
+    onThought: thoughts ? events.onThought : undefined,
+    onPartial:
+      onPartial &&
+      ((json) => {
+        const partial = shape(partialAnswer(json))
+        const shown = JSON.stringify(partial)
+        if (shown === last) return
+        last = shown
+        onPartial(partial)
+      }),
+    onRestart: () => {
+      if (last === null) return
+      last = null
+      onRestart?.()
+    },
+  }
+}
+
+/** The newest headline in Gemini's thought summaries ("**Checking the health claims**"), or ''. */
+function thoughtHeadline(thoughts: string): string {
+  const headlines = [...thoughts.matchAll(/\*\*([^*\n]+)\*\*/g)]
+  return (headlines.at(-1)?.[1] ?? '').trim().slice(0, 120)
+}
+
+/** The structured answer in `text`, read with `parser`. Throws what another try may fix. */
+function readAnswer<T>(text: string, finish: string | undefined, parser: z.ZodType<T>): T {
+  // Cut off at the length limit: the JSON is unfinished.
+  if (finish === 'MAX_TOKENS') throw new AiError(RAN_TOO_LONG, 'too_long')
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
+  }
+  const parsed = parser.safeParse(data)
+  if (!parsed.success) {
+    throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
+  }
+  return parsed.data
+}
+
 async function generateJson<T>(
   contents: Parameters<GoogleGenAI['models']['generateContent']>[0]['contents'],
   jsonSchema: Record<string, unknown>,
@@ -331,6 +452,12 @@ async function generateJson<T>(
     signal?: AbortSignal
     /** When the work this call is part of has to be done by (a request's own budget otherwise). */
     deadline?: number
+    /**
+     * Hears the answer while Gemini writes it, its partials as parsePartialJson reads the text so
+     * far (see shaped). The same request, streamed: the same tries, limits and checks, and the same
+     * answer at the end.
+     */
+    events?: AnswerEvents<unknown>
   },
 ): Promise<T> {
   const ai = client()
@@ -347,13 +474,18 @@ async function generateJson<T>(
     ? Math.max(ATTEMPT_MS.quick, (maxOutputTokens / TOKENS_PER_SECOND) * 1000)
     : ATTEMPT_MS.thorough
   const deadline = options.deadline ?? requestDeadline()
+  const { events } = options
+  const thinking = thorough ? undefined : quickThinking(model)
+  // Summaries of the thinking, for a line on the page while Gemini thinks. They come with the
+  // thinking, in the same request, and change neither the thinking nor the answer.
+  const thinkingConfig = events?.onThought ? { ...thinking, includeThoughts: true } : thinking
   const started = Date.now()
   const stats: CallStats = { tries: 0, waitedMs: 0 }
   let usage: Usage | undefined
   try {
     const result = await withRetry(
       async (signal) => {
-        const response = await ai.models.generateContent({
+        const request = {
           model,
           contents,
           config: {
@@ -362,27 +494,45 @@ async function generateJson<T>(
             responseJsonSchema: jsonSchema,
             // No temperature: Gemini 3 models are tuned for their default (1.0), and below it they can
             // loop, writing until the output limit, which runs past the time budget.
-            thinkingConfig: thorough ? undefined : quickThinking(model),
+            thinkingConfig,
             ...(maxOutputTokens ? { maxOutputTokens } : {}),
             abortSignal: signal,
           },
-        })
-        usage = response.usageMetadata
-        // Cut off at the length limit: the JSON is unfinished.
-        if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS')
-          throw new AiError(RAN_TOO_LONG, 'too_long')
-        const text = response.text ?? ''
-        let data: unknown
-        try {
-          data = JSON.parse(text)
-        } catch {
-          throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
         }
-        const parsed = parser.safeParse(data)
-        if (!parsed.success) {
-          throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
+        if (!events) {
+          const response = await ai.models.generateContent(request)
+          usage = response.usageMetadata
+          return readAnswer(response.text ?? '', response.candidates?.[0]?.finishReason, parser)
         }
-        return parsed.data
+        // Another try writes the answer from the start: what was handed over of the last one goes.
+        if (stats.tries > 1) events.onRestart?.()
+        stats.firstWordsMs = undefined
+        const stream = await ai.models.generateContentStream(request)
+        let text = ''
+        let thoughts = ''
+        let headline = ''
+        let finish: string | undefined
+        for await (const chunk of stream) {
+          if (chunk.usageMetadata) usage = chunk.usageMetadata
+          finish = chunk.candidates?.[0]?.finishReason ?? finish
+          if (events.onThought) {
+            for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
+              if (part.thought && part.text) thoughts += part.text
+            }
+            const now = thoughtHeadline(thoughts)
+            if (now && now !== headline) {
+              headline = now
+              events.onThought(now)
+            }
+          }
+          // The answer's own text: the SDK leaves the thought summaries out of it.
+          const add = chunk.text ?? ''
+          if (!add) continue
+          stats.firstWordsMs ??= Date.now() - started
+          text += add
+          events.onPartial?.(parsePartialJson(text))
+        }
+        return readAnswer(text, finish, parser)
       },
       options.signal,
       deadline,
@@ -537,6 +687,7 @@ export async function draftScript(
         }
         const current = storyboardAsWritten(board, deadline, events.onPart)
         latest.storyboard = current
+        stats.firstWordsMs = undefined
         const stream = await ai.models.generateContentStream({
           model,
           contents,
@@ -554,6 +705,7 @@ export async function draftScript(
         /** Paragraphs handed to the storyboard so far. */
         let fed = 0
         for await (const chunk of stream) {
+          if (chunk.text) stats.firstWordsMs ??= Date.now() - started
           text += chunk.text ?? ''
           finish = chunk.candidates?.[0]?.finishReason ?? finish
           if (chunk.usageMetadata) usage = chunk.usageMetadata
@@ -1010,20 +1162,83 @@ export interface ScriptClaim {
   safer: string
 }
 
+/** What the script doctor finds: lines to punch up, and claims to check. */
+export interface ScriptReview {
+  edits: ScriptEdit[]
+  claims: ScriptClaim[]
+}
+
+const editAnswer = z.object({
+  original: z.string(),
+  suggestion: z.string(),
+  kind: z.string(),
+  why: z.string().default(''),
+})
+const claimAnswer = z.object({
+  quote: z.string(),
+  verdict: z.string(),
+  note: z.string().default(''),
+  safer: z.string().default(''),
+})
+
+/**
+ * The review from Gemini's edits and claims: only passages found in the script, as written there.
+ * The same for the items written so far as for the whole answer, so an item shown while Gemini
+ * writes is one the review keeps.
+ */
+function reviewOf(
+  script: string,
+  answer: { edits: z.infer<typeof editAnswer>[]; claims: z.infer<typeof claimAnswer>[] },
+): ScriptReview {
+  const kinds = ['funnier', 'tighter', 'clearer', 'cut'] as const
+  const verdicts = ['ok', 'check', 'wrong'] as const
+  const edits = answer.edits.flatMap((e): ScriptEdit[] => {
+    const original = findPassage(script, e.original)
+    const suggestion = e.suggestion.trim()
+    if (!original || suggestion === original.trim()) return []
+    return [
+      {
+        original,
+        suggestion,
+        kind: kinds.find((k) => k === e.kind) ?? 'clearer',
+        why: e.why.trim().slice(0, 300),
+      },
+    ]
+  })
+  const claims = answer.claims.flatMap((c): ScriptClaim[] => {
+    const quote = findPassage(script, c.quote)
+    if (!quote) return []
+    const verdict = verdicts.find((v) => v === c.verdict) ?? 'check'
+    return [
+      { quote, verdict, note: c.note.trim().slice(0, 400), safer: verdict === 'ok' ? '' : c.safer.trim() },
+    ]
+  })
+  const seen = new Set<string>()
+  return {
+    edits: edits.filter((e) => !seen.has(e.original) && seen.add(e.original)).slice(0, 10),
+    claims: claims.slice(0, 12),
+  }
+}
+
 /**
  * An editor's read of the script: lines to make funnier, tighter or clearer (or cut), in the
  * narrator's own voice, and the factual claims, health ones above all, with how sure they are.
- * Only passages found in the script come back, as they are written there.
+ * Only passages found in the script come back, as they are written there. With `events`, each
+ * edit and claim is handed over as soon as Gemini has written it, with what Gemini is thinking
+ * about before that.
  */
-export async function reviewScript(input: {
-  script: string
-  title: string
-  voice: ScriptVoice
-}): Promise<{ edits: ScriptEdit[]; claims: ScriptClaim[] }> {
+export async function reviewScript(
+  input: {
+    script: string
+    title: string
+    voice: ScriptVoice
+  },
+  events?: AnswerEvents<ScriptReview>,
+): Promise<ScriptReview> {
   const prompt = `You are the script editor for a YouTube channel. Read this narration script and return:
 
 - edits: up to 10 lines worth improving, the weakest first. Make a flat line funnier, a wordy one tighter, a confusing one clearer, or cut filler that slows the video down. Rewrite in the narrator's own voice and keep the facts. "original" is copied exactly from the script (one sentence or part of one, never more than two sentences); "suggestion" replaces it (for kind "cut", the few words that remain, or ""). kind is one of funnier, tighter, clearer, cut; why is one short sentence. Leave lines that already work alone.
-- claims: every factual claim a viewer could act on or repeat, health and science ones above all. "quote" is copied exactly from the script; verdict "ok" (well established), "check" (simplified, disputed or needs a source) or "wrong" (not supported); note says why in one sentence; safer is accurate wording in the narrator's voice when verdict is check or wrong, otherwise "". YouTube removes medical misinformation, so be strict with health advice.
+- claims: up to 12 factual claims a viewer could act on or repeat, the most important first: health and science ones above all. "quote" is copied exactly from the script; verdict "ok" (well established), "check" (simplified, disputed or needs a source) or "wrong" (not supported); note says why in one sentence; safer is accurate wording in the narrator's voice when verdict is check or wrong, otherwise "". YouTube removes medical misinformation, so be strict with health advice.
 
 Title: ${input.title || '(none yet)'}
 ${voiceNotes(input.voice)}
@@ -1066,56 +1281,24 @@ ${input.script.trim()}
       },
       required: ['edits', 'claims'],
     },
-    z.object({
-      edits: z.array(
-        z.object({
-          original: z.string(),
-          suggestion: z.string(),
-          kind: z.string(),
-          why: z.string().default(''),
-        }),
-      ),
-      claims: z.array(
-        z.object({
-          quote: z.string(),
-          verdict: z.string(),
-          note: z.string().default(''),
-          safer: z.string().default(''),
-        }),
-      ),
-    }),
+    z.object({ edits: z.array(editAnswer), claims: z.array(claimAnswer) }),
     'You are a sharp, funny script editor and a careful fact checker for educational YouTube channels.',
     // Facts need thought.
-    { task: 'script doctor', thinking: 'default' },
+    {
+      task: 'script doctor',
+      thinking: 'default',
+      events: shaped(
+        events,
+        (answer) =>
+          reviewOf(input.script, {
+            edits: answer.items('edits', editAnswer) ?? [],
+            claims: answer.items('claims', claimAnswer) ?? [],
+          }),
+        { thoughts: true },
+      ),
+    },
   )
-  const kinds = ['funnier', 'tighter', 'clearer', 'cut'] as const
-  const verdicts = ['ok', 'check', 'wrong'] as const
-  const edits = result.edits.flatMap((e): ScriptEdit[] => {
-    const original = findPassage(input.script, e.original)
-    const suggestion = e.suggestion.trim()
-    if (!original || suggestion === original.trim()) return []
-    return [
-      {
-        original,
-        suggestion,
-        kind: kinds.find((k) => k === e.kind) ?? 'clearer',
-        why: e.why.trim().slice(0, 300),
-      },
-    ]
-  })
-  const claims = result.claims.flatMap((c): ScriptClaim[] => {
-    const quote = findPassage(input.script, c.quote)
-    if (!quote) return []
-    const verdict = verdicts.find((v) => v === c.verdict) ?? 'check'
-    return [
-      { quote, verdict, note: c.note.trim().slice(0, 400), safer: verdict === 'ok' ? '' : c.safer.trim() },
-    ]
-  })
-  const seen = new Set<string>()
-  return {
-    edits: edits.filter((e) => !seen.has(e.original) && seen.add(e.original)).slice(0, 10),
-    claims: claims.slice(0, 12),
-  }
+  return reviewOf(input.script, result)
 }
 
 export interface HookCheck {
@@ -1130,18 +1313,59 @@ export interface HookCheck {
   openings: { text: string; why: string }[]
 }
 
+const hookAnswer = z.object({
+  score: z.number(),
+  verdict: z.string(),
+  problems: z.array(z.string()).default([]),
+  promise: z.object({ kept: z.boolean(), note: z.string().default('') }),
+  replaces: z.string(),
+  openings: z.array(z.object({ text: z.string(), why: z.string().default('') })),
+})
+
+/** The hook check from Gemini's answer, or from the parts of it written so far. */
+function hookOf(script: string, answer: Partial<z.infer<typeof hookAnswer>>): Partial<HookCheck> {
+  const hook: Partial<HookCheck> = {}
+  if (answer.score !== undefined) hook.score = Math.min(10, Math.max(1, Math.round(answer.score) || 5))
+  if (answer.verdict !== undefined) hook.verdict = answer.verdict.trim().slice(0, 300)
+  if (answer.problems) {
+    hook.problems = answer.problems
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+  }
+  if (answer.promise)
+    hook.promise = { kept: answer.promise.kept, note: answer.promise.note.trim().slice(0, 300) }
+  if (answer.replaces !== undefined) {
+    // The part to replace must really be the start of the script; otherwise the first sentence.
+    const found = findPassage(script, answer.replaces)
+    hook.replaces =
+      found && script.indexOf(found) <= 40 ? found : (findPassage(script, sentencesOf(script)[0] ?? '') ?? '')
+  }
+  if (answer.openings) {
+    hook.openings = answer.openings
+      .map((o) => ({ text: o.text.trim(), why: o.why.trim().slice(0, 300) }))
+      .filter((o) => o.text)
+      .slice(0, 3)
+  }
+  return hook
+}
+
 /**
  * How well the first 15 seconds hold a new viewer: a score, what loses them, whether the opening
- * pays off the title and thumbnail, and three stronger openings in the narrator's voice.
+ * pays off the title and thumbnail, and three stronger openings in the narrator's voice. With
+ * `events`, each part (the score, the verdict, each opening) is handed over as soon as it's written.
  */
-export async function checkHook(input: {
-  script: string
-  title: string
-  thumbnailText: string
-  voice: ScriptVoice
-  /** Where viewers left the channel's recent videos (retentionLesson). */
-  lessons: string[]
-}): Promise<HookCheck> {
+export async function checkHook(
+  input: {
+    script: string
+    title: string
+    thumbnailText: string
+    voice: ScriptVoice
+    /** Where viewers left the channel's recent videos (retentionLesson). */
+    lessons: string[]
+  },
+  events?: AnswerEvents<Partial<HookCheck>>,
+): Promise<HookCheck> {
   const opening = sentencesOf(input.script).slice(0, 6).join(' ')
   const prompt = `Judge the opening of this YouTube video: the first 15 seconds (about 40 spoken words) decide whether a new viewer stays.
 
@@ -1161,6 +1385,7 @@ Return:
 - promise: kept is true when the opening quickly confirms the video is about what the title and thumbnail promise; note says how, in one sentence.
 - replaces: the opening as it is now that a new opening would replace: the first 1–3 sentences, copied exactly from the script.
 - openings: 3 stronger openings, different approaches (a question, a surprising fact, a relatable moment), each 1–3 sentences in the narrator's voice that lead naturally into the rest of the script, with why (one sentence).`
+  const shape = hookAnswer.shape
   const result = await generateJson(
     prompt,
     {
@@ -1182,51 +1407,58 @@ Return:
       },
       required: ['score', 'verdict', 'problems', 'promise', 'replaces', 'openings'],
     },
-    z.object({
-      score: z.number(),
-      verdict: z.string(),
-      problems: z.array(z.string()).default([]),
-      promise: z.object({ kept: z.boolean(), note: z.string().default('') }),
-      replaces: z.string(),
-      openings: z.array(z.object({ text: z.string(), why: z.string().default('') })),
-    }),
+    hookAnswer,
     'You are a YouTube retention expert who writes openings that make people stay.',
-    { task: 'hook check' },
+    {
+      task: 'hook check',
+      events: shaped(events, (answer) =>
+        hookOf(input.script, {
+          score: answer.value('score', shape.score),
+          verdict: answer.value('verdict', shape.verdict),
+          problems: answer.items('problems', z.string()),
+          promise: answer.value('promise', shape.promise),
+          replaces: answer.value('replaces', shape.replaces),
+          openings: answer.items('openings', shape.openings.element),
+        }),
+      ),
+    },
   )
-  // The part to replace must really be the start of the script; otherwise the first sentence.
-  const found = findPassage(input.script, result.replaces)
-  const replaces =
-    found && input.script.indexOf(found) <= 40
-      ? found
-      : (findPassage(input.script, sentencesOf(input.script)[0] ?? '') ?? '')
-  return {
-    score: Math.min(10, Math.max(1, Math.round(result.score) || 5)),
-    verdict: result.verdict.trim().slice(0, 300),
-    problems: result.problems
-      .map((p) => p.trim())
-      .filter(Boolean)
-      .slice(0, 3),
-    promise: { kept: result.promise.kept, note: result.promise.note.trim().slice(0, 300) },
-    replaces,
-    openings: result.openings
-      .map((o) => ({ text: o.text.trim(), why: o.why.trim().slice(0, 300) }))
-      .filter((o) => o.text)
-      .slice(0, 3),
-  }
+  return hookOf(input.script, result) as HookCheck
+}
+
+/** One note of the packaging review. */
+export interface PackagingNote {
+  level: 'good' | 'look' | 'fix'
+  text: string
+}
+
+const noteAnswer = z.object({ level: z.string(), text: z.string() })
+
+/** The notes the review keeps, from all of Gemini's or the ones written so far. */
+function notesOf(notes: z.infer<typeof noteAnswer>[]): PackagingNote[] {
+  const levels = ['good', 'look', 'fix'] as const
+  return notes
+    .map((n) => ({ level: levels.find((l) => l === n.level) ?? 'look', text: n.text.trim().slice(0, 400) }))
+    .filter((n) => n.text)
+    .slice(0, 5)
 }
 
 /**
  * Whether the title, thumbnail, description and opening sell one video, and what could get it
- * demonetized or limited: up to 5 notes, each good, worth a look, or to fix.
+ * demonetized or limited: up to 5 notes, each good, worth a look, or to fix. With `events`, each
+ * note is handed over as soon as it's written.
  */
-export async function reviewPackaging(input: {
-  title: string
-  thumbnailText: string
-  thumbnailIdea: string
-  description: string
-  opening: string
-  audience: string
-}): Promise<{ level: 'good' | 'look' | 'fix'; text: string }[]> {
+export async function reviewPackaging(
+  input: {
+    title: string
+    thumbnailText: string
+    thumbnailIdea: string
+    description: string
+    opening: string
+    audience: string
+  },
+  events?: AnswerEvents<PackagingNote[]>,
+): Promise<PackagingNote[]> {
   const prompt = `Review how this YouTube video is packaged, as a strategist would before it posts.
 
 Title: ${input.title || '(none yet)'}
@@ -1253,15 +1485,14 @@ Return notes: up to 5, the most important first, each with level "good", "look" 
       },
       required: ['notes'],
     },
-    z.object({ notes: z.array(z.object({ level: z.string(), text: z.string() })) }),
+    z.object({ notes: z.array(noteAnswer) }),
     'You are a YouTube packaging strategist: titles, thumbnails and openings that get honest clicks.',
-    { task: 'packaging review' },
+    {
+      task: 'packaging review',
+      events: shaped(events, (answer) => notesOf(answer.items('notes', noteAnswer) ?? [])),
+    },
   )
-  const levels = ['good', 'look', 'fix'] as const
-  return result.notes
-    .map((n) => ({ level: levels.find((l) => l === n.level) ?? 'look', text: n.text.trim().slice(0, 400) }))
-    .filter((n) => n.text)
-    .slice(0, 5)
+  return notesOf(result.notes)
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,7 +1613,63 @@ export interface PostDraft {
   comment: string
 }
 
-export async function writePostDetails(input: PostDraftInput): Promise<PostDraft> {
+const postAnswer = z.object({
+  titleOptions: z.array(z.string()).min(1),
+  description: z.string(),
+  tags: z.array(z.string()),
+  hashtags: z.array(z.string()),
+  chapterPicks: z.array(z.object({ sceneIndex: z.number(), title: z.string() })),
+  thumbnailIdeas: z.array(z.string()),
+  thumbnailText: z.string(),
+  comment: z.string().default(''),
+})
+
+/**
+ * The post details from Gemini's answer, or from the parts of it written so far: title ideas and
+ * thumbnail ideas one by one, the rest once each is whole. The description shows once written, and
+ * gains the chapters and hashtags as they are: they come after it.
+ */
+function postDraftOf(input: PostDraftInput, answer: Partial<z.infer<typeof postAnswer>>): Partial<PostDraft> {
+  const draft: Partial<PostDraft> = {}
+  const chapters =
+    answer.chapterPicks &&
+    normalizeChapters(
+      answer.chapterPicks
+        .filter((c) => input.scenes[c.sceneIndex])
+        .map((c) => ({ start: input.scenes[c.sceneIndex].start, title: c.title, scene: c.sceneIndex })),
+      input.duration,
+    )
+  const hashtags = answer.hashtags?.map((h) => (h.startsWith('#') ? h : `#${h}`).replace(/\s+/g, ''))
+  if (answer.titleOptions) draft.titleOptions = answer.titleOptions.map((t) => t.trim().slice(0, 100))
+  if (answer.description !== undefined) {
+    draft.description = composeDescription(
+      answer.description.trim(),
+      chapters ?? [],
+      input.descriptionFooter,
+      hashtags ?? [],
+    )
+  }
+  if (answer.tags) {
+    draft.tags = fitTags(
+      dedupe([...answer.tags, ...input.defaultTags].map((t) => t.replace(/^#/, '').trim()).filter(Boolean)),
+    )
+  }
+  if (hashtags) draft.hashtags = hashtags
+  if (chapters) draft.chapters = chapters
+  if (answer.thumbnailIdeas) draft.thumbnailIdeas = answer.thumbnailIdeas
+  if (answer.thumbnailText !== undefined) draft.thumbnailText = answer.thumbnailText
+  if (answer.comment !== undefined) draft.comment = answer.comment.trim().slice(0, 500)
+  return draft
+}
+
+/**
+ * Title ideas, description, tags, hashtags, chapters, thumbnail ideas and a comment for viewers.
+ * With `events`, each part is handed over as soon as it's written.
+ */
+export async function writePostDetails(
+  input: PostDraftInput,
+  events?: AnswerEvents<Partial<PostDraft>>,
+): Promise<PostDraft> {
   const sceneList = input.scenes
     .map((s, i) => `[${i}] ${s.start.toFixed(0)}s: ${s.narration.slice(0, 160)}`)
     .join('\n')
@@ -1407,6 +1694,7 @@ Return:
 - thumbnailIdeas: 3 thumbnail concepts, one sentence each, describing a single striking image.
 - thumbnailText: 2–4 punchy words to print on the thumbnail.
 - comment: a short, friendly comment the channel posts under the video, asking viewers a fun question about it they will want to answer (in the narrator's voice if the script has one). Max 200 characters, at most one emoji.`
+  const shape = postAnswer.shape
   const draft = await generateJson(
     prompt,
     {
@@ -1438,39 +1726,26 @@ Return:
         'thumbnailText',
       ],
     },
-    z.object({
-      titleOptions: z.array(z.string()).min(1),
-      description: z.string(),
-      tags: z.array(z.string()),
-      hashtags: z.array(z.string()),
-      chapterPicks: z.array(z.object({ sceneIndex: z.number(), title: z.string() })),
-      thumbnailIdeas: z.array(z.string()),
-      thumbnailText: z.string(),
-      comment: z.string().default(''),
-    }),
+    postAnswer,
     'You are a YouTube growth strategist who writes clear, honest, search-friendly metadata.',
-    { task: 'post details' },
+    {
+      task: 'post details',
+      events: shaped(events, (answer) =>
+        postDraftOf(input, {
+          titleOptions: answer.items('titleOptions', z.string()),
+          description: answer.value('description', shape.description),
+          // Whole lists: tags are topped up with the defaults, chapters are spaced out together.
+          tags: answer.value('tags', shape.tags),
+          hashtags: answer.value('hashtags', shape.hashtags),
+          chapterPicks: answer.value('chapterPicks', shape.chapterPicks),
+          thumbnailIdeas: answer.items('thumbnailIdeas', z.string()),
+          thumbnailText: answer.value('thumbnailText', shape.thumbnailText),
+          comment: answer.value('comment', shape.comment),
+        }),
+      ),
+    },
   )
-  const chapters = normalizeChapters(
-    draft.chapterPicks
-      .filter((c) => input.scenes[c.sceneIndex])
-      .map((c) => ({ start: input.scenes[c.sceneIndex].start, title: c.title, scene: c.sceneIndex })),
-    input.duration,
-  )
-  const hashtags = draft.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`).replace(/\s+/g, ''))
-  const tags = dedupe(
-    [...draft.tags, ...input.defaultTags].map((t) => t.replace(/^#/, '').trim()).filter(Boolean),
-  )
-  return {
-    titleOptions: draft.titleOptions.map((t) => t.trim().slice(0, 100)),
-    description: composeDescription(draft.description.trim(), chapters, input.descriptionFooter, hashtags),
-    tags: fitTags(tags),
-    hashtags,
-    chapters,
-    thumbnailIdeas: draft.thumbnailIdeas,
-    thumbnailText: draft.thumbnailText,
-    comment: draft.comment.trim().slice(0, 500),
-  }
+  return postDraftOf(input, draft) as PostDraft
 }
 
 /**
@@ -1896,7 +2171,31 @@ export interface IdeaRequest {
   pillars?: string[]
 }
 
-export async function generateIdeas(input: IdeaRequest): Promise<{ title: string; angle: string }[]> {
+/** A video idea: a working title and the angle a script is written from. */
+export interface IdeaDraft {
+  title: string
+  angle: string
+}
+
+const ideaAnswer = z.object({ title: z.string(), angle: z.string() })
+
+/** The ideas kept from Gemini's, all of them or the ones written so far: tidied, at most `max`. */
+function ideasOf(
+  ideas: IdeaDraft[],
+  max: number,
+  skip: (title: string) => boolean = () => false,
+): IdeaDraft[] {
+  return ideas
+    .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
+    .filter((i) => i.title && !skip(i.title))
+    .slice(0, max)
+}
+
+/** New ideas for the channel. With `events`, each idea is handed over as soon as it's written. */
+export async function generateIdeas(
+  input: IdeaRequest,
+  events?: AnswerEvents<IdeaDraft[]>,
+): Promise<IdeaDraft[]> {
   const avoid = input.avoid
     .filter(Boolean)
     .slice(0, 80)
@@ -1934,14 +2233,14 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
       },
       required: ['ideas'],
     },
-    z.object({ ideas: z.array(z.object({ title: z.string(), angle: z.string() })).min(1) }),
+    z.object({ ideas: z.array(ideaAnswer).min(1) }),
     'You are a YouTube strategist who finds video ideas that people search for and click on.',
-    { task: 'ideas' },
+    {
+      task: 'ideas',
+      events: shaped(events, (answer) => ideasOf(answer.items('ideas', ideaAnswer) ?? [], input.count)),
+    },
   )
-  return result.ideas
-    .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
-    .filter((i) => i.title)
-    .slice(0, input.count)
+  return ideasOf(result.ideas, input.count)
 }
 
 /**
@@ -2008,33 +2307,38 @@ export async function ideaFromBreakout(input: {
 /**
  * Up to 3 follow-ups to one of the channel's own videos that is doing far better than usual: the
  * same pull that made it work (its question, hook or surprise) taken to the next question its
- * viewers would have, never the same video again.
+ * viewers would have, never the same video again. With `events`, each idea is handed over as soon
+ * as it's written.
  */
-export async function followUpIdeas(input: {
-  niche: string
-  narration: string
-  language: string
-  market?: string
-  format: VideoFormat
-  video: {
-    title: string
-    /** What it is about (its brief). */
-    topic: string
-    /** The start of its script, where the hook usually is. */
-    opening: string
-    views: number
-    /** What the channel's videos of its kind usually get (see shared/hits.ts). */
-    usual: number
-    /** Average percentage watched, when YouTube Analytics has it. */
-    watched: number | null
-    /** YouTube searches that found it, most views first. */
-    searches: string[]
-  }
-  /** Titles already made or planned, so ideas don't repeat them. */
-  avoid: string[]
-}): Promise<{ title: string; angle: string }[]> {
+export async function followUpIdeas(
+  input: {
+    niche: string
+    narration: string
+    language: string
+    market?: string
+    format: VideoFormat
+    video: {
+      title: string
+      /** What it is about (its brief). */
+      topic: string
+      /** The start of its script, where the hook usually is. */
+      opening: string
+      views: number
+      /** What the channel's videos of its kind usually get (see shared/hits.ts). */
+      usual: number
+      /** Average percentage watched, when YouTube Analytics has it. */
+      watched: number | null
+      /** YouTube searches that found it, most views first. */
+      searches: string[]
+    }
+    /** Titles already made or planned, so ideas don't repeat them. */
+    avoid: string[]
+  },
+  events?: AnswerEvents<IdeaDraft[]>,
+): Promise<IdeaDraft[]> {
   const { video } = input
   const kind = input.format === 'portrait' ? 'Shorts' : 'videos'
+  const same = (title: string) => title.toLowerCase() === video.title.trim().toLowerCase()
   const times = Math.round((video.views / Math.max(video.usual, 1)) * 10) / 10
   const avoid = input.avoid
     .filter(Boolean)
@@ -2073,15 +2377,14 @@ export async function followUpIdeas(input: {
       },
       required: ['ideas'],
     },
-    z.object({ ideas: z.array(z.object({ title: z.string(), angle: z.string() })).min(1) }),
+    z.object({ ideas: z.array(ideaAnswer).min(1) }),
     'You are a YouTube strategist who finds video ideas that people search for and click on.',
-    { task: 'follow-up ideas' },
+    {
+      task: 'follow-up ideas',
+      events: shaped(events, (answer) => ideasOf(answer.items('ideas', ideaAnswer) ?? [], 3, same)),
+    },
   )
-  const same = (title: string) => title.toLowerCase() === video.title.trim().toLowerCase()
-  return result.ideas
-    .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
-    .filter((i) => i.title && !same(i.title))
-    .slice(0, 3)
+  return ideasOf(result.ideas, 3, same)
 }
 
 // ---------------------------------------------------------------------------

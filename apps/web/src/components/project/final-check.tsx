@@ -1,19 +1,19 @@
 'use client'
 
+import type { PackagingNote } from '@cutroom/shared/ai'
 import { type PostCheck, postChecks } from '@cutroom/shared/review'
 import { totalDuration } from '@cutroom/shared/timing'
 import { EMPTY_POST, hasPicture } from '@cutroom/shared/types'
 import { Check, CircleAlert, Sparkles, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Button, Panel } from '@/components/ui'
-import { api, errorText } from '@/lib/api'
+import { Button, Panel, Spinner } from '@/components/ui'
+import { errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ProjectFull } from '@/lib/dto'
 import { useSaver, useStatus } from '@/lib/hooks'
 import type { StepId } from '@/lib/stage'
-
-type Note = { level: 'good' | 'look' | 'fix'; text: string }
+import { streamAnswer } from '@/lib/stream'
 
 /** The checks for this project as it is now. */
 export function finalChecks(data: ProjectFull): PostCheck[] {
@@ -51,13 +51,14 @@ function Mark({ level }: { level: keyof typeof ICON }) {
 /**
  * The final check before posting: what YouTube would refuse or do badly (fix), what usually costs
  * views or ad money (look), and what is fine, worked out from the post itself; plus an optional AI
- * read of whether the title, thumbnail, description and opening sell one video honestly.
+ * read of whether the title, thumbnail, description and opening sell one video honestly, each note
+ * shown as soon as Gemini has written it.
  */
 export function FinalCheck({ data, goTo }: { data: ProjectFull; goTo: (step: StepId) => void }) {
   const { project } = data
   const { saver } = useSaver(project.id)
   const { data: status } = useStatus()
-  const [notes, setNotes] = useState<Note[] | null>(null)
+  const [notes, setNotes] = useState<PackagingNote[] | null>(null)
   const [busy, setBusy] = useState(false)
   const checks = finalChecks(data)
   const fix = checks.filter((c) => c.level === 'fix').length
@@ -66,10 +67,19 @@ export function FinalCheck({ data, goTo }: { data: ProjectFull; goTo: (step: Ste
   const review = async () => {
     await saver.flushAll()
     setBusy(true)
+    // Shown again if this one fails.
+    const before = notes
+    setNotes([])
     try {
-      setNotes((await api.post<{ notes: Note[] }>(`/api/projects/${project.id}/ai/packaging`)).notes)
+      const { notes: next } = await streamAnswer<{ notes: PackagingNote[] }>(
+        `/api/projects/${project.id}/ai/packaging`,
+        {},
+        { partial: (sofar) => setNotes(sofar.notes), restart: () => setNotes([]) },
+      )
+      setNotes(next)
     } catch (error) {
       toast.error(errorText(error))
+      setNotes(before)
     } finally {
       setBusy(false)
     }
@@ -121,8 +131,16 @@ export function FinalCheck({ data, goTo }: { data: ProjectFull; goTo: (step: Ste
         {notes && (
           <section aria-label="Packaging review" className="border-t border-line px-5 py-3.5">
             <h3 className="text-[13px] font-semibold">Title, thumbnail and opening</h3>
+            {busy && (
+              <p className="mt-1 flex items-center gap-2 text-[13px] text-ink-2" aria-live="polite">
+                <Spinner className="text-ink-3" />
+                {notes.length
+                  ? 'Gemini is still writing: more on the way.'
+                  : 'Gemini is reading the packaging…'}
+              </p>
+            )}
             {notes.length === 0 ? (
-              <p className="mt-1 text-[13px] text-ink-2">Nothing to add.</p>
+              !busy && <p className="mt-1 text-[13px] text-ink-2">Nothing to add.</p>
             ) : (
               <ul className="mt-2 flex flex-col gap-2">
                 {notes.map((note) => (

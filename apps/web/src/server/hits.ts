@@ -1,7 +1,7 @@
 // Your own videos doing far better than usual (Ideas → Your hits). Found from the stats the daily
 // refresh stores (shared/hits.ts), with no AI: the daily cron tells you about each new one once,
 // and each can become follow-up ideas, the only Gemini call here, made when you ask for it.
-import { followUpIdeas, hasGeminiKey } from '@cutroom/shared/ai'
+import { type AnswerEvents, followUpIdeas, hasGeminiKey, type IdeaDraft } from '@cutroom/shared/ai'
 import { findHits, type Hit, type HitCandidate } from '@cutroom/shared/hits'
 import { and, eq, isNotNull, isNull } from 'drizzle-orm'
 import { resolveChannel } from '@/lib/channels'
@@ -120,10 +120,13 @@ export async function announceNewHits(baseUrl = appUrl()): Promise<string | null
 }
 
 /**
- * Has Gemini write up to 3 follow-up ideas for one of your hits (one call), and adds them to the
- * New ideas, in the hit's series if it has one: the next episodes. Returns the ideas.
+ * Follow-up ideas for one of your hits: checks it is one, and returns the work that has Gemini
+ * write up to 3 (one call) and adds them to the New ideas, in the hit's series if it has one: the
+ * next episodes. The work returns the ideas; with `events`, each is handed over as it's written.
  */
-export async function followUpHit(projectId: string): Promise<IdeaDTO[]> {
+export async function followUpHit(
+  projectId: string,
+): Promise<(events?: AnswerEvents<IdeaDraft[]>) => Promise<IdeaDTO[]>> {
   if (!hasGeminiKey()) badRequest('Add GEMINI_API_KEY to your environment to use AI features.')
   const database = await db()
   const [row] = await database.select().from(schema.projects).where(eq(schema.projects.id, projectId))
@@ -136,35 +139,40 @@ export async function followUpHit(projectId: string): Promise<IdeaDTO[]> {
     database.select({ title: schema.projects.title, topic: schema.projects.topic }).from(schema.projects),
     database.select({ title: schema.ideas.title }).from(schema.ideas),
   ])
-  const ideas = await followUpIdeas({
-    niche: settings.niche.description,
-    narration: settings.niche.narration,
-    language: project.language || settings.defaults.language,
-    market: settings.niche.market,
-    format: project.format,
-    video: {
-      title: titleOf(project),
-      topic: project.topic,
-      opening: project.script.trim().slice(0, 600),
-      views: hit.views,
-      usual: hit.usual,
-      watched: project.stats?.averageViewPercent ?? null,
-      searches: (project.videoInsights?.searchTerms ?? []).map((t) => t.term),
-    },
-    avoid: [titleOf(project), ...made.map((p) => p.title || p.topic), ...planned.map((i) => i.title)],
-  })
-  if (!ideas.length) return []
-  const rows = await database
-    .insert(schema.ideas)
-    .values(
-      ideas.map((idea) => ({
-        id: crypto.randomUUID(),
-        title: idea.title,
-        angle: idea.angle,
-        seriesId: project.seriesId,
-        followUpOf: project.id,
-      })),
+  return async (events) => {
+    const ideas = await followUpIdeas(
+      {
+        niche: settings.niche.description,
+        narration: settings.niche.narration,
+        language: project.language || settings.defaults.language,
+        market: settings.niche.market,
+        format: project.format,
+        video: {
+          title: titleOf(project),
+          topic: project.topic,
+          opening: project.script.trim().slice(0, 600),
+          views: hit.views,
+          usual: hit.usual,
+          watched: project.stats?.averageViewPercent ?? null,
+          searches: (project.videoInsights?.searchTerms ?? []).map((t) => t.term),
+        },
+        avoid: [titleOf(project), ...made.map((p) => p.title || p.topic), ...planned.map((i) => i.title)],
+      },
+      events,
     )
-    .returning()
-  return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }))
+    if (!ideas.length) return []
+    const rows = await database
+      .insert(schema.ideas)
+      .values(
+        ideas.map((idea) => ({
+          id: crypto.randomUUID(),
+          title: idea.title,
+          angle: idea.angle,
+          seriesId: project.seriesId,
+          followUpOf: project.id,
+        })),
+      )
+      .returning()
+    return rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() }))
+  }
 }

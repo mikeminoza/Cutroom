@@ -1,15 +1,16 @@
 'use client'
 
-import type { HookCheck, ScriptClaim, ScriptEdit } from '@cutroom/shared/ai'
+import type { HookCheck, ScriptClaim, ScriptEdit, ScriptReview } from '@cutroom/shared/ai'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, Mic, Sparkles, Stethoscope, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Button, Panel, Segmented } from '@/components/ui'
+import { Button, Panel, Segmented, Spinner } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ProjectFull } from '@/lib/dto'
 import { keys, useSaver, useStatus } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 
 const KIND: Record<ScriptEdit['kind'], string> = {
   funnier: 'Funnier',
@@ -24,7 +25,7 @@ const VERDICT: Record<ScriptClaim['verdict'], { label: string; className: string
   wrong: { label: 'Likely wrong', className: 'bg-bad-wash text-bad' },
 }
 
-type Review = { edits: ScriptEdit[]; claims: ScriptClaim[] }
+const NO_REVIEW: ScriptReview = { edits: [], claims: [] }
 
 /** "Changed in the script and scenes 3 and 4." */
 function changedWhere(edit: { script: boolean; scenes: number[] }, hasScenes: boolean): string {
@@ -42,8 +43,9 @@ function changedWhere(edit: { script: boolean; scenes: number[] }, hasScenes: bo
 /**
  * The script doctor: Gemini reads the script like an editor. "Check the hook" rates the first 15
  * seconds and offers three stronger openings; "Punch up and check facts" suggests funnier, tighter
- * lines in the narrator's voice and flags claims to check. Nothing changes until a suggestion is
- * accepted, and then it changes in the script and in the scenes that hold the words.
+ * lines in the narrator's voice and flags claims to check. Each suggestion shows as soon as Gemini
+ * has written it. Nothing changes until a suggestion is accepted, and then it changes in the script
+ * and in the scenes that hold the words.
  */
 export function ScriptDoctor({ data }: { data: ProjectFull }) {
   const { project, scenes } = data
@@ -51,27 +53,56 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
   const { saver } = useSaver(project.id)
   const { data: status } = useStatus()
   const [busy, setBusy] = useState<'hook' | 'review' | null>(null)
-  const [hook, setHook] = useState<HookCheck | null>(null)
-  const [review, setReview] = useState<Review | null>(null)
+  // As much of each as Gemini has written: the whole check once it's done.
+  const [hook, setHook] = useState<Partial<HookCheck> | null>(null)
+  const [review, setReview] = useState<ScriptReview | null>(null)
+  /** What Gemini is thinking about before it writes the review, in a few words. */
+  const [thinking, setThinking] = useState<string | null>(null)
+  /** Suggestions accepted or skipped (by their words): gone, also when more of the review arrives. */
+  const [handled, setHandled] = useState<Set<string>>(() => new Set())
   const [tab, setTab] = useState<'edits' | 'claims'>('edits')
   const [applying, setApplying] = useState<string | null>(null)
   const ready = status?.gemini.configured !== false
   const hasScript = Boolean(project.script.trim() || scenes.some((s) => s.narration.trim()))
+  const edits = review?.edits.filter((e) => !handled.has(`edit:${e.original}`)) ?? []
+  const claims = review?.claims.filter((c) => !handled.has(`claim:${c.quote}`)) ?? []
+  const reviewing = busy === 'review'
 
   const run = async (kind: 'hook' | 'review') => {
     await saver.flushAll()
     setBusy(kind)
+    // Shown again if this one fails.
+    const before = { hook, review, handled }
     try {
-      if (kind === 'hook') setHook(await api.post<HookCheck>(`/api/projects/${project.id}/ai/hook`))
-      else {
-        const next = await api.post<Review>(`/api/projects/${project.id}/ai/review`)
+      if (kind === 'hook') {
+        setHook({})
+        setHook(
+          await streamAnswer<HookCheck, Partial<HookCheck>>(
+            `/api/projects/${project.id}/ai/hook`,
+            {},
+            { partial: setHook, restart: () => setHook({}) },
+          ),
+        )
+      } else {
+        setReview(NO_REVIEW)
+        setHandled(new Set())
+        setTab('edits')
+        const next = await streamAnswer<ScriptReview>(
+          `/api/projects/${project.id}/ai/review`,
+          {},
+          { partial: setReview, restart: () => setReview(NO_REVIEW), thinking: setThinking },
+        )
         setReview(next)
-        setTab(next.edits.length ? 'edits' : 'claims')
+        if (!next.edits.length) setTab('claims')
       }
     } catch (error) {
       toast.error(errorText(error))
+      setHook(before.hook)
+      setReview(before.review)
+      setHandled(before.handled)
     } finally {
       setBusy(null)
+      setThinking(null)
     }
   }
 
@@ -95,10 +126,9 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
     }
   }
 
-  const dropEdit = (original: string) =>
-    setReview((r) => (r ? { ...r, edits: r.edits.filter((e) => e.original !== original) } : r))
-  const dropClaim = (quote: string) =>
-    setReview((r) => (r ? { ...r, claims: r.claims.filter((c) => c.quote !== quote) } : r))
+  const handle = (key: string) => setHandled((now) => new Set(now).add(key))
+  const dropEdit = (original: string) => handle(`edit:${original}`)
+  const dropClaim = (quote: string) => handle(`claim:${quote}`)
 
   return (
     <Panel
@@ -148,43 +178,58 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
       {hook && (
         <section aria-label="The hook" className="flex flex-col gap-3 border-b border-line px-5 py-4">
           <div className="flex items-start gap-3">
-            <span
-              className={cn(
-                'tc grid size-11 shrink-0 place-items-center rounded-full text-[17px] font-semibold',
-                hook.score >= 8
-                  ? 'bg-ok-wash text-ok'
-                  : hook.score >= 6
-                    ? 'bg-kodak-wash text-kodak-ink'
-                    : 'bg-bad-wash text-bad',
+            {hook.score === undefined ? (
+              <span className="grid size-11 shrink-0 place-items-center rounded-full bg-sunk">
+                <Spinner className="text-ink-3" />
+              </span>
+            ) : (
+              <span
+                className={cn(
+                  'tc grid size-11 shrink-0 place-items-center rounded-full text-[17px] font-semibold',
+                  hook.score >= 8
+                    ? 'bg-ok-wash text-ok'
+                    : hook.score >= 6
+                      ? 'bg-kodak-wash text-kodak-ink'
+                      : 'bg-bad-wash text-bad',
+                )}
+                title="How well the opening hooks a new viewer, out of 10"
+              >
+                {hook.score}
+              </span>
+            )}
+            <div className="min-w-0 text-[13.5px]" aria-live="polite">
+              {hook.verdict === undefined ? (
+                <p className="text-ink-2">Gemini is watching the first 15 seconds…</p>
+              ) : (
+                <p className="font-medium">{hook.verdict}</p>
               )}
-              title="How well the opening hooks a new viewer, out of 10"
-            >
-              {hook.score}
-            </span>
-            <div className="min-w-0 text-[13.5px]">
-              <p className="font-medium">{hook.verdict}</p>
-              {hook.problems.length > 0 && (
+              {hook.problems && hook.problems.length > 0 && (
                 <ul className="mt-1 list-disc pl-4 text-ink-2">
                   {hook.problems.map((p) => (
                     <li key={p}>{p}</li>
                   ))}
                 </ul>
               )}
-              <p
-                className={cn('mt-1.5 flex items-start gap-1.5', hook.promise.kept ? 'text-ok' : 'text-bad')}
-              >
-                {hook.promise.kept ? (
-                  <Check className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                ) : (
-                  <X className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                )}
-                <span>
-                  {hook.promise.kept
-                    ? 'Pays off the title and thumbnail. '
-                    : 'Doesn’t pay off the title yet. '}
-                  <span className="text-ink-2">{hook.promise.note}</span>
-                </span>
-              </p>
+              {hook.promise && (
+                <p
+                  className={cn(
+                    'mt-1.5 flex items-start gap-1.5',
+                    hook.promise.kept ? 'text-ok' : 'text-bad',
+                  )}
+                >
+                  {hook.promise.kept ? (
+                    <Check className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                  ) : (
+                    <X className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                  )}
+                  <span>
+                    {hook.promise.kept
+                      ? 'Pays off the title and thumbnail. '
+                      : 'Doesn’t pay off the title yet. '}
+                    <span className="text-ink-2">{hook.promise.note}</span>
+                  </span>
+                </p>
+              )}
             </div>
           </div>
           {hook.replaces && (
@@ -192,30 +237,33 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
               Opening now: <span className="text-ink-2">“{hook.replaces}”</span>
             </p>
           )}
-          <ol className="grid gap-2.5 md:grid-cols-3">
-            {hook.openings.map((opening, i) => (
-              <li
-                key={opening.text}
-                className="flex flex-col gap-2 rounded-[var(--radius-control)] border border-line px-3.5 py-3"
-              >
-                <p className="text-[13.5px] leading-snug">{opening.text}</p>
-                <p className="text-[12.5px] leading-snug text-ink-3">{opening.why}</p>
-                <Button
-                  variant="plain"
-                  size="sm"
-                  className="mt-auto self-start"
-                  busy={applying === `opening-${i}`}
-                  disabled={!hook.replaces || opening.text === hook.replaces}
-                  onClick={async () => {
-                    if (await accept(`opening-${i}`, hook.replaces, opening.text))
-                      setHook({ ...hook, replaces: opening.text })
-                  }}
+          {hook.openings && hook.openings.length > 0 && (
+            <ol className="grid gap-2.5 md:grid-cols-3">
+              {hook.openings.map((opening, i) => (
+                <li
+                  key={opening.text}
+                  className="flex flex-col gap-2 rounded-[var(--radius-control)] border border-line px-3.5 py-3"
                 >
-                  {opening.text === hook.replaces ? 'In the script' : 'Use this opening'}
-                </Button>
-              </li>
-            ))}
-          </ol>
+                  <p className="text-[13.5px] leading-snug">{opening.text}</p>
+                  <p className="text-[12.5px] leading-snug text-ink-3">{opening.why}</p>
+                  <Button
+                    variant="plain"
+                    size="sm"
+                    className="mt-auto self-start"
+                    busy={applying === `opening-${i}`}
+                    // Once the check is done: until then, more of it would undo the change here.
+                    disabled={busy === 'hook' || !hook.replaces || opening.text === hook.replaces}
+                    onClick={async () => {
+                      if (hook.replaces && (await accept(`opening-${i}`, hook.replaces, opening.text)))
+                        setHook({ ...hook, replaces: opening.text })
+                    }}
+                  >
+                    {opening.text === hook.replaces ? 'In the script' : 'Use this opening'}
+                  </Button>
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
 
@@ -226,20 +274,30 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
             value={tab}
             onChange={setTab}
             options={[
-              { value: 'edits', label: `Punch-ups (${review.edits.length})` },
+              { value: 'edits', label: `Punch-ups (${edits.length})` },
               {
                 value: 'claims',
-                label: `Facts (${review.claims.filter((c) => c.verdict !== 'ok').length} to check)`,
+                label: `Facts (${claims.filter((c) => c.verdict !== 'ok').length} to check)`,
               },
             ]}
             className="self-start"
           />
+          {reviewing && (
+            <p className="flex items-center gap-2 text-[13px] text-ink-2" aria-live="polite">
+              <Spinner className="text-ink-3" />
+              {review.edits.length + review.claims.length > 0
+                ? 'Gemini is still writing: more on the way.'
+                : thinking
+                  ? `Gemini is checking: ${thinking}`
+                  : 'Gemini is reading the script. Each suggestion shows here as soon as it’s written.'}
+            </p>
+          )}
           {tab === 'edits' &&
-            (review.edits.length === 0 ? (
-              <p className="text-[13.5px] text-ink-2">Nothing left to punch up.</p>
+            (edits.length === 0 ? (
+              !reviewing && <p className="text-[13.5px] text-ink-2">Nothing left to punch up.</p>
             ) : (
               <ul className="flex flex-col gap-2.5">
-                {review.edits.map((edit) => (
+                {edits.map((edit) => (
                   <li
                     key={edit.original}
                     className="rounded-[var(--radius-control)] border border-line px-3.5 py-3"
@@ -278,15 +336,15 @@ export function ScriptDoctor({ data }: { data: ProjectFull }) {
               </ul>
             ))}
           {tab === 'claims' &&
-            (review.claims.length === 0 ? (
-              <p className="text-[13.5px] text-ink-2">No factual claims to check.</p>
+            (claims.length === 0 ? (
+              !reviewing && <p className="text-[13.5px] text-ink-2">No factual claims to check.</p>
             ) : (
               <>
                 <p className="text-[12.5px] text-ink-3">
                   Gemini can be wrong too: look up anything marked “Check this” before you post.
                 </p>
                 <ul className="flex flex-col gap-2.5">
-                  {review.claims.map((claim) => (
+                  {claims.map((claim) => (
                     <li
                       key={claim.quote}
                       className="rounded-[var(--radius-control)] border border-line px-3.5 py-3"

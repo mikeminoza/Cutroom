@@ -45,6 +45,7 @@ import {
   Select,
   Spinner,
   Switch,
+  Textarea,
   useConfirm,
 } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
@@ -54,6 +55,7 @@ import type { JobDTO, ProjectFull, SecondChanceDTO } from '@/lib/dto'
 import { formatWhen, plural, timeAgo } from '@/lib/format'
 import { keys, usePlaylists, useProjectAction, useSaver, useSettings, useStatus } from '@/lib/hooks'
 import type { StepId, Tone } from '@/lib/stage'
+import { streamAnswer } from '@/lib/stream'
 import { downloadHref } from '@/lib/upload'
 import { SyncedInput, SyncedTextarea, useUploader } from './fields'
 import { FinalCheck, finalChecks } from './final-check'
@@ -467,6 +469,10 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   const { data: status } = useStatus()
   const { saver } = useSaver(project.id)
   const [writing, setWriting] = useState(false)
+  /** The post as Gemini writes it, shown instead of yours until it's saved. */
+  const [live, setLive] = useState<PostDetails | null>(null)
+  // Gemini's parts of the post: as written so far while it writes.
+  const shown = live ?? post
   const channels = status?.channels ?? []
   // Resolved exactly as publishing resolves it.
   const channel = resolveChannel(channels, project.channelId, project.channelYoutubeId)
@@ -480,7 +486,12 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   const write = async () => {
     setWriting(true)
     try {
-      const next = await api.post<PostDetails>(`/api/projects/${project.id}/ai/post`)
+      const next = await streamAnswer<PostDetails>(
+        `/api/projects/${project.id}/ai/post`,
+        {},
+        { partial: setLive, restart: () => setLive(null) },
+        'The connection broke before the post details were saved. Reload the page to see them.',
+      )
       client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
         prev ? { ...prev, project: { ...prev.project, post: next } } : prev,
       )
@@ -490,6 +501,7 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
     } catch (error) {
       toast.error(errorText(error))
     } finally {
+      setLive(null)
       setWriting(false)
     }
   }
@@ -517,17 +529,26 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
     >
       <div className="flex flex-col gap-5 px-5 py-5">
         <StillRunning task={elsewhere?.kind === 'post' ? elsewhere : null} />
-        {post.titleOptions.length > 0 && (
+        {writing && (
+          <p className="flex items-center gap-2 text-[13px] text-ink-2" aria-live="polite">
+            <Spinner className="text-ink-3" />
+            {live
+              ? 'Gemini is writing: each part shows as soon as it’s done. You can edit them once it’s saved.'
+              : 'Gemini is reading the script…'}
+          </p>
+        )}
+        {shown.titleOptions.length > 0 && (
           <Field label="Title ideas" hint="Pick one, then edit it below.">
             <div role="radiogroup" aria-label="Title ideas" className="flex flex-col gap-1.5">
-              {post.titleOptions.map((option) => {
-                const active = option === post.title
+              {shown.titleOptions.map((option) => {
+                const active = option === shown.title
                 return (
                   <button
                     key={option}
                     type="button"
                     role="radio"
                     aria-checked={active}
+                    disabled={live !== null}
                     onClick={() => setPost({ title: option }, 0)}
                     className={cn(
                       'flex items-center gap-2.5 rounded-[var(--radius-control)] border px-3 py-2 text-left text-[14px] transition-colors',
@@ -551,33 +572,47 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
         )}
         <Field
           label="Title"
-          aside={`${post.title.length} / 100`}
-          error={post.title.length > 100 ? 'YouTube allows 100 characters.' : null}
+          aside={`${shown.title.length} / 100`}
+          error={shown.title.length > 100 ? 'YouTube allows 100 characters.' : null}
         >
-          <SyncedInput
-            value={post.title}
-            onValue={(title) => setPost({ title })}
-            placeholder={project.title || 'Video title'}
-          />
+          {live ? (
+            <Input readOnly aria-label="Title, as Gemini writes it" value={live.title} />
+          ) : (
+            <SyncedInput
+              value={post.title}
+              onValue={(title) => setPost({ title })}
+              placeholder={project.title || 'Video title'}
+            />
+          )}
         </Field>
         <Field
           label="Description"
-          aside={`${post.description.length.toLocaleString()} / 5,000`}
+          aside={`${shown.description.length.toLocaleString()} / 5,000`}
           hint={
-            post.chapters.length
-              ? `Includes ${post.chapters.length} chapters from your scene timestamps.`
+            shown.chapters.length
+              ? `Includes ${shown.chapters.length} chapters from your scene timestamps.`
               : undefined
           }
         >
-          <SyncedTextarea
-            value={post.description}
-            onValue={(description) => setPost({ description })}
-            className="min-h-56 text-[14px]"
-          />
+          {live ? (
+            <Textarea
+              readOnly
+              aria-label="Description, as Gemini writes it"
+              value={live.description}
+              placeholder="Gemini is writing the description…"
+              className="min-h-56 text-[14px]"
+            />
+          ) : (
+            <SyncedTextarea
+              value={post.description}
+              onValue={(description) => setPost({ description })}
+              className="min-h-56 text-[14px]"
+            />
+          )}
         </Field>
-        {post.chapters.length > 0 && (
+        {shown.chapters.length > 0 && (
           <ol className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-ink-2">
-            {post.chapters.map((c) => (
+            {shown.chapters.map((c) => (
               <li key={c.start}>
                 <span className="tc text-ink">{formatChapterTime(c.start)}</span> {c.title}
               </li>
@@ -589,11 +624,11 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
           aside={`${tagChars} / 500`}
           hint="Press Enter or comma to add. Most specific first."
         >
-          <TagInput tags={post.tags} onChange={(tags) => setPost({ tags }, 0)} />
+          <TagInput tags={shown.tags} onChange={(tags) => setPost({ tags }, 0)} readOnly={live !== null} />
         </Field>
         <Field
           label="Comment for viewers"
-          aside={`${(post.comment ?? '').length} / 500`}
+          aside={`${(shown.comment ?? '').length} / 500`}
           hint={
             project.commentId ? (
               <a
@@ -615,14 +650,23 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
             )
           }
         >
-          <SyncedTextarea
-            value={post.comment ?? ''}
-            onValue={(comment) => setPost({ comment })}
-            maxLength={500}
-            disabled={Boolean(project.commentId)}
-            placeholder="What should Cappy eat next? 🍉"
-            className="min-h-20 text-[14px]"
-          />
+          {live ? (
+            <Textarea
+              readOnly
+              aria-label="Comment for viewers, as Gemini writes it"
+              value={live.comment ?? ''}
+              className="min-h-20 text-[14px]"
+            />
+          ) : (
+            <SyncedTextarea
+              value={post.comment ?? ''}
+              onValue={(comment) => setPost({ comment })}
+              maxLength={500}
+              disabled={Boolean(project.commentId)}
+              placeholder="What should Cappy eat next? 🍉"
+              className="min-h-20 text-[14px]"
+            />
+          )}
         </Field>
         <div className="grid gap-5 sm:grid-cols-2">
           {(channels.length > 1 || disconnected) && (
@@ -725,7 +769,16 @@ function PostDetailsPanel({ data }: { data: ProjectFull }) {
   )
 }
 
-function TagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+/** Tags to add and remove; `readOnly` while Gemini writes them. */
+function TagInput({
+  tags,
+  onChange,
+  readOnly = false,
+}: {
+  tags: string[]
+  onChange: (tags: string[]) => void
+  readOnly?: boolean
+}) {
   const [draft, setDraft] = useState('')
   const add = (raw: string) => {
     const next = raw
@@ -744,34 +797,38 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[
           className="inline-flex items-center gap-1 rounded-full bg-sunk py-0.5 pr-1 pl-2.5 text-[13px]"
         >
           {tag}
-          <button
-            type="button"
-            aria-label={`Remove ${tag}`}
-            onClick={() => onChange(tags.filter((t) => t !== tag))}
-            className="rounded-full p-0.5 text-ink-3 hover:bg-line hover:text-ink"
-          >
-            <X className="size-3" />
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              aria-label={`Remove ${tag}`}
+              onClick={() => onChange(tags.filter((t) => t !== tag))}
+              className="rounded-full p-0.5 text-ink-3 hover:bg-line hover:text-ink"
+            >
+              <X className="size-3" />
+            </button>
+          )}
         </span>
       ))}
-      <input
-        value={draft}
-        onChange={(e) => {
-          if (e.target.value.includes(',')) add(e.target.value)
-          else setDraft(e.target.value)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            add(draft)
-          }
-          if (e.key === 'Backspace' && !draft && tags.length) onChange(tags.slice(0, -1))
-        }}
-        onBlur={() => draft && add(draft)}
-        aria-label="Add a tag"
-        placeholder={tags.length ? '' : 'octopus, animal intelligence, ocean facts'}
-        className="min-w-32 flex-1 bg-transparent px-1 text-[14px] placeholder:text-ink-3 focus:outline-none"
-      />
+      {!readOnly && (
+        <input
+          value={draft}
+          onChange={(e) => {
+            if (e.target.value.includes(',')) add(e.target.value)
+            else setDraft(e.target.value)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add(draft)
+            }
+            if (e.key === 'Backspace' && !draft && tags.length) onChange(tags.slice(0, -1))
+          }}
+          onBlur={() => draft && add(draft)}
+          aria-label="Add a tag"
+          placeholder={tags.length ? '' : 'octopus, animal intelligence, ocean facts'}
+          className="min-w-32 flex-1 bg-transparent px-1 text-[14px] placeholder:text-ink-3 focus:outline-none"
+        />
+      )}
     </div>
   )
 }

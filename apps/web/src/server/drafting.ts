@@ -3,10 +3,14 @@
 // the Library), so all that is left is recording the voice-over and checking.
 import { spaceEffects } from '@cutroom/shared/accents'
 import {
+  type AnswerEvents,
   type DraftEvents,
   draftScript,
   generateIdeas,
   hasGeminiKey,
+  type IdeaDraft,
+  mapPartials,
+  type PostDraft,
   pickSceneLayers,
   type SceneDraft,
   type ScriptBrief,
@@ -114,47 +118,56 @@ export async function draftProject(
 /**
  * Gemini writes the post details from the script and scenes: title ideas (and the title, unless you
  * wrote one), description, tags, chapters, thumbnail ideas and the comment for viewers (unless you
- * wrote one). Saved, and returned.
+ * wrote one). Saved, and returned. With `events`, the post is handed over as Gemini writes it, as
+ * it will be saved, with what isn't written yet left empty.
  */
-export async function writePost(id: string): Promise<PostDetails> {
+export async function writePost(id: string, events?: AnswerEvents<PostDetails>): Promise<PostDetails> {
   const project = await getProjectRow(id)
   const scenes = await getScenes(id)
   if (scenes.length === 0 && !project.script.trim()) badRequest('Add a script or scenes first.')
   const settings = await getSettings()
   const characters = (await getCharacters(id)).map(toCharacterDTO)
-  const draft = await writePostDetails({
-    title: project.title,
-    topic: project.topic,
-    audience: project.audience,
-    language: project.language,
-    format: project.format,
-    duration: project.voiceoverDuration ?? totalDuration(scenes),
-    script: project.script,
-    scenes: scenes.map((s) => ({ start: s.start, narration: s.narration })),
-    defaultTags: settings.defaults.tags,
-    descriptionFooter: settings.defaults.descriptionFooter,
-    topTitles: await topTitles(project.channelId, project.channelYoutubeId),
-    searchTerms: (await searchTermsFor(project.channelId, project.channelYoutubeId)).map((t) => t.term),
-    market: settings.niche.market,
-  })
   const current = { ...EMPTY_POST, ...project.post }
-  const post = {
-    ...current,
-    titleOptions: draft.titleOptions,
-    title: current.title.trim() || draft.titleOptions[0] || '',
-    description: draft.description,
-    tags: draft.tags,
-    hashtags: draft.hashtags,
-    chapters: draft.chapters,
-    thumbnailIdeas: draft.thumbnailIdeas,
-    // A comment you wrote yourself stays.
-    comment: current.comment?.trim() || draft.comment,
-    thumbnailPrompt: buildThumbnailPrompt(draft.thumbnailIdeas[0] ?? project.topic, {
-      artStyle: project.artStyle,
-      characters,
-      text: draft.thumbnailText,
-    }),
+  /** The post with Gemini's details in: the same for the parts written so far as for all of them. */
+  const postOf = (draft: Partial<PostDraft>): PostDetails => {
+    const thumbnailIdeas = draft.thumbnailIdeas ?? []
+    return {
+      ...current,
+      titleOptions: draft.titleOptions ?? [],
+      title: current.title.trim() || draft.titleOptions?.[0] || '',
+      description: draft.description ?? '',
+      tags: draft.tags ?? [],
+      hashtags: draft.hashtags ?? [],
+      chapters: draft.chapters ?? [],
+      thumbnailIdeas,
+      // A comment you wrote yourself stays.
+      comment: current.comment?.trim() || draft.comment || '',
+      thumbnailPrompt: buildThumbnailPrompt(thumbnailIdeas[0] ?? project.topic, {
+        artStyle: project.artStyle,
+        characters,
+        text: draft.thumbnailText ?? '',
+      }),
+    }
   }
+  const draft = await writePostDetails(
+    {
+      title: project.title,
+      topic: project.topic,
+      audience: project.audience,
+      language: project.language,
+      format: project.format,
+      duration: project.voiceoverDuration ?? totalDuration(scenes),
+      script: project.script,
+      scenes: scenes.map((s) => ({ start: s.start, narration: s.narration })),
+      defaultTags: settings.defaults.tags,
+      descriptionFooter: settings.defaults.descriptionFooter,
+      topTitles: await topTitles(project.channelId, project.channelYoutubeId),
+      searchTerms: (await searchTermsFor(project.channelId, project.channelYoutubeId)).map((t) => t.term),
+      market: settings.niche.market,
+    },
+    mapPartials(events, postOf),
+  )
+  const post = postOf(draft)
   await updateProject(id, { post })
   return post
 }
@@ -281,14 +294,20 @@ export async function composeProject(id: string, redo = false): Promise<number> 
   return placed
 }
 
-/** Asks Gemini for new ideas (for the channel's niche, or a series) and adds them to the backlog. */
-export async function addIdeas(input: {
-  niche?: string
-  series?: { id: string; name: string; description: string; template: SeriesTemplate } | null
-  format?: 'landscape' | 'portrait'
-  count?: number
-  direction?: string
-}): Promise<number> {
+/**
+ * Asks Gemini for new ideas (for the channel's niche, or a series) and adds them to the backlog.
+ * With `events`, each idea is handed over as soon as it's written; they are added once all are.
+ */
+export async function addIdeas(
+  input: {
+    niche?: string
+    series?: { id: string; name: string; description: string; template: SeriesTemplate } | null
+    format?: 'landscape' | 'portrait'
+    count?: number
+    direction?: string
+  },
+  events?: AnswerEvents<IdeaDraft[]>,
+): Promise<number> {
   const database = await db()
   const series = input.series ?? null
   const [projects, ideas, settings] = await Promise.all([
@@ -299,29 +318,32 @@ export async function addIdeas(input: {
   const template = series?.template
   // Without a series, ideas fit the channel's niche from Settings.
   const channel = series ? null : settings.niche
-  const generated = await generateIdeas({
-    niche: [
-      input.niche || channel?.description || '',
-      channel?.narration ? `Narration: ${channel.narration}` : '',
-      series ? `${series.name}${series.description ? `: ${series.description}` : ''}` : '',
-    ]
-      .filter(Boolean)
-      .join('. '),
-    audience: template?.audience ?? channel?.audience ?? '',
-    tone: template?.tone ?? channel?.tone ?? '',
-    language: template?.language ?? settings.defaults.language,
-    format: template?.format ?? input.format ?? 'landscape',
-    count: input.count ?? 8,
-    direction: input.direction ?? '',
-    avoid: [...projects.map((p) => p.title || p.topic), ...ideas.map((i) => i.title)],
-    topTitles: await topTitles(template?.channelId ?? null, template?.channelYoutubeId ?? null),
-    searchTerms: (await searchTermsFor(template?.channelId ?? null, template?.channelYoutubeId ?? null)).map(
-      (t) => t.term,
-    ),
-    // A series has its own focus; the channel's pillars guide everything else.
-    pillars: series ? [] : (settings.niche.pillars ?? []),
-    market: settings.niche.market,
-  })
+  const generated = await generateIdeas(
+    {
+      niche: [
+        input.niche || channel?.description || '',
+        channel?.narration ? `Narration: ${channel.narration}` : '',
+        series ? `${series.name}${series.description ? `: ${series.description}` : ''}` : '',
+      ]
+        .filter(Boolean)
+        .join('. '),
+      audience: template?.audience ?? channel?.audience ?? '',
+      tone: template?.tone ?? channel?.tone ?? '',
+      language: template?.language ?? settings.defaults.language,
+      format: template?.format ?? input.format ?? 'landscape',
+      count: input.count ?? 8,
+      direction: input.direction ?? '',
+      avoid: [...projects.map((p) => p.title || p.topic), ...ideas.map((i) => i.title)],
+      topTitles: await topTitles(template?.channelId ?? null, template?.channelYoutubeId ?? null),
+      searchTerms: (
+        await searchTermsFor(template?.channelId ?? null, template?.channelYoutubeId ?? null)
+      ).map((t) => t.term),
+      // A series has its own focus; the channel's pillars guide everything else.
+      pillars: series ? [] : (settings.niche.pillars ?? []),
+      market: settings.niche.market,
+    },
+    events,
+  )
   if (generated.length) {
     await database.insert(schema.ideas).values(
       generated.map((idea) => ({

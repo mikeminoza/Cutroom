@@ -1,5 +1,6 @@
 'use client'
 
+import type { IdeaDraft } from '@cutroom/shared/ai'
 import { HIT } from '@cutroom/shared/hits'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Sparkles, TrendingUp } from 'lucide-react'
@@ -10,6 +11,7 @@ import { api, errorText } from '@/lib/api'
 import type { HitDTO, IdeaDTO } from '@/lib/dto'
 import { plural, timeAgo } from '@/lib/format'
 import { keys, useIdeas, useStatus } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 import { Button } from './ui'
 
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
@@ -18,7 +20,8 @@ const hitsKey = ['hits'] as const
 /**
  * Ideas → Your hits: your own videos doing far better than your usual, from the stats the daily
  * refresh stores (shared/hits.ts). Each can become follow-up ideas in one click: Gemini takes what
- * made it work to the next question, and the ideas join the New ones, ready to draft.
+ * made it work to the next question, each idea shows as soon as it's written, and they join the
+ * New ones, ready to draft.
  */
 export function Hits() {
   const client = useQueryClient()
@@ -33,13 +36,20 @@ export function Hits() {
   })
   const { data: ideas } = useIdeas()
   const [busy, setBusy] = useState<string | null>(null)
+  /** The follow-ups Gemini has written so far for the hit it's busy with. */
+  const [arriving, setArriving] = useState<IdeaDraft[]>([])
   const canWrite = status?.gemini.configured !== false
   const manyChannels = (status?.channels.length ?? 0) > 1
 
   const followUp = async (hit: HitDTO) => {
     setBusy(hit.id)
+    setArriving([])
     try {
-      const added = await api.post<IdeaDTO[]>(`/api/hits/${hit.id}/ideas`)
+      const added = await streamAnswer<IdeaDTO[], { ideas: IdeaDraft[] }>(
+        `/api/hits/${hit.id}/ideas`,
+        {},
+        { partial: ({ ideas }) => setArriving(ideas), restart: () => setArriving([]) },
+      )
       client.setQueryData<IdeaDTO[]>(keys.ideas, (prev) => [...added, ...(prev ?? [])])
       toast.success(
         added.length
@@ -49,6 +59,7 @@ export function Hits() {
     } catch (err) {
       toast.error(errorText(err))
     } finally {
+      setArriving([])
       setBusy(null)
     }
   }
@@ -84,6 +95,11 @@ export function Hits() {
         <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
           {hits.map((hit) => {
             const followUps = followUpsOf(hit)
+            // Saved ones, then the ones Gemini is writing now.
+            const titles = [
+              ...followUps.map((idea) => idea.title),
+              ...(busy === hit.id ? arriving.map((idea) => idea.title) : []),
+            ]
             const kind = hit.format === 'portrait' ? 'Shorts' : 'videos'
             return (
               <li
@@ -146,13 +162,13 @@ export function Hits() {
                       {compact.format(hit.views)} views; your {kind} usually get {compact.format(hit.usual)}
                     </span>
                   </p>
-                  {followUps.length > 0 && (
-                    <p className="mt-1.5 text-[13px] text-ink-2">
+                  {titles.length > 0 && (
+                    <p className="mt-1.5 text-[13px] text-ink-2" aria-live="polite">
                       Follow-ups:{' '}
-                      {followUps.map((idea, i) => (
-                        <span key={idea.id}>
-                          <span className="font-medium text-ink">{idea.title}</span>
-                          {i < followUps.length - 1 ? ', ' : ''}
+                      {titles.map((title, i) => (
+                        <span key={i}>
+                          <span className="font-medium text-ink">{title}</span>
+                          {i < titles.length - 1 ? ', ' : ''}
                         </span>
                       ))}
                     </p>
