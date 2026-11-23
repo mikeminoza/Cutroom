@@ -14,6 +14,11 @@
 
     <section>
       <h2>1. Storyboard</h2>
+      <div id="detected" class="linked detected" hidden>
+        <p><strong>Open in Cutroom:</strong> <span id="detectedTitle"></span></p>
+        <p id="detectedText" class="muted"></p>
+        <button id="detectedAction" type="button" class="go" hidden></button>
+      </div>
       <div id="linked" class="linked" hidden>
         <p><strong>From Cutroom:</strong> <span id="linkedTitle"></span> <span id="linkedSummary" class="muted"></span></p>
         <p class="muted">
@@ -23,8 +28,8 @@
       </div>
       <div id="manual">
         <p class="muted">
-          In Cutroom, open a project's <strong>Images</strong> step and press <strong>Make in Flow</strong>: its
-          scenes come here by themselves, and every picture goes back onto its scene.
+          Open a project in Cutroom (any step) and it shows up here, ready to make its pictures. Or press
+          <strong>Make in Flow</strong> on its <strong>Images</strong> step. Every picture goes back onto its scene.
         </p>
         <p class="muted">
           Or paste a storyboard (Script step → Storyboard → Copy all), or load its .txt. Pictures then go to
@@ -131,7 +136,7 @@
     </section>
 
     <footer>
-      <p id="status" class="muted">Read a storyboard to begin.</p>
+      <p id="status" class="muted">Open a project in Cutroom, or read a storyboard, to begin.</p>
       <div class="progress"><div id="bar"></div></div>
       <div class="row">
         <button id="start" type="button" class="go">Start</button>

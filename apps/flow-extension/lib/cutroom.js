@@ -1,6 +1,7 @@
-// What a Cutroom project sends (Images step → "Make in Flow"), as the side panel uses it: the
-// scenes as storyboard items that know which Cutroom scene they belong to, and the character
-// whose pictures go along with them.
+// What a Cutroom project sends (Images step → "Make in Flow", or the side panel asking for the
+// project open in Cutroom), as the side panel uses it: the scenes as storyboard items that know
+// which Cutroom scene they belong to, the character whose pictures go along with them, and what
+// the panel offers to do for the project.
 
 /**
  * The project's scenes as storyboard items. Cutroom says which scenes already have a picture:
@@ -67,6 +68,50 @@ export function mainCharacter(incoming) {
         type: image.type || 'image/png',
         dataUrl: image.dataUrl,
       })),
+  }
+}
+
+/**
+ * The project open in Cutroom: of the Cutroom tabs the extension knows ({ tabId, origin,
+ * projectId, at } by tab), the one on a project page you looked at last. Null when none is.
+ */
+export function currentProject(tabs) {
+  let latest = null
+  for (const tab of Object.values(tabs ?? {})) {
+    if (tab?.projectId && (!latest || tab.at > latest.at)) latest = tab
+  }
+  return latest
+}
+
+const pictures = (n) => `${n} ${n === 1 ? 'picture' : 'pictures'}`
+
+/**
+ * What the side panel offers for the project open in Cutroom, from what Cutroom says about it
+ * ({ hasScript, scenes, missing }): the pictures its scenes are missing; for a script not split
+ * into scenes yet, the split first (only scenes have picture prompts); otherwise nothing to make.
+ */
+export function projectOffer({ hasScript, scenes, missing }) {
+  if (scenes === 0 && !hasScript) {
+    return { action: null, text: 'No script yet. Write it on the Script step in Cutroom first.' }
+  }
+  if (scenes === 0) {
+    return {
+      action: 'split',
+      label: 'Split into scenes with AI',
+      text: 'Its script isn’t split into scenes yet. Splitting it with AI gives each scene a picture prompt.',
+    }
+  }
+  if (missing === 0) {
+    return {
+      action: 'load',
+      label: 'Load its scenes',
+      text: `All ${scenes} scenes have a picture. Load them to make one again.`,
+    }
+  }
+  return {
+    action: 'make',
+    label: `Make ${pictures(missing)}`,
+    text: `${scenes} scenes, ${missing} without a picture. Each one goes straight onto its scene in Cutroom.`,
   }
 }
 

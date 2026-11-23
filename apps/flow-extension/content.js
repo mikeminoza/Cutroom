@@ -429,6 +429,8 @@
 
   const handlers = {
     ping: async () => ({ url: location.href }),
+    // Whether Flow's page has built its prompt box yet, without outlining anything.
+    ready: async (message) => ({ prompt: Boolean(promptBox(message.controls?.prompt)) }),
     teach: (message) => teach(message.what),
     check: (message) => check(message.controls),
     generate: (message, status) => generate(message, status),

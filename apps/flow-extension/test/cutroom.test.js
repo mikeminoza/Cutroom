@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { itemsFromCutroom, mainCharacter, siteOrigin } from '../lib/cutroom.js'
+import { currentProject, itemsFromCutroom, mainCharacter, projectOffer, siteOrigin } from '../lib/cutroom.js'
 import { shapePrompt, wantsCharacter } from '../lib/prompt.js'
 
 const scene = (number, extra = {}) => ({
@@ -110,5 +110,36 @@ describe('Cutroom online’s address', () => {
     expect(siteOrigin('http://192.168.1.20:3000')).toBe('http://192.168.1.20:3000')
     expect(siteOrigin('ftp://cutroom.example.com')).toBeNull()
     expect(siteOrigin('')).toBeNull()
+  })
+})
+
+describe('the project open in Cutroom', () => {
+  const tab = (tabId, projectId, at) => ({ tabId, origin: 'http://localhost:3000', projectId, at })
+
+  it('is the one in the Cutroom tab you looked at last', () => {
+    const tabs = { 3: tab(3, 'p1', 100), 5: tab(5, 'p2', 300), 7: tab(7, null, 500) }
+    // Tab 7 is on another page (the Ideas, say): it has no project.
+    expect(currentProject(tabs)).toEqual(tab(5, 'p2', 300))
+    expect(currentProject({ 7: tab(7, null, 500) })).toBeNull()
+    expect(currentProject(undefined)).toBeNull()
+  })
+})
+
+describe('what the side panel offers for that project', () => {
+  it('makes the pictures its scenes are missing', () => {
+    expect(projectOffer({ hasScript: true, scenes: 24, missing: 18 })).toMatchObject({
+      action: 'make',
+      label: 'Make 18 pictures',
+    })
+    expect(projectOffer({ hasScript: true, scenes: 24, missing: 1 }).label).toBe('Make 1 picture')
+  })
+
+  it('splits a script into scenes with AI first, as only scenes have picture prompts', () => {
+    expect(projectOffer({ hasScript: true, scenes: 0, missing: 0 })).toMatchObject({ action: 'split' })
+  })
+
+  it('asks for a script first, and only loads a project whose scenes all have a picture', () => {
+    expect(projectOffer({ hasScript: false, scenes: 0, missing: 0 })).toMatchObject({ action: null })
+    expect(projectOffer({ hasScript: true, scenes: 24, missing: 0 })).toMatchObject({ action: 'load' })
   })
 })

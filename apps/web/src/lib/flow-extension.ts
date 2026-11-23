@@ -2,8 +2,10 @@
 
 // Talks to the "Cutroom for Flow" Chrome extension (apps/flow-extension) through window messages.
 // Its script in this page (cutroom.js) says it's there, takes a project's scenes to make in Google
-// Flow (Images step → "Make in Flow"), and hands back each picture to put on its scene.
+// Flow (Images step → "Make in Flow"), asks about the project open here (its side panel offers to
+// make that project's pictures), and hands back each picture to put on its scene.
 // This page's messages are { source: 'cutroom' }; the extension's are { source: 'cutroom-flow' }.
+import { hasPicture } from '@cutroom/shared/types'
 import { useSyncExternalStore } from 'react'
 import { errorText } from './api'
 import type { ProjectFull } from './dto'
@@ -52,9 +54,34 @@ export interface FlowSent {
   panel?: boolean
 }
 
+/** What the extension's side panel shows about the project open here, before making anything. */
+export interface FlowProjectSummary {
+  projectId: string
+  title: string
+  hasScript: boolean
+  scenes: number
+  /** Scenes without a picture yet. */
+  missing: number
+}
+
+/** The extension asking about a project: a summary, or all of it to make its pictures. */
+export interface FlowProjectRequest {
+  projectId: string
+  detail: 'summary' | 'full'
+  /** Split a script that has no scenes yet into scenes with AI first. */
+  split: boolean
+}
+
+export interface FlowHandlers {
+  /** Stores a picture made in Flow on its scene. */
+  picture: (picture: FlowPicture) => Promise<void>
+  /** Answers the extension's side panel about a project. */
+  project: (request: FlowProjectRequest) => Promise<FlowProjectSummary | FlowProject>
+}
+
 const extension = { version: null as string | null, listeners: new Set<() => void>() }
 const sends = new Map<string, (answer: FlowSent) => void>()
-let onPicture: ((picture: FlowPicture) => Promise<void>) | null = null
+let handlers: FlowHandlers | null = null
 let listening = false
 let next = 0
 
@@ -73,6 +100,7 @@ function isPicture(data: Record<string, unknown>): boolean {
 
 async function takePicture(data: Record<string, unknown>) {
   const requestId = data.requestId
+  const onPicture = handlers?.picture
   // Not answering lets the extension try another Cutroom tab, or save to Downloads.
   if (!onPicture || typeof requestId !== 'string' || !isPicture(data)) return
   post({ type: 'picture-received', requestId })
@@ -87,6 +115,24 @@ async function takePicture(data: Record<string, unknown>) {
     post({ type: 'picture-saved', requestId, ok: true })
   } catch (error) {
     post({ type: 'picture-saved', requestId, ok: false, error: errorText(error) })
+  }
+}
+
+async function answerProject(data: Record<string, unknown>) {
+  const requestId = data.requestId
+  const onProject = handlers?.project
+  // Not answering tells the extension this page can't (an old Cutroom, or no app shell).
+  if (!onProject || typeof requestId !== 'string' || typeof data.projectId !== 'string') return
+  post({ type: 'project-received', requestId })
+  try {
+    const project = await onProject({
+      projectId: data.projectId,
+      detail: data.detail === 'full' ? 'full' : 'summary',
+      split: data.split === true,
+    })
+    post({ type: 'project', requestId, ok: true, project })
+  } catch (error) {
+    post({ type: 'project', requestId, ok: false, error: errorText(error) })
   }
 }
 
@@ -105,22 +151,24 @@ function onMessage(event: MessageEvent) {
     })
   } else if (data.type === 'picture') {
     void takePicture(data)
+  } else if (data.type === 'project-request') {
+    void answerProject(data)
   }
 }
 
 /**
- * Listens to the extension (once per page), asks whether it's there, and has `handler` store the
- * pictures it hands back. Returns a function that stops taking pictures.
+ * Listens to the extension (once per page), asks whether it's there, and has `on` store the
+ * pictures it hands back and answer its questions about a project. Returns a function that stops.
  */
-export function listenToFlowExtension(handler: (picture: FlowPicture) => Promise<void>): () => void {
-  onPicture = handler
+export function listenToFlowExtension(on: FlowHandlers): () => void {
+  handlers = on
   if (!listening) {
     window.addEventListener('message', onMessage)
     listening = true
   }
   post({ type: 'hello' })
   return () => {
-    if (onPicture === handler) onPicture = null
+    if (handlers === on) handlers = null
   }
 }
 
@@ -180,6 +228,17 @@ async function pictureData(url: string) {
     return { name: name || 'character.png', type: blob.type, dataUrl: await readAsDataUrl(blob) }
   } catch {
     return null
+  }
+}
+
+/** Whether the project has a script, and how many of its scenes still need a picture. */
+export function flowSummary(data: ProjectFull): FlowProjectSummary {
+  return {
+    projectId: data.project.id,
+    title: data.project.title,
+    hasScript: Boolean(data.project.script.trim()),
+    scenes: data.scenes.length,
+    missing: data.scenes.filter((scene) => !hasPicture(scene)).length,
   }
 }
 

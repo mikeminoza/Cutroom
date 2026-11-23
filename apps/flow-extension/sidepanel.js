@@ -1,9 +1,10 @@
-// The side panel: takes a Cutroom project's scenes (sent from its Images step) or a pasted
-// storyboard, keeps your character's pictures and the options, and runs the scenes through Flow
-// one at a time (content.js does the clicking). Each picture goes straight onto its scene in
-// Cutroom (through cutroom.js in Cutroom's tab); a pasted storyboard's pictures, extra versions and
-// anything Cutroom can't take are saved as Downloads/Cutroom/<folder>/scene-001.png instead.
-import { itemsFromCutroom, mainCharacter, siteOrigin } from './lib/cutroom.js'
+// The side panel: offers to make the pictures of the project open in Cutroom (splitting its script
+// into scenes first if need be), or takes a project's scenes sent from its Images step, or a
+// pasted storyboard. It keeps your character's pictures and the options, and runs the scenes
+// through Flow one at a time (content.js does the clicking). Each picture goes straight onto its
+// scene in Cutroom (through cutroom.js in Cutroom's tab); a pasted storyboard's pictures, extra
+// versions and anything Cutroom can't take are saved as Downloads/Cutroom/<folder>/scene-001.png.
+import { currentProject, itemsFromCutroom, mainCharacter, projectOffer, siteOrigin } from './lib/cutroom.js'
 import { parseStoryboard } from './lib/parse.js'
 import {
   extensionFor,
@@ -18,6 +19,11 @@ const FLOW = /^https:\/\/([\w-]+\.)*(flow\.google(\.com)?|labs\.google)(\/|$)/
 const KEY = 'cutroom-flow'
 /** Where background.js leaves what a Cutroom page sent. */
 const INCOMING = 'cutroom-flow-incoming'
+/** Where background.js keeps the Cutroom tabs and the project each has open. */
+const TABS = 'cutroom-flow-tabs'
+/** Flow's address as you last used it (kept by background.js), and where to go without one. */
+const LAST_FLOW = 'cutroom-flow-url'
+const DEFAULT_FLOW = 'https://labs.google/fx/tools/flow'
 /** The registered copy of cutroom.js for Cutroom online. */
 const SITE_SCRIPT = 'cutroom-site'
 const DEFAULTS = { attach: true, continuity: true, anatomy: true, saveAll: true, timeout: 180, pause: 8 }
@@ -43,6 +49,11 @@ let running = false
 let stopping = false
 /** A project sent while a run was going: it's read when the run ends. */
 let waitingIncoming = null
+/**
+ * The project open in Cutroom, as the panel offers it: where it is ({ tabId, origin, projectId }),
+ * what Cutroom says about it (summary), and what's going on (busy, a line saying what).
+ */
+let detected = null
 
 const $ = (id) => document.getElementById(id)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -74,6 +85,7 @@ async function load() {
   render()
   showConnection()
   takeIncoming((await chrome.storage.local.get(INCOMING))[INCOMING])
+  detect()
 }
 
 function fill() {
@@ -167,6 +179,138 @@ function takeIncoming(incoming) {
       ? `${todo} of ${items.length} scenes to make${main ? `, with ${main.name}'s pictures` : ''}. Press Start.`
       : `Every scene of “${incoming.title}” already has a picture. Use "Make again" on one to redo it.`,
   )
+}
+
+// ---------------------------------------------------------------- the project open in Cutroom
+
+/** Asks Cutroom's tab about its project (through cutroom.js and Cutroom's page). */
+async function askCutroom(where, request) {
+  let answer
+  try {
+    answer = await chrome.tabs.sendMessage(where.tabId, {
+      type: 'cutroom:project',
+      projectId: where.projectId,
+      ...request,
+    })
+  } catch {
+    throw new Error('Cutroom’s tab didn’t answer. Reload it, then come back here.')
+  }
+  if (!answer?.ok) throw new Error(answer?.error || 'Cutroom’s tab didn’t answer. Reload it.')
+  return answer.project
+}
+
+/** Finds the project you last looked at in Cutroom and asks Cutroom how far along it is. */
+async function detect() {
+  const here = currentProject((await chrome.storage.local.get(TABS))[TABS])
+  if (!here) {
+    detected = null
+    renderDetected()
+    return
+  }
+  const same = detected?.tabId === here.tabId && detected?.projectId === here.projectId
+  if (same && detected.busy) return
+  const mine = { ...here, summary: same ? detected.summary : null, error: '', busy: false, doing: '' }
+  detected = mine
+  renderDetected()
+  try {
+    mine.summary = await askCutroom(here, { detail: 'summary' })
+  } catch (error) {
+    mine.error = error.message
+  }
+  // Another project may have been opened meanwhile: that one's answer is the one to show.
+  if (detected === mine) renderDetected()
+}
+
+let detectTimer = 0
+function detectSoon() {
+  clearTimeout(detectTimer)
+  detectTimer = setTimeout(detect, 400)
+}
+
+function renderDetected() {
+  const card = $('detected')
+  // The project already loaded below needs no card: Start carries on with it.
+  const loaded =
+    detected && state.cutroom?.projectId === detected.projectId && state.cutroom?.origin === detected.origin
+  card.hidden = !detected || Boolean(loaded)
+  if (card.hidden) return
+  const { summary, error, busy, doing } = detected
+  $('detectedTitle').textContent = summary ? `“${summary.title || 'Untitled'}”` : 'a project'
+  const offer = summary ? projectOffer(summary) : null
+  $('detectedText').textContent = busy ? doing : error || (offer ? offer.text : 'Looking at it…')
+  const button = $('detectedAction')
+  button.hidden = !offer?.action || Boolean(error && !busy)
+  button.textContent = offer?.label ?? ''
+  button.disabled = running || busy
+}
+
+/**
+ * Flow in front in this window (its tab, or a new one where you last used it), once its prompt
+ * box is there: a page still loading would fail the first scene.
+ */
+async function bringUpFlow() {
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!active?.url || !FLOW.test(active.url)) {
+    const tabs = await chrome.tabs.query({ currentWindow: true })
+    const flow = tabs.find((tab) => tab.url && FLOW.test(tab.url))
+    if (flow) await chrome.tabs.update(flow.id, { active: true })
+    else {
+      const url = (await chrome.storage.local.get(LAST_FLOW))[LAST_FLOW] || DEFAULT_FLOW
+      await chrome.tabs.create({ url, active: true })
+    }
+  }
+  const until = Date.now() + 45_000
+  while (Date.now() < until) {
+    let link
+    try {
+      link = await connect()
+    } catch {
+      await sleep(1500) // Still loading.
+      continue
+    }
+    try {
+      if ((await link.call({ type: 'ready', controls: state.controls })).prompt) return
+    } catch {
+      return // Flow's page answered but can't say: Start finds out, and says what's wrong.
+    } finally {
+      link.port.disconnect()
+    }
+    await sleep(1500)
+  }
+}
+
+/** The card's button: split the script into scenes, or load the project and make its pictures. */
+async function actOnDetected() {
+  const where = detected
+  if (!where?.summary || where.busy || running) return
+  const offer = projectOffer(where.summary)
+  const doing = (text) => {
+    where.busy = true
+    where.doing = text
+    renderDetected()
+    // Also below: once the project is loaded, the card makes way for its scenes.
+    say(text)
+  }
+  try {
+    if (offer.action === 'split') {
+      doing('Splitting the script into scenes with AI. This can take a minute or two…')
+      where.summary = await askCutroom(where, { detail: 'summary', split: true })
+      return
+    }
+    doing('Getting its scenes and character pictures from Cutroom…')
+    const project = await askCutroom(where, { detail: 'full' })
+    takeIncoming({ ...project, origin: where.origin, tabId: where.tabId, sentAt: Date.now() })
+    if (offer.action !== 'make' || state.cutroom?.projectId !== project.projectId) return
+    doing('Bringing up Flow…')
+    await bringUpFlow()
+    where.busy = false
+    await start()
+  } catch (error) {
+    say(error.message)
+  } finally {
+    where.busy = false
+    renderDetected()
+  }
 }
 
 function characterOptions() {
@@ -308,7 +452,7 @@ function render() {
   if (!running) {
     $('status').textContent = state.items.length
       ? `${done} of ${state.items.length} done.`
-      : 'Read a storyboard to begin.'
+      : 'Open a project in Cutroom, or read a storyboard, to begin.'
   }
   $('start').disabled = running || state.items.length === 0
   $('stop').hidden = !running
@@ -332,6 +476,7 @@ function render() {
       Object.assign(document.createElement('img'), { src: image.dataUrl, alt: image.name }),
     ),
   )
+  renderDetected()
 }
 
 function choice(label, value, options, onChange) {
@@ -579,6 +724,8 @@ async function start() {
     }. ${where}`,
   )
   if (waitingIncoming) takeIncoming(waitingIncoming)
+  // The project open in Cutroom has fewer pictures to make now.
+  detectSoon()
 }
 
 /**
@@ -742,6 +889,12 @@ $('unlink').addEventListener('click', () => {
 $('connectAddress').addEventListener('click', connectAddress)
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes[INCOMING]) takeIncoming(changes[INCOMING].newValue)
+  // You looked at another Cutroom tab or project.
+  if (area === 'local' && changes[TABS]) detectSoon()
+})
+$('detectedAction').addEventListener('click', actOnDetected)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') detectSoon()
 })
 $('start').addEventListener('click', start)
 $('stop').addEventListener('click', () => {

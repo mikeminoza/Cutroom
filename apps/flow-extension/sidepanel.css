@@ -210,6 +210,14 @@ button.quiet {
   margin-left: -11px;
 }
 
+.detected {
+  margin-bottom: 10px;
+}
+
+.detected button.go {
+  margin-left: 0;
+}
+
 .controls {
   display: flex;
   flex-direction: column;

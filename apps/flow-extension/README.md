@@ -4,10 +4,14 @@ A Chrome extension that makes every picture of a Cutroom project in
 [Google Flow](https://labs.google/fx/tools/flow), one after another, and puts each one on its scene
 in Cutroom. You don't paste prompts or press Generate yourself.
 
-- In Cutroom, a project's **Images** step gets a **Make in Flow** button. It hands every scene's
-  prompt, and your character's pictures, to the extension and brings up Flow.
-- Press **Start** in the side panel once. Each scene's prompt is typed into Flow and generated, and
-  the picture lands on its scene in Cutroom as soon as it's made.
+- The side panel knows which project you have open in Cutroom (on any step) and offers to make
+  its missing pictures in one click. If the project has a script that isn't split into scenes yet,
+  it splits it with AI first, so every scene has a picture prompt.
+- Or, in Cutroom, press **Make in Flow** on a project's **Images** step. It hands every scene's
+  prompt, and your character's pictures, to the extension and brings up Flow; press **Start** in
+  the side panel.
+- Each scene's prompt is typed into Flow and generated, and the picture lands on its scene in
+  Cutroom as soon as it's made.
 - Your character's pictures (from the project's characters) go with every scene that shows them.
 - Related scenes (the same alarm clock, the same bedroom) get the earlier scene's picture as a
   reference, so they match.
@@ -31,10 +35,18 @@ Cutroom's tabs.
 
 ## Use
 
-1. In Cutroom, open the project's **Images** step and press **Make in Flow**. Flow opens (or comes
-   to the front) next to the Cutroom tab, and the side panel shows the scenes. Scenes that already
-   have a picture are marked done. If the side panel doesn't open by itself, click the extension's
-   icon.
+1. Open the project in Cutroom (any step), then open the side panel (the extension's icon). Under
+   **Open in Cutroom** it shows the project you looked at last and what it needs:
+   - **Make 18 pictures**: loads its scenes (the ones with a picture are marked done), brings up
+     Flow and starts. The rest of this list is for checking and changing things first.
+   - **Split into scenes with AI**: the script has no scenes yet. This splits it (as the Script
+     step's AI split does, a minute or two); then **Make … pictures** appears.
+   - No button: the project has no script yet, or every scene already has a picture (**Load its
+     scenes** to make one again).
+
+   Or, in Cutroom, open the project's **Images** step and press **Make in Flow**. Flow opens (or
+   comes to the front) next to the Cutroom tab, and the side panel shows the scenes. If the side
+   panel doesn't open by itself, click the extension's icon.
 2. Check the list if you like. It shows every scene, whether it gets your character, and which
    earlier scene it should match. Change either per scene, and open **Prompt** to see exactly what
    goes to Flow.
@@ -67,11 +79,14 @@ Cutroom's tabs.
 
 ## How it works
 
-`cutroom.js` runs in Cutroom's pages. It tells Cutroom the extension is there, passes **Make in
-Flow**'s scenes to `background.js` (which keeps them, brings up Flow and opens the side panel), and
-hands each finished picture to Cutroom's page, which uploads it and saves it on its scene
-(`apps/web/src/components/flow-bridge.tsx`). Cutroom's page and `cutroom.js` talk with window
-messages: `{ source: 'cutroom' }` one way, `{ source: 'cutroom-flow' }` the other.
+`cutroom.js` runs in Cutroom's pages. It tells Cutroom the extension is there, and tells
+`background.js` which project the tab has open (`/projects/<id>`), noting when you look at the tab,
+so the side panel can offer the project you looked at last. It passes **Make in Flow**'s scenes to
+`background.js` (which keeps them, brings up Flow and opens the side panel), and hands the side
+panel's questions about a project, and each finished picture, to Cutroom's page. The page answers
+with the project (splitting a script with no scenes yet with AI first) and uploads each picture
+onto its scene (`apps/web/src/components/flow-bridge.tsx`). Cutroom's page and `cutroom.js` talk
+with window messages: `{ source: 'cutroom' }` one way, `{ source: 'cutroom-flow' }` the other.
 
 `sidepanel.js` takes those scenes (`lib/cutroom.js`) or reads a pasted storyboard (`lib/parse.js`),
 works out each scene's prompt and pictures (`lib/prompt.js`) and runs the scenes one at a time.
