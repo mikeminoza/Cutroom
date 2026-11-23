@@ -1,5 +1,5 @@
 // The "Finish & schedule" pipeline: render → Drive → post details → approval →
-// YouTube → thumbnail/captions/playlist → archive. Every step is resumable:
+// YouTube → thumbnail/captions/subtitles/playlist → archive. Every step is resumable:
 // steps finished in an earlier run are skipped, and their results are reused.
 import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -35,6 +35,7 @@ import { type RenderLayer, renderVideo } from '../render/render'
 import { errorMessage, extensionOf, imageMime, probeSeconds } from '../util'
 import type { JobContext } from './context'
 import { makeShorts } from './shorts'
+import { addSubtitles, languageList } from './subtitles'
 
 const ROOT_FOLDER = 'Cutroom'
 
@@ -424,12 +425,26 @@ export async function runPublish(payload: JobPayload, ctx: JobContext): Promise<
         }
       }
       if (ctx.data.srtUrl) {
+        const language = post.language || 'en'
         try {
           if (!existsSync(srtFile)) await downloadTo(ctx.data.srtUrl, srtFile, payload.appUrl)
-          await uploadCaptions(youtube, videoId, srtFile, post.language)
+          // Once per upload: a retry of this step doesn't add the track again.
+          if (!ctx.data.captionTracks?.includes(language)) {
+            await uploadCaptions(youtube, videoId, srtFile, post.language)
+            await ctx.result({ captionTracks: [...(ctx.data.captionTracks ?? []), language] })
+          }
           done.push('captions')
         } catch (error) {
           await ctx.warn(`Captions not added: ${errorMessage(error)}`)
+        }
+        // Then the same captions in the video's other languages, timed like these: extras that
+        // only ever warn. A missing setting (an older web app) counts as on.
+        if (ctx.data.captionTracks?.includes(language) && existsSync(srtFile)) {
+          const subtitles = await addSubtitles(
+            { youtube, videoId, srtFile, post, enabled: settings.defaults.translatedSubtitles !== false },
+            ctx,
+          )
+          if (subtitles.length) done.push(`subtitles in ${languageList(subtitles)}`)
         }
       }
       if (post.playlistId) {

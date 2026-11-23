@@ -46,8 +46,9 @@ export function geminiModel(): string {
 }
 
 /**
- * Model for the simple jobs (picking effects and layers, summing up comments, short searches):
- * faster, with a free-tier quota of its own, so the main model's is kept for the writing.
+ * Model for the simple jobs (picking effects and layers, summing up comments, short searches,
+ * subtitles): faster, with a free-tier quota of its own, so the main model's is kept for the
+ * writing. The web app and the worker (subtitles) both use it.
  */
 export function geminiLiteModel(): string {
   return process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite'
@@ -1596,6 +1597,132 @@ ${input.title}`
     if (codes.includes(t.language) && title && !titles[t.language]) titles[t.language] = title
   }
   return titles
+}
+
+/** A video's caption lines in one language, one per cue, or why that language wasn't done. */
+export type CaptionTranslation = { language: string; cues: string[] } | { language: string; error: string }
+
+/**
+ * The longest answer one subtitle call is sized for, in tokens: half of what a Flash model writes
+ * at most, so a real answer (usually well under the estimate) never runs into the limit.
+ */
+const SUBTITLE_CALL_TOKENS = 32_000
+
+const MISALIGNED = "Gemini's translation didn't line up with the captions."
+
+/**
+ * A video's caption text in other languages, for subtitles on the main captions' times. The cues
+ * go to Gemini as a numbered list and come back one line each, so every line keeps its cue's
+ * times; a language whose answer has another number of lines (or a blank one) is left out rather
+ * than shown at the wrong moments. On Flash-Lite, with several languages a call while the answer
+ * fits comfortably, and a long video's cues in parts. Never throws for Gemini's sake: each language
+ * comes back translated, or with the reason it isn't.
+ */
+export async function translateCaptions(input: {
+  cues: string[]
+  /** The language they are in. */
+  from: string
+  to: string[]
+  signal?: AbortSignal
+}): Promise<CaptionTranslation[]> {
+  const wanted = [...new Set(input.to.filter((code) => code && code !== input.from))]
+  if (!wanted.length || !input.cues.length) return []
+  // At most a token a character (languages written in other scripts), some to spare, and a few
+  // for each line's quotes.
+  const cueTokens = (cue: string) => Math.ceil(cue.length * 1.25) + 4
+  // A long video's cues in parts, each small enough for one language's answer to fit a call.
+  const parts: { cues: string[]; tokens: number }[] = [{ cues: [], tokens: 0 }]
+  for (const cue of input.cues) {
+    let part = parts[parts.length - 1]
+    if (part.cues.length && part.tokens + cueTokens(cue) > SUBTITLE_CALL_TOKENS) {
+      part = { cues: [], tokens: 0 }
+      parts.push(part)
+    }
+    part.cues.push(cue)
+    part.tokens += cueTokens(cue)
+  }
+  const perCall = Math.max(
+    1,
+    Math.min(4, Math.floor(SUBTITLE_CALL_TOKENS / Math.max(...parts.map((p) => p.tokens)))),
+  )
+  const calls: { part: number; codes: string[] }[] = []
+  parts.forEach((_, part) => {
+    for (let i = 0; i < wanted.length; i += perCall) calls.push({ part, codes: wanted.slice(i, i + perCall) })
+  })
+
+  const lines = new Map(wanted.map((code) => [code, new Array<string[]>(parts.length)]))
+  const errors = new Map<string, string>()
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(3, calls.length) }, async () => {
+      while (next < calls.length) {
+        const { part, codes } = calls[next++]
+        const cues = parts[part].cues
+        const prompt = `Translate these video captions${input.from ? ` from ${languageName(input.from)}` : ''} into each of these languages: ${codes.map((c) => `${c} (${languageName(c)})`).join(', ')}.${parts.length > 1 ? ` They are part ${part + 1} of ${parts.length} of the video's captions.` : ''}
+
+They are subtitles: each numbered line shows on screen on its own, while it is spoken. Translate every line into exactly one line, in the same order, so line 1 stays line 1: ${cues.length} lines in, ${cues.length} lines out for each language. Never merge, split, skip or add a line, even where a sentence runs on into the next one: translate each piece where it is, so the lines still read naturally one after another. Keep each line about as short as the original, since viewers read it while it is on screen. Write it the way people speak each language, not word for word. Names and numbers stay as they are. Leave the line numbers out of your lines.
+
+Captions:
+${cues.map((cue, i) => `${i + 1}. ${cue}`).join('\n')}`
+        try {
+          const result = await generateJson(
+            prompt,
+            {
+              type: 'object',
+              properties: {
+                subtitles: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      language: { type: 'string', enum: codes },
+                      lines: { type: 'array', items: str },
+                    },
+                    required: ['language', 'lines'],
+                  },
+                },
+              },
+              required: ['subtitles'],
+            },
+            z.object({ subtitles: z.array(z.object({ language: z.string(), lines: z.array(z.string()) })) }),
+            'You translate video subtitles line for line, so every line still fits its moment on screen.',
+            {
+              task: `subtitles (${codes.join(', ')}${parts.length > 1 ? `, part ${part + 1} of ${parts.length}` : ''})`,
+              maxTokens: codes.length * parts[part].tokens + 1000,
+              lite: true,
+              signal: input.signal,
+            },
+          )
+          for (const code of codes) {
+            const answer = result.subtitles.find((s) => s.language === code)
+            if (!answer) {
+              errors.set(code, "Gemini's answer left it out.")
+              continue
+            }
+            // Its line number copied in front: taken out, unless the caption itself starts so.
+            const translated = answer.lines.map((line, i) => {
+              const number = new RegExp(`^\\s*${i + 1}[.)]\\s*`)
+              return (number.test(cues[i] ?? '') ? line : line.replace(number, ''))
+                .replace(/\s+/g, ' ')
+                .trim()
+            })
+            if (translated.length !== cues.length || translated.some((line) => !line))
+              errors.set(code, MISALIGNED)
+            else lines.get(code)![part] = translated
+          }
+        } catch (error) {
+          // Stopped on purpose (the job was cancelled): not a reason to give per language.
+          if (input.signal?.aborted) throw error
+          const reason = error instanceof Error ? error.message : String(error)
+          for (const code of codes) errors.set(code, reason)
+        }
+      }
+    }),
+  )
+  return wanted.map((language) => {
+    const error = errors.get(language)
+    return error ? { language, error } : { language, cues: lines.get(language)!.flat() }
+  })
 }
 
 export function composeDescription(

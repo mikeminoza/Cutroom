@@ -13,7 +13,7 @@ Locally both read a single `.env` file at the repository root. In production you
 |---|---|---|---|---|
 | `GEMINI_API_KEY` | ✓ | ✓ | For AI features | `AIzaSy…` |
 | `GEMINI_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash` |
-| `GEMINI_LITE_MODEL` | ✓ | – | No | `gemini-3.5-flash-lite` |
+| `GEMINI_LITE_MODEL` | ✓ | ✓ | No | `gemini-3.5-flash-lite` |
 | `GEMINI_TTS_MODEL` | ✓ | ✓ | No | `gemini-3.8-flash-tts` |
 | `GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE` | ✓ | – | No | `gemini-3.1-flash-lite-image`, `2K` |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_MODEL` | ✓ | ✓ | No | `sk_…`, `eleven_multilingual_v2` |
@@ -45,7 +45,7 @@ Locally both read a single `.env` file at the repository root. In production you
 | On the web app (Vercel) | On the worker (Render) |
 |---|---|
 | `WORKER_SECRET` | `WORKER_SECRET`, the identical value |
-| `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TTS_MODEL` | the same values |
+| `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_LITE_MODEL`, `GEMINI_TTS_MODEL` | the same values |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_MODEL` (if used) | the same values |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | the same values |
 | `BLOB_READ_WRITE_TOKEN` | the same value |
@@ -62,6 +62,7 @@ Lets Cutroom use Gemini to:
 - read the script aloud as an AI voice-over
 - listen to an uploaded voice-over to time the scenes
 - write titles, descriptions, chapters and tags
+- translate the title, description and captions into the languages in Settings → Defaults
 - suggest video ideas, and pick the best part of a video for a Short
 - paint scene pictures and thumbnails (needs billing, see `GEMINI_IMAGE_MODEL`)
 
@@ -81,9 +82,11 @@ The Gemini text model. It defaults to `gemini-3.8-flash`. Google renames models 
 
 ### `GEMINI_LITE_MODEL`
 
-The faster, lighter model for the simple jobs: picking scene effects ("Add effects with AI"), building scene pictures from Library layers, summing up viewer comments, drafting replies to them, the searches behind breakouts, and translating a video's new title into its other languages when you give it a second chance. It defaults to `gemini-3.5-flash-lite`, which is on the free tier with a quota of its own, so these jobs don't use up `GEMINI_MODEL`'s requests. Everything you publish (scripts, storyboards, titles, descriptions, translations, ideas) and the checks (script doctor, hook, packaging) stay on `GEMINI_MODEL`.
+The faster, lighter model for the simple jobs: picking scene effects ("Add effects with AI"), building scene pictures from Library layers, summing up viewer comments, drafting replies to them, the searches behind breakouts, translating a video's new title into its other languages when you give it a second chance, and translating the captions into subtitles when a video posts. It defaults to `gemini-3.5-flash-lite`, which is on the free tier with a quota of its own, so these jobs don't use up `GEMINI_MODEL`'s requests. The rest of what you publish (scripts, storyboards, titles, descriptions and their translations, ideas) and the checks (script doctor, hook, packaging) stay on `GEMINI_MODEL`.
 
-Web app only: the worker doesn't run these jobs. To send them to the main model instead, set it to the same value as `GEMINI_MODEL`. If a simple job fails with "model not found", pick a current Flash-Lite model from https://ai.google.dev/gemini-api/docs/models.
+Set it on both services, or on neither: the worker uses it for the subtitles. On the GitHub Actions worker it's an optional repository variable. Left unset anywhere, the default is used. To send these jobs to the main model instead, set it to the same value as `GEMINI_MODEL`. If a simple job fails with "model not found", pick a current Flash-Lite model from https://ai.google.dev/gemini-api/docs/models.
+
+**Subtitles.** When a video posts, the worker adds its captions in the first two of the languages in Settings → Defaults (in the order listed there), on exactly the main captions' times. That is usually one Flash-Lite call a video (one per language on videos over about 12 minutes). YouTube charges 400 of its 10,000 free API units a day for each subtitle track, and about 1,600 for an upload, so two languages at most keep room for three videos a day. On a day you post more, turn subtitles off in Settings → Defaults. If one fails, the video still posts, with a warning.
 
 ### `GEMINI_TTS_MODEL`
 

@@ -145,6 +145,7 @@ export const settingsSchema = z.object({
     resolution: z.enum(['720p', '1080p']),
     captionStyle: z.enum(['highlight', 'line', 'off']),
     translateTo: z.array(z.string().max(20)).max(20).default([]),
+    translatedSubtitles: z.boolean().default(true),
   }),
   freeBlobAfterPosting: z.boolean(),
   voice: voiceSchema,

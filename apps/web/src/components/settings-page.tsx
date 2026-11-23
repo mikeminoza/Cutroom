@@ -1,5 +1,6 @@
 'use client'
 
+import { SUBTITLE_LANGUAGES } from '@cutroom/shared/captions'
 import { WEEKDAYS } from '@cutroom/shared/schedule'
 import {
   type AppSettings,
@@ -839,6 +840,14 @@ function PreferencesForm() {
                 })}
               </div>
             </Field>
+            <div className="sm:col-span-2">
+              <Switch
+                checked={settings.defaults.translatedSubtitles}
+                onCheckedChange={(translatedSubtitles) => updateDefaults({ translatedSubtitles })}
+                label="Subtitles in these languages too"
+                description={`Gemini translates the captions into the first ${SUBTITLE_LANGUAGES} of them, in the order above. Each subtitle track uses 400 of YouTube's 10,000 free quota units a day, which uploads need too (about 1,600 each), so ${SUBTITLE_LANGUAGES} still leave room for three videos a day. Posting more than that? Turn this off.`}
+              />
+            </div>
             <Field label="Tags added to every video" className="sm:col-span-2" hint="Separate with commas.">
               <Input
                 value={settings.defaults.tags.join(', ')}

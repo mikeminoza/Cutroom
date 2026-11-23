@@ -80,6 +80,11 @@ export interface JobResult {
   driveFileId?: string
   driveFileUrl?: string
   youtubeVideoId?: string
+  /**
+   * The upload's caption tracks so far, by language (the main one, then subtitles), kept so a
+   * retry adds none twice: each costs 400 YouTube quota units.
+   */
+  captionTracks?: string[]
   post?: PostDetails
   publishAt?: string | null
   transcript?: Transcript

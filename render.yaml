@@ -18,6 +18,9 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.8-flash
+      # The model for subtitles in other languages, with a free-tier quota of its own.
+      - key: GEMINI_LITE_MODEL
+        value: gemini-3.5-flash-lite
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

@@ -2166,6 +2166,25 @@ describe('titles and descriptions in other languages', () => {
     expect(put.status).toBe(200)
     expect((await settingsModule.getSettings()).defaults.translateTo).toEqual(['es', 'pt'])
   })
+
+  it('adds subtitles in those languages unless turned off, also for settings saved before the switch', async () => {
+    const settings = await settingsModule.getSettings()
+    expect(settings.defaults.translatedSubtitles).toBe(true)
+    const save = (defaults: Record<string, unknown>) =>
+      settingsRoute.PUT(
+        new Request('http://localhost/api/settings', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...settings, defaults }),
+        }),
+        undefined,
+      )
+    expect((await save({ ...settings.defaults, translatedSubtitles: false })).status).toBe(200)
+    expect((await settingsModule.getSettings()).defaults.translatedSubtitles).toBe(false)
+    const { translatedSubtitles: _, ...older } = settings.defaults
+    expect((await save(older)).status).toBe(200)
+    expect((await settingsModule.getSettings()).defaults.translatedSubtitles).toBe(true)
+  })
 })
 
 describe('a channel set up to grow and earn', () => {

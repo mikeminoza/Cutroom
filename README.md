@@ -8,7 +8,7 @@ Turn a script, a voice-over and one image per scene into a finished YouTube vide
 4. **Voice-over**: upload your recording, or have an AI voice read the script (Gemini, free tier, or ElevenLabs). Every scene moves to where its words are spoken, and the pauses in the recording place each caption word. Fine-tune the cuts on the waveform.
 5. **Images**: let Gemini paint every scene (the character reference images are attached for you), or copy each prompt into your own image tool and drop, paste or bulk-upload the results. Or build a scene from the Library, for free: a background with a character's pose in front, picked by you or by the AI for every scene. In the video the character breathes, bounces while the narrator speaks and blinks if the pose has an eyes-closed version.
 6. **Preview**: plays in the browser exactly as it will render (same motion, transitions, on-screen text and captions).
-7. **Publish**: **Finish & schedule** starts the automatic part. The worker renders the MP4, saves it to Google Drive, writes the title, description, chapters and tags (learning from your best-performing titles), waits for your approval if you asked it to, uploads to YouTube with a publish time, then adds the thumbnail, captions and playlist and archives the project files. Make the thumbnail right there if you like: a background, a character pose and big bold text, drawn in the browser. You get a message on Discord, Telegram or email when it needs you or is done.
+7. **Publish**: **Finish & schedule** starts the automatic part. The worker renders the MP4, saves it to Google Drive, writes the title, description, chapters and tags (learning from your best-performing titles), waits for your approval if you asked it to, uploads to YouTube with a publish time, then adds the thumbnail, captions (with subtitles in up to two of the languages you translate into) and playlist and archives the project files. Make the thumbnail right there if you like: a background, a character pose and big bold text, drawn in the browser. You get a message on Discord, Telegram or email when it needs you or is done.
 
 Around the projects:
 
@@ -89,7 +89,7 @@ It ends with a troubleshooting table for the common problems: redirect mismatch,
   - Blob storage is 1 GB, so finished videos go to Drive, and working files can be cleared from Blob after posting (Settings → Storage).
   - Scheduled jobs run at most once a day, which is fine because YouTube handles the publish time.
 - **Gemini free tier:** rate-limited, and Google may use free-tier inputs to improve its products. Text and voice (TTS) models are on it; image models are not, so AI pictures need billing on the key's project (about $0.04 a picture with the default model).
-- **YouTube:** uploads have their own quota (100 a day). Scheduled videos are uploaded as private and YouTube makes them public at the slot time, so your computer and the worker can be off by then.
+- **YouTube:** uploads have their own quota (100 a day), and the API allows 10,000 units a day: about 2,100 for an upload with its thumbnail, captions and playlist, 400 for each subtitle track. That is why a video gets subtitles in two languages at most (turn them off in Settings → Defaults on a day you post more than three videos). Scheduled videos are uploaded as private and YouTube makes them public at the slot time, so your computer and the worker can be off by then.
 
 ## Commands
 

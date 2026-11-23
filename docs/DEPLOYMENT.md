@@ -87,7 +87,7 @@ How to get each value is in [ENVIRONMENT.md](ENVIRONMENT.md). After adding a var
 | `BLOB_READ_WRITE_TOKEN` | added by Blob | ✓ | Same value in both |
 | `GEMINI_API_KEY` | ✓ | ✓ | |
 | `GEMINI_MODEL` | optional | optional | Defaults to `gemini-3.8-flash` |
-| `GEMINI_LITE_MODEL` | optional | | Defaults to `gemini-3.5-flash-lite`, for the simple jobs |
+| `GEMINI_LITE_MODEL` | optional | optional | Defaults to `gemini-3.5-flash-lite`, for the simple jobs and subtitles |
 | `GEMINI_TTS_MODEL` | | optional | Defaults to `gemini-3.8-flash-tts` |
 | `GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE` | optional | | |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | |
@@ -309,7 +309,7 @@ Environment variable changes only apply to new deployments. Go to **Deployments*
    | `GOOGLE_CLIENT_SECRET` | same as Vercel |
    | `BLOB_READ_WRITE_TOKEN` | the token from 4.5 |
 
-   `GEMINI_MODEL` and `GEMINI_TTS_MODEL` are already set in the file. Render also asks for `ELEVENLABS_API_KEY`: leave it empty unless you use ElevenLabs voices (see [10](#10-optional-extras)).
+   `GEMINI_MODEL`, `GEMINI_LITE_MODEL` and `GEMINI_TTS_MODEL` are already set in the file. Render also asks for `ELEVENLABS_API_KEY`: leave it empty unless you use ElevenLabs voices (see [10](#10-optional-extras)).
 5. Click **Apply** (or **Deploy Blueprint**).
 
 Render only asks for these values on this first setup. To change them later, go to the service → **Environment**.
@@ -364,7 +364,7 @@ CRON_SECRET           DATABASE_URL          BLOB_READ_WRITE_TOKEN
 (plus Neon's and Blob's extra variables). Render should have:
 
 ```
-APP_URL   WORKER_SECRET   GEMINI_API_KEY   GEMINI_MODEL   GEMINI_TTS_MODEL
+APP_URL   WORKER_SECRET   GEMINI_API_KEY   GEMINI_MODEL   GEMINI_LITE_MODEL   GEMINI_TTS_MODEL
 GOOGLE_CLIENT_ID   GOOGLE_CLIENT_SECRET   BLOB_READ_WRITE_TOKEN   (ELEVENLABS_API_KEY)
 ```
 
@@ -503,7 +503,7 @@ Instead of the Render worker, GitHub Actions can run each job in its own run: se
    | `BLOB_READ_WRITE_TOKEN` | the token from 4.5 |
    | `ELEVENLABS_API_KEY` | only if you use ElevenLabs |
 
-   Optional, under the **Variables** tab: `GEMINI_MODEL`, `GEMINI_TTS_MODEL`, `ELEVENLABS_MODEL`.
+   Optional, under the **Variables** tab: `GEMINI_MODEL`, `GEMINI_LITE_MODEL`, `GEMINI_TTS_MODEL`, `ELEVENLABS_MODEL`. Left out, each uses its default.
 3. **Point Vercel at it.** Vercel → **Settings → Environment Variables**:
    - `GITHUB_DISPATCH_TOKEN` = the token from step 1
    - `GITHUB_REPO` = `owner/name`, for example `you/Cutroom`
@@ -528,6 +528,7 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | "That Google account has no YouTube channel" | Wrong account picked | Connect again and choose the account or Brand Account that owns the channel |
 | Posting stopped after about a week | The consent screen is still in **Testing** | Publish the app (3.7), then reconnect YouTube and Drive |
 | Warning "Thumbnail not set … verified channel" | Channel not phone-verified | https://www.youtube.com/verify. The video itself was posted |
+| Warning "Subtitles in … not added" | Gemini's or YouTube's free daily limit, or a translation that didn't line up with the captions (it is left out rather than shown at the wrong times) | Nothing to fix: the video and its main captions were posted. Add subtitles by hand in YouTube Studio if you like |
 | Upload fails with `quotaExceeded` | YouTube's daily upload quota is used up | Wait until it resets (midnight Pacific time) and click **Retry** |
 | "Gemini free-tier limit reached" | Too many AI requests in a minute | Wait a minute and try again |
 | "This Gemini model is not on the free tier" | Picture generation needs billing | Turn on billing for the Gemini key's project ([10](#10-optional-extras)), or copy the prompts into another image tool |
@@ -537,7 +538,7 @@ The Render worker is no longer used; you can suspend it. To switch back, remove 
 | GitHub run fails right away with "WORKER_SECRET and APP_URL must be set" | Repository secrets missing | Add them under **Settings → Secrets and variables → Actions** |
 | "Send a test" reports an error for Telegram | Wrong chat id, or you never messaged the bot | Message the bot first, then read the chat id again from `getUpdates` |
 | Test email never arrives | Resend's test sender only sends to your own Resend account address | Use that address in `NOTIFY_EMAIL_TO`, or verify a domain in Resend and set `NOTIFY_EMAIL_FROM` |
-| Gemini "model not found" | Google renamed or retired the model | Set `GEMINI_MODEL` to a current Flash model on both services; if only effects, scene layers, comment summaries or breakouts fail, set `GEMINI_LITE_MODEL` on Vercel to a current Flash-Lite model |
+| Gemini "model not found" | Google renamed or retired the model | Set `GEMINI_MODEL` to a current Flash model on both services; if only effects, scene layers, comment summaries, breakouts or subtitles fail, set `GEMINI_LITE_MODEL` to a current Flash-Lite model on both |
 | Settings → Storage is red | `BLOB_READ_WRITE_TOKEN` missing on Vercel | Step 4.5 |
 | Image or voice-over upload fails in production | Blob store created as **Private**, or token missing | Create a new **Public** store, connect it, update the token on Vercel and Render |
 | Worker log: "Could not reach the web app to resume jobs" on start | Web app address wrong or protected | Check `APP_URL` on Render. Vercel → **Settings → Deployment Protection**: production must not require Vercel login |

@@ -1,6 +1,12 @@
 // Caption timing shared by the browser preview and the ffmpeg render,
 // so what you see in the preview is what gets burned into the video.
-import type { CaptionStyle, Transcript, VideoFormat, Word } from './types'
+import {
+  type CaptionStyle,
+  TRANSLATION_LANGUAGES,
+  type Transcript,
+  type VideoFormat,
+  type Word,
+} from './types'
 
 export interface CaptionChunk {
   start: number
@@ -58,9 +64,12 @@ export function speechSpans(words: Word[], gap = 0.25): { start: number; end: nu
   return spans
 }
 
+/** A long-form caption line at most, in characters: YouTube's caption track uses it too. */
+export const CAPTION_LINE_CHARS = 42
+
 export function chunkCaptions(words: Word[], format: VideoFormat): CaptionChunk[] {
   const maxWords = format === 'portrait' ? 3 : 7
-  const maxChars = format === 'portrait' ? 22 : 42
+  const maxChars = format === 'portrait' ? 22 : CAPTION_LINE_CHARS
   const chunks: CaptionChunk[] = []
   let current: Word[] = []
 
@@ -115,11 +124,102 @@ function srtTime(seconds: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(rest).padStart(3, '0')}`
 }
 
+/** One caption on YouTube's caption track: when it shows, and what it says. */
+export interface SrtCue {
+  start: number
+  end: number
+  text: string
+}
+
 /** SRT file for YouTube's caption track — always the readable long-form line length. */
 export function toSrt(words: Word[]): string {
-  return chunkCaptions(words, 'landscape')
-    .map((chunk, i) => `${i + 1}\n${srtTime(chunk.start)} --> ${srtTime(chunk.end)}\n${chunkText(chunk)}\n`)
+  return cuesToSrt(
+    chunkCaptions(words, 'landscape').map((chunk) => ({
+      start: chunk.start,
+      end: chunk.end,
+      text: chunkText(chunk),
+    })),
+  )
+}
+
+export function cuesToSrt(cues: SrtCue[]): string {
+  return cues
+    .map((cue, i) => `${i + 1}\n${srtTime(cue.start)} --> ${srtTime(cue.end)}\n${cue.text}\n`)
     .join('\n')
+}
+
+const SRT_TIMES = /(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})/
+
+/**
+ * The cues of an SRT file, as toSrt wrote them: subtitles in another language reuse their times,
+ * so they show exactly when the main captions do.
+ */
+export function parseSrt(srt: string): SrtCue[] {
+  const seconds = (h: string, m: string, s: string, ms: string) =>
+    Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000
+  const cues: SrtCue[] = []
+  for (const block of srt.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
+    const lines = block.split('\n')
+    const at = lines.findIndex((line) => SRT_TIMES.test(line))
+    if (at === -1) continue
+    const t = SRT_TIMES.exec(lines[at])!
+    const text = lines
+      .slice(at + 1)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (text)
+      cues.push({ start: seconds(t[1], t[2], t[3], t[4]), end: seconds(t[5], t[6], t[7], t[8]), text })
+  }
+  return cues
+}
+
+/**
+ * A translated caption laid out like the main track's lines. Translations often run longer than
+ * the original, so one that doesn't fit a caption line goes on two, broken at the space nearest
+ * the middle so both are about as long. Scripts written without spaces (Japanese, Thai) stay on
+ * one line: YouTube's player wraps them where they may break.
+ */
+export function subtitleText(text: string, max = CAPTION_LINE_CHARS): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  if (line.length <= max) return line
+  const middle = line.length / 2
+  let split = -1
+  for (let i = line.indexOf(' '); i !== -1; i = line.indexOf(' ', i + 1)) {
+    if (split === -1 || Math.abs(i - middle) < Math.abs(split - middle)) split = i
+  }
+  return split === -1 ? line : `${line.slice(0, split)}\n${line.slice(split + 1)}`
+}
+
+/**
+ * Languages a video gets subtitles in at most. Each is its own caption track, and adding one costs
+ * 400 of the 10,000 YouTube API units a day that uploads need too. A video with its thumbnail,
+ * captions and playlist takes about 2,100 (the upload itself about 1,600); two subtitle tracks
+ * bring it to 2,900, so three videos still go out in a day with room left for replying to
+ * comments. However many languages Settings lists, subtitles can't eat the day's uploads.
+ */
+export const SUBTITLE_LANGUAGES = 2
+
+/**
+ * The languages a video gets subtitles in: those it has a translated title in (YouTube shows those
+ * viewers the title in their language already), most-watched first, the order Settings lists them
+ * in, and at most SUBTITLE_LANGUAGES. Never the video's own language: the main captions are in it.
+ */
+export function subtitleLanguages(
+  translations: { language: string; title: string }[] | undefined,
+  own: string,
+): string[] {
+  const rank = (code: string) => {
+    const i = TRANSLATION_LANGUAGES.findIndex((l) => l.code === code)
+    return i === -1 ? TRANSLATION_LANGUAGES.length : i
+  }
+  const codes = new Set(
+    (translations ?? [])
+      .filter((t) => t.title.trim() && t.language && t.language !== own)
+      .map((t) => t.language),
+  )
+  // Sorting is stable: languages Settings doesn't list keep their own order, after the rest.
+  return [...codes].sort((a, b) => rank(a) - rank(b)).slice(0, SUBTITLE_LANGUAGES)
 }
 
 export function captionsEnabled(style: CaptionStyle): boolean {

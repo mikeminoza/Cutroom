@@ -46,6 +46,8 @@ jobs:
           WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          # Unset is fine: the code falls back to its own Flash-Lite model (subtitles).
+          GEMINI_LITE_MODEL: ${{ vars.GEMINI_LITE_MODEL }}
           GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}

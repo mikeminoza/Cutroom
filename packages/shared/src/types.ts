@@ -464,6 +464,11 @@ export interface AppSettings {
     captionStyle: CaptionStyle
     /** Languages every video's title and description are translated into (YouTube codes). */
     translateTo: string[]
+    /**
+     * Subtitles in the first of those languages too (captions.ts subtitleLanguages): on unless
+     * turned off, for a day with more uploads than the YouTube quota leaves room for.
+     */
+    translatedSubtitles: boolean
   }
   freeBlobAfterPosting: boolean
   /** Default voice for AI voice-overs. */
@@ -584,6 +589,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     resolution: '720p',
     captionStyle: 'highlight',
     translateTo: [],
+    translatedSubtitles: true,
   },
   freeBlobAfterPosting: true,
   voice: DEFAULT_VOICE,
