@@ -67,6 +67,10 @@ describe('the retention curve', () => {
       { term: 'why cant i sleep', views: 35 },
       { term: '3am wake up', views: 10 },
     ])
+    // Whichever video comes first, the spelling that brought the most views is the one shown.
+    expect(
+      topSearchTerms([[{ term: 'Why cant I sleep ', views: 5 }], [{ term: 'why cant i sleep', views: 30 }]]),
+    ).toEqual([{ term: 'why cant i sleep', views: 35 }])
   })
 
   it("turns YouTube's report rows into 100 points, filling gaps", () => {

@@ -92,20 +92,31 @@ export function retentionLesson(video: {
   return parts.join(' ')
 }
 
-/** Search terms of several videos, added up: the searches that find the channel, most views first. */
+/**
+ * Search terms of several videos, added up whatever their case: the searches that find the
+ * channel, most views first. Each is spelled the way that brought the most views, whatever order
+ * the videos come in.
+ */
 export function topSearchTerms(
   lists: { term: string; views: number }[][],
   count = 15,
 ): { term: string; views: number }[] {
-  const totals = new Map<string, { term: string; views: number }>()
+  const totals = new Map<string, { term: string; views: number; spelledViews: number }>()
   for (const list of lists) {
     for (const { term, views } of list) {
       const key = term.trim().toLowerCase()
       if (!key) continue
-      const entry = totals.get(key) ?? { term: term.trim(), views: 0 }
+      const entry = totals.get(key) ?? { term: term.trim(), views: 0, spelledViews: -1 }
       entry.views += views
+      if (views > entry.spelledViews) {
+        entry.term = term.trim()
+        entry.spelledViews = views
+      }
       totals.set(key, entry)
     }
   }
-  return [...totals.values()].sort((a, b) => b.views - a.views).slice(0, count)
+  return [...totals.values()]
+    .map(({ term, views }) => ({ term, views }))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, count)
 }
