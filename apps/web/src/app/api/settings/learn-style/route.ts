@@ -1,4 +1,4 @@
-import { learnChannelStyle } from '@cutroom/shared/ai'
+import { learnChannelStyle, mapPartials } from '@cutroom/shared/ai'
 import { channelUploads, clientFromRefresh, explainGoogleError } from '@cutroom/shared/google'
 import { inArray } from 'drizzle-orm'
 import { z } from 'zod'
@@ -6,6 +6,7 @@ import { defaultChannel } from '@/server/connections'
 import { db, schema } from '@/server/db'
 import { badRequest, readJson, route } from '@/server/http'
 import { getSettings } from '@/server/settings'
+import { answer } from '@/server/stream'
 
 // Gemini reads the channel's titles and a few thumbnails: the Hobby plan allows 300 s with Fluid
 // compute.
@@ -26,7 +27,8 @@ async function thumbnail(url: string | null): Promise<{ mimeType: string; data: 
 /**
  * "Learn from a channel": reads a channel's newest uploads through your connected YouTube account
  * and has Gemini describe its format for your own narrator. Nothing is saved: Settings shows the
- * suggestion, and "Use this style" saves it with the reference.
+ * suggestion, and "Use this style" saves it with the reference. When the page asks, the suggestion
+ * is sent as Gemini writes it, with the reference and the usual length already in (server/stream.ts).
  */
 export const POST = route(async (request) => {
   const { url } = await readJson(request, z.object({ url: z.string().trim().min(3).max(500) }))
@@ -55,21 +57,30 @@ export const POST = route(async (request) => {
   const thumbnails = (await Promise.all(byViews.slice(0, 4).map((v) => thumbnail(v.thumbnail)))).filter(
     (t): t is { mimeType: string; data: string } => t !== null,
   )
-  const suggestion = await learnChannelStyle({
-    reference: { ...reference, videos },
-    thumbnails,
-    character: narrator ? { name: narrator.name, description: narrator.description } : null,
-    audience: settings.niche.audience,
-  })
   const lengths = videos.map((v) => v.seconds).sort((a, b) => a - b)
   const typical = lengths[Math.floor(lengths.length / 2)] ?? 0
-  return {
+  const targetMinutes = Math.min(30, Math.max(1, Math.round(typical / 60)))
+  /** What the page shows: the reference, and the suggestion as far as Gemini has written it. */
+  const learned = <S>(suggestion: S) => ({
     reference: {
       url,
       title: reference.title,
       titles: byViews.slice(0, 12).map((v) => ({ title: v.title, views: v.views })),
     },
-    suggestion: { ...suggestion, targetMinutes: Math.min(30, Math.max(1, Math.round(typical / 60))) },
+    suggestion: { ...suggestion, targetMinutes },
     videos: reference.videos.length,
-  }
+  })
+  return answer(request, async (events) =>
+    learned(
+      await learnChannelStyle(
+        {
+          reference: { ...reference, videos },
+          thumbnails,
+          character: narrator ? { name: narrator.name, description: narrator.description } : null,
+          audience: settings.niche.audience,
+        },
+        mapPartials(events, learned),
+      ),
+    ),
+  )
 })

@@ -1,8 +1,9 @@
 // Writing a project's script live (POST /api/projects/[id]/ai/draft): Gemini's words arrive as
 // they're written, and the storyboard is made from them at the same time. The answer is one JSON
 // event per line (lib/stream.ts).
+import type { SceneDraft } from '@cutroom/shared/ai'
 import type { ProjectFull } from './dto'
-import { postForEvents } from './stream'
+import { type ListChange, postForEvents } from './stream'
 
 export type DraftEvent =
   | { type: 'title'; title: string }
@@ -12,6 +13,8 @@ export type DraftEvent =
   | { type: 'restart' }
   /** Parts of the script storyboarded so far, of the parts started. */
   | { type: 'part'; done: number; started: number }
+  /** The storyboard's scenes so far, in script order, as what changed (lib/stream.ts). */
+  | ({ type: 'scenes' } & ListChange<SceneDraft>)
   /** Saved. With a storyboardError the script is saved but its scenes are not. */
   | { type: 'done'; project: ProjectFull; storyboardError: string | null }
   | { type: 'error'; error: string; code?: string }

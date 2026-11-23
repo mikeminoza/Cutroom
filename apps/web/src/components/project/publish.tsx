@@ -848,9 +848,13 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
   const { data: status } = useStatus()
   const { data: settings } = useSettings()
   const [busy, setBusy] = useState(false)
+  /** The post as Gemini translates it: each language shows as soon as it's written. */
+  const [live, setLive] = useState<PostDetails | null>(null)
   const languages = settings?.defaults.translateTo ?? []
-  const translations = post.translations ?? []
+  const translations = (live ?? post).translations ?? []
   const locked = Boolean(project.youtubeVideoId)
+  // Edits made while Gemini translates would be overwritten when it saves.
+  const editable = !locked && live === null
   const basis = translationBasis(post.title, post.description)
   const stale = translations.some((t) => t.basis && t.basis !== basis)
   // Translated (or the details written) on the server for a request this page didn't make.
@@ -859,7 +863,12 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
   const translate = async () => {
     setBusy(true)
     try {
-      const next = await api.post<PostDetails>(`/api/projects/${project.id}/ai/translate`, {})
+      const next = await streamAnswer<PostDetails>(
+        `/api/projects/${project.id}/ai/translate`,
+        {},
+        { partial: setLive, restart: () => setLive(null) },
+        'The connection broke before the translations were saved. Reload the page to see them.',
+      )
       client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
         prev ? { ...prev, project: { ...prev.project, post: next } } : prev,
       )
@@ -868,6 +877,7 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
     } catch (error) {
       toast.error(errorText(error))
     } finally {
+      setLive(null)
       setBusy(false)
     }
   }
@@ -937,8 +947,17 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
           The title or description changed after translating. Translate again to bring them up to date.
         </p>
       )}
+      {busy && (
+        <p
+          aria-live="polite"
+          className="flex items-center gap-2 border-b border-line px-5 py-2.5 text-[13px] text-ink-2"
+        >
+          <Spinner className="text-ink-3" />
+          Gemini is translating: each language shows as soon as it’s done.
+        </p>
+      )}
       {translations.length === 0 ? (
-        <p className="px-5 py-4 text-[13.5px] text-ink-3">Not translated yet.</p>
+        !busy && <p className="px-5 py-4 text-[13.5px] text-ink-3">Not translated yet.</p>
       ) : (
         <ul className="divide-y divide-line">
           {translations.map((t) => (
@@ -946,7 +965,7 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
               <div className="flex items-center gap-2">
                 <span className="text-[13.5px] font-medium">{languageName(t.language)}</span>
                 <span className="tc text-[12px] text-ink-3">{t.language}</span>
-                {!locked && (
+                {editable && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -963,13 +982,13 @@ function TranslationsPanel({ data }: { data: ProjectFull }) {
                 aria-label={`Title in ${languageName(t.language)}`}
                 value={t.title}
                 maxLength={100}
-                disabled={locked}
+                disabled={!editable}
                 onValue={(title) => change(t.language, { title })}
               />
               <SyncedTextarea
                 aria-label={`Description in ${languageName(t.language)}`}
                 value={t.description}
-                disabled={locked}
+                disabled={!editable}
                 onValue={(description) => change(t.language, { description })}
                 className="min-h-20 [field-sizing:content] text-[13.5px]"
               />

@@ -8,7 +8,13 @@
 // YouTube quota (10,000 units a day, shared with uploads at about 1,600 each): reading a video's
 // comments is 1 unit, plus 1 for each thread with more replies than YouTube sends along, so a check
 // is about REPLIES.videos units at most. A reply is 50, so one click posts REPLIES.perClick.
-import { draftReplies, hasGeminiKey } from '@cutroom/shared/ai'
+import {
+  type AnswerEvents,
+  draftReplies,
+  hasGeminiKey,
+  mapPartials,
+  type ReplyDraft,
+} from '@cutroom/shared/ai'
 import {
   type CommentThread,
   channelInfo,
@@ -23,7 +29,7 @@ import { postedAt } from '@cutroom/shared/growth'
 import { needsAllReplies, REPLIES, waitingComments } from '@cutroom/shared/replies'
 import { and, asc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm'
 import { resolveChannel } from '@/lib/channels'
-import type { RepliesDTO, ReplyCommentDTO, SentRepliesDTO } from '@/lib/dto'
+import type { RepliesDTO, ReplyChange, ReplyCommentDTO, SentRepliesDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { listChannels } from './connections'
 import { db, schema } from './db'
@@ -240,12 +246,23 @@ export async function checkReplies(channelId: string): Promise<RepliesDTO> {
   return listReplies(channel.id)
 }
 
+/** What a draft makes of its comment: a reply to check, or skipped with why. */
+function changeOf(id: string, drafted: ReplyDraft): ReplyChange {
+  return 'reply' in drafted
+    ? { id, status: 'waiting', draft: drafted.reply, skipReason: null }
+    : { id, status: 'skipped', draft: null, skipReason: drafted.skip }
+}
+
 /**
  * Has Gemini draft replies to one video's waiting comments that have none yet: one Flash-Lite call
  * for up to REPLIES.perDraft of them, the ones waiting longest first. Comments Gemini thinks need
- * no reply are skipped, with why. Nothing is posted.
+ * no reply are skipped, with why. Nothing is posted. With `events`, each draft is handed over as
+ * soon as it's written; they are saved once all are.
  */
-export async function draftVideoReplies(projectId: string): Promise<RepliesDTO> {
+export async function draftVideoReplies(
+  projectId: string,
+  events?: AnswerEvents<{ comments: ReplyChange[] }>,
+): Promise<RepliesDTO> {
   if (!hasGeminiKey()) badRequest('Add GEMINI_API_KEY to your environment to use AI features.')
   const database = await db()
   const [project] = await database.select().from(schema.projects).where(eq(schema.projects.id, projectId))
@@ -262,14 +279,22 @@ export async function draftVideoReplies(projectId: string): Promise<RepliesDTO> 
     .limit(REPLIES.perDraft)
   if (todo.length) {
     const settings = await getSettings()
-    const drafts = await draftReplies({
-      channel: channel.title,
-      niche: settings.niche.description,
-      narration: settings.niche.narration,
-      language: project.language || settings.defaults.language,
-      video: { title: titleOf(project), topic: project.topic, script: project.script },
-      comments: todo.map((row) => ({ author: row.author, text: row.text })),
-    })
+    const drafts = await draftReplies(
+      {
+        channel: channel.title,
+        niche: settings.niche.description,
+        narration: settings.niche.narration,
+        language: project.language || settings.defaults.language,
+        video: { title: titleOf(project), topic: project.topic, script: project.script },
+        comments: todo.map((row) => ({ author: row.author, text: row.text })),
+      },
+      mapPartials(events, (sofar) => ({
+        comments: todo.flatMap((row, i) => {
+          const drafted = sofar[i]
+          return drafted ? [changeOf(row.id, drafted)] : []
+        }),
+      })),
+    )
     for (const [i, row] of todo.entries()) {
       const drafted = drafts[i]
       if (!drafted) continue

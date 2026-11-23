@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { defaultChannel, getChannel } from '@/server/connections'
 import { badRequest, readJson, route } from '@/server/http'
 import { getSettings } from '@/server/settings'
+import { answer } from '@/server/stream'
 
 export const maxDuration = 300
 
@@ -30,7 +31,8 @@ async function channelNow(refreshToken: string | null) {
 /**
  * Gemini drafts the whole channel setup from the niche in Settings: YouTube's About text, keywords
  * and trailer, and the tags, footer, category, made-for-kids default and posting rhythm for every
- * video. Nothing is saved: the page shows the draft to pick from first.
+ * video. Nothing is saved: the page shows the draft to pick from first. When the page asks, each
+ * part is sent as Gemini writes it (server/stream.ts).
  */
 export const POST = route(async (request) => {
   const { channel: id } = await readJson(request, z.object({ channel: z.string().max(100).optional() }))
@@ -39,7 +41,7 @@ export const POST = route(async (request) => {
   const { niche } = settings
   if (!niche.description.trim()) badRequest('Describe your channel in Settings → Channel niche first.')
   const channel = id ? await getChannel(id) : await defaultChannel()
-  return suggestChannelSetup({
+  const input = {
     channel: channel?.title ?? '',
     niche: niche.description,
     narration: niche.narration,
@@ -50,5 +52,6 @@ export const POST = route(async (request) => {
     schedule: scheduleLine(settings.slots),
     ...(await channelNow(channel?.refreshToken ?? null)),
     current: { pillars: niche.pillars ?? [], rules: niche.rules ?? [] },
-  })
+  }
+  return answer(request, (events) => suggestChannelSetup(input, events))
 })

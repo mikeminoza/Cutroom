@@ -43,6 +43,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     followUpIdeas: vi.fn(),
     draftReplies: vi.fn(),
     translateTitle: vi.fn(),
+    translatePost: vi.fn(actual.translatePost),
   }
 })
 // Reading comments from YouTube is stubbed too, and so is answering them.
@@ -138,6 +139,7 @@ const draftRoute = await import('../src/app/api/projects/[id]/ai/draft/route')
 const breakoutsModule = await import('../src/server/breakouts')
 const breakoutsRoute = await import('../src/app/api/breakouts/route')
 const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/route')
+const scenesRoute = await import('../src/app/api/projects/[id]/ai/scenes/route')
 const monetizationRoute = await import('../src/app/api/channel/monetization/route')
 const scriptEditRoute = await import('../src/app/api/projects/[id]/script-edit/route')
 const reviewRoute = await import('../src/app/api/projects/[id]/ai/review/route')
@@ -1526,6 +1528,42 @@ describe('weekly drafts', () => {
 })
 
 describe('learning from a channel', () => {
+  it('sends the style as Gemini writes it, with the reference and the length known at once', async () => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+    try {
+      vi.mocked(google.channelUploads).mockResolvedValueOnce({
+        title: 'Big Habits',
+        description: '',
+        videos: [{ title: 'How to study', description: '', seconds: 420, views: 20000, thumbnail: null }],
+      })
+      vi.mocked(ai.learnChannelStyle).mockImplementationOnce(async (_input, events) => {
+        events?.onPartial?.({ description: 'Cappy explains habits.' })
+        return {
+          description: 'Cappy explains habits.',
+          narration: 'Simply.',
+          audience: 'Adults',
+          tone: 'Funny',
+          artStyle: 'Marker drawings',
+          pace: 3,
+          ideas: [],
+        }
+      })
+      const events = await eventsOf(
+        await learnStyleRoute.POST(live({ url: 'https://www.youtube.com/@bighabits' }), undefined),
+      )
+      expect(events.map((e) => e.type)).toEqual(['partial', 'done'])
+      expect(events[0].data).toMatchObject({
+        reference: { title: 'Big Habits' },
+        videos: 1,
+        suggestion: { description: 'Cappy explains habits.', targetMinutes: 7 },
+      })
+      expect(events[1].data.suggestion).toMatchObject({ pace: 3, targetMinutes: 7 })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it("reads the channel's long videos and suggests a niche in its style, then guides titles", async () => {
     vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
     vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
@@ -2289,6 +2327,11 @@ const eventsOf = async (response: Response) => {
 
 describe('AI answers sent as Gemini writes them', () => {
   const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  /** The AI work recorded last. */
+  const lastTask = async () => {
+    const database = await db()
+    return (await database.select().from(schema.tasks).orderBy(schema.tasks.createdAt)).at(-1)
+  }
   beforeEach(() => {
     vi.stubEnv('GEMINI_API_KEY', 'test-key')
   })
@@ -2377,6 +2420,182 @@ describe('AI answers sent as Gemini writes them', () => {
     expect(events[0].data).toEqual({ ideas: [{ title: 'Octopus dreams', angle: 'A' }] })
     const titles = events[1].data.map((idea: { title: string }) => idea.title)
     expect(titles).toEqual(expect.arrayContaining(['Octopus dreams', 'Squid ink, explained']))
+  })
+
+  const scene = (narration: string) => ({
+    narration,
+    visual: `Picture: ${narration}`,
+    imagePrompt: '',
+    characters: [],
+    shot: '',
+    motion: 'zoom-in' as const,
+    onScreenText: '',
+    transition: 'cut' as const,
+    accent: 'none' as const,
+    accentWord: '',
+    notes: '',
+  })
+
+  it('sends the storyboard as its scenes are written, keeping the old scenes until the new ones are saved', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { script: 'One. Two. Three.' })
+    await projects.replaceScenes(id, [{ start: 0, end: 3, narration: 'Old scene.' }])
+    let during: string[] = []
+    vi.mocked(ai.splitScript).mockImplementationOnce(async (_input, events) => {
+      events?.onPartial?.([scene('One.')])
+      events?.onPartial?.([scene('One.'), scene('Two.')])
+      // A part Gemini started over: its scenes go.
+      events?.onPartial?.([scene('One.')])
+      events?.onPartial?.([scene('One.'), scene('Two!'), scene('Three.')])
+      during = (await projects.getScenes(id)).map((s) => s.narration)
+      return [scene('One.'), scene('Two!'), scene('Three.')]
+    })
+    const events = await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+    expect(during).toEqual(['Old scene.'])
+    // Only what changed, from where it changed.
+    expect(
+      events
+        .slice(0, 4)
+        .map((e) => [e.type, e.data.from, e.data.items.map((s: { narration: string }) => s.narration)]),
+    ).toEqual([
+      ['partial', 0, ['One.']],
+      ['partial', 1, ['Two.']],
+      ['partial', 1, []],
+      ['partial', 1, ['Two!', 'Three.']],
+    ])
+    expect(events[4].type).toBe('done')
+    expect(events[4].data.scenes.map((s: { narration: string }) => s.narration)).toEqual([
+      'One.',
+      'Two!',
+      'Three.',
+    ])
+    expect(await lastTask()).toMatchObject({ kind: 'scenes', status: 'done' })
+  })
+
+  it('sends the scenes of Write with AI as they are storyboarded, from nothing after a restart', async () => {
+    const id = await newProject()
+    vi.mocked(ai.draftScript).mockImplementationOnce(async (_brief, _board, events) => {
+      events?.onScenes?.([scene('One.')])
+      events?.onRestart?.()
+      events?.onScenes?.([scene('Uno.')])
+      events?.onScenes?.([scene('Uno.'), scene('Dos.')])
+      return {
+        title: 'T',
+        script: 'Uno. Dos.',
+        scenes: [scene('Uno.'), scene('Dos.')],
+        storyboardError: null,
+      }
+    })
+    const events = await eventsOf(await draftRoute.POST(live({ notes: '' }), ctx(id)))
+    expect(
+      events
+        .filter((e) => e.type === 'scenes' || e.type === 'restart')
+        .map((e) =>
+          e.type === 'restart' ? 'restart' : [e.from, e.items.map((s: { narration: string }) => s.narration)],
+        ),
+    ).toEqual([[0, ['One.']], 'restart', [0, ['Uno.']], [1, ['Dos.']]])
+    expect(events.at(-1).type).toBe('done')
+  })
+
+  it('saves each scene’s background as soon as it is picked, and ends as the whole answer would', async () => {
+    const backgroundId = crypto.randomUUID()
+    const file = await putFile(`library/backgrounds/${backgroundId}/beach.png`, Buffer.from('b'), 'image/png')
+    const beach = await (
+      await backgroundsRoute.POST(
+        new Request('http://localhost/api', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: backgroundId, name: 'Sunny beach', ...file }),
+        }),
+        undefined,
+      )
+    ).json()
+    const id = await newProject()
+    await projects.replaceScenes(id, [
+      { start: 0, end: 3, narration: 'At the beach.' },
+      { start: 3, end: 6, narration: 'Still there.' },
+      { start: 6, end: 9, narration: 'Back home.' },
+    ])
+    const [first, second, third] = await projects.getScenes(id)
+    const onBeach = { background: 'sunny beach', character: '', pose: '', side: 'center' as const }
+    const none = { background: '', character: '', pose: '', side: 'center' as const }
+    pickSceneLayers.mockImplementationOnce(async (_input, events) => {
+      events?.onPartial?.([onBeach, null, null])
+      // Saved before Gemini has written the rest.
+      await vi.waitFor(async () =>
+        expect((await projects.getScenes(id))[0].layer?.background).toBe('Sunny beach'),
+      )
+      events?.onPartial?.([onBeach, onBeach, null])
+      await vi.waitFor(async () => expect((await projects.getScenes(id))[1].layer).not.toBeNull())
+      // The whole answer, after a retry, has nothing for the second scene and the beach for the third.
+      return [onBeach, none, onBeach]
+    })
+    const events = await eventsOf(await composeRoute.POST(live({}), ctx(id)))
+    const partials = events.filter((e) => e.type === 'partial').map((e) => e.data.scenes)
+    expect(partials[0]).toEqual([
+      { id: first.id, layer: expect.objectContaining({ backgroundUrl: beach.url }) },
+    ])
+    // Each scene as it's saved, then the second one put back as the whole answer has it.
+    expect(partials.map((p: { id: string }[]) => p.map((s) => s.id))).toEqual([
+      [first.id],
+      [second.id],
+      [second.id],
+      [third.id],
+    ])
+    expect(events.at(-1).type).toBe('done')
+    const after = await projects.getScenes(id)
+    expect(after.map((s) => s.layer?.background ?? null)).toEqual(['Sunny beach', null, 'Sunny beach'])
+    expect(after.find((s) => s.id === third.id)?.layer).toMatchObject({
+      backgroundUrl: beach.url,
+      side: 'center',
+    })
+    expect(await lastTask()).toMatchObject({ kind: 'compose', status: 'done' })
+  })
+
+  it('sends translations as each language is written, as the post they make', async () => {
+    const id = await newProject()
+    const project = await projects.getProjectRow(id)
+    const kept = { language: 'es', title: 'Pulpos', description: 'Hola', basis: 'old' }
+    await projects.updateProject(id, { post: { ...project.post, title: 'Octopuses', translations: [kept] } })
+    const de = { language: 'de', title: 'Kraken', description: 'Hallo', basis: 'b' }
+    const fr = { language: 'fr', title: 'Pieuvres', description: 'Salut', basis: 'b' }
+    vi.mocked(ai.translatePost).mockImplementationOnce(async (input, events) => {
+      expect(input.to).toEqual(['de', 'fr'])
+      events?.onPartial?.([fr])
+      return [de, fr]
+    })
+    const events = await eventsOf(await translateRoute.POST(live({ languages: ['de', 'fr'] }), ctx(id)))
+    expect(events.map((e) => e.type)).toEqual(['partial', 'done'])
+    expect(events[0].data.translations).toEqual([kept, fr])
+    expect(events[1].data.translations).toEqual([kept, de, fr])
+    expect((await projects.getProjectRow(id)).post.translations).toEqual([kept, de, fr])
+    expect(await lastTask()).toMatchObject({ kind: 'translate', status: 'done' })
+  })
+
+  it('sends pose suggestions one by one', async () => {
+    const created = await (
+      await libraryRoute.POST(
+        new Request('http://localhost/api', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Moss', description: 'A frog' }),
+        }),
+        undefined,
+      )
+    ).json()
+    const shocked = { name: 'shocked', why: 'Twists.', prompt: 'Moss, shocked.' }
+    const sleepy = { name: 'sleepy', why: 'Night.', prompt: 'Moss, sleepy.' }
+    suggestPoses.mockImplementationOnce(async (_input, events) => {
+      events?.onPartial?.([shocked])
+      return [shocked, sleepy]
+    })
+    const events = await eventsOf(
+      await suggestPosesRoute.POST(live(), { params: Promise.resolve({ id: created.id }) }),
+    )
+    expect(events).toEqual([
+      { type: 'partial', data: { suggestions: [shocked] } },
+      { type: 'done', data: { suggestions: [shocked, sleepy] } },
+    ])
   })
 })
 
@@ -3037,8 +3256,22 @@ describe('answering comments', () => {
         thread('third', 5, { text: 'Does coffee matter?' }),
       ])
       await check()
-      drafter.mockResolvedValueOnce([{ reply: 'It does!' }])
-      const more: RepliesDTO = await ok(await draft(fresh))
+      // Read as it's written: each draft goes to the page as soon as Gemini has it.
+      drafter.mockImplementationOnce(async (_input, events) => {
+        events?.onPartial?.([{ reply: 'It does!' }])
+        return [{ reply: 'It does!' }]
+      })
+      const events = await eventsOf(
+        await draftRepliesRoute.POST(
+          live({ projectId: fresh }, 'http://localhost/api/replies/draft'),
+          undefined,
+        ),
+      )
+      expect(events.map((e) => e.type)).toEqual(['partial', 'done'])
+      expect(events[0].data).toEqual({
+        comments: [{ id: 'third', status: 'waiting', draft: 'It does!', skipReason: null }],
+      })
+      const more: RepliesDTO = events[1].data
       expect(drafter.mock.lastCall?.[0].comments).toEqual([{ author: '@third', text: 'Does coffee matter?' }])
       expect(comments(more, fresh).find((c) => c.id === 'third')).toMatchObject({ draft: 'It does!' })
     } finally {

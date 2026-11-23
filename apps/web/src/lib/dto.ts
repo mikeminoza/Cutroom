@@ -21,6 +21,7 @@ import type {
   ProjectStatus,
   Resolution,
   SceneInput,
+  SceneLayer,
   SeriesTemplate,
   TitleChange,
   Transcript,
@@ -78,6 +79,12 @@ export interface ProjectDTO {
   sourceProjectId: string | null
   createdAt: string
   updatedAt: string
+}
+
+/** A scene's new layers, as Pick backgrounds and poses with AI saves them (composeProject). */
+export interface SceneLayerChange {
+  id: string
+  layer: SceneLayer | null
 }
 
 export type SceneDTO = SceneInput
@@ -402,6 +409,9 @@ export interface ReplyCommentDTO {
   /** YouTube's id of the reply Cutroom posted. */
   replyId: string | null
 }
+
+/** A comment as a draft changes it, sent to the page while Gemini writes the rest. */
+export type ReplyChange = Pick<ReplyCommentDTO, 'id' | 'status' | 'draft' | 'skipReason'>
 
 export interface ReplyVideoDTO {
   projectId: string

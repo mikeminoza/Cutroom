@@ -49,11 +49,12 @@ import {
 } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
+import type { CharacterDTO, ProjectFull, SceneDTO, SceneLayerChange } from '@/lib/dto'
 import { flowProject, sendToFlow, useFlowExtension } from '@/lib/flow-extension'
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
 import { downloadScenePrompts, scenePrompts } from '@/lib/scene-prompts'
+import { streamAnswer } from '@/lib/stream'
 import { STOPPED_BY_YOU } from '@/lib/tasks'
 import { imageSize, isImage, sceneNumberFromName } from '@/lib/upload'
 import { useUploader } from './fields'
@@ -362,19 +363,48 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     return () => window.removeEventListener('paste', onPaste)
   }, [selectedSceneId, uploadOne])
 
-  /** Gemini picks a Library background and pose for each scene still without a picture. */
+  /**
+   * Gemini picks a Library background and pose for each scene still without a picture. Each scene
+   * shows its pick as soon as it's saved, while Gemini goes on with the rest.
+   */
   const compose = async () => {
     setComposing(true)
     const before = scenesRef.current.filter(hasPicture).length
-    const full = await action(`/api/projects/${project.id}/ai/compose`, {})
-    setComposing(false)
-    if (!full) return
-    const added = full.scenes.filter(hasPicture).length - before
-    if (added > 0) toast.success(`Built ${plural(added, 'scene')} from the Library`)
-    else
-      toast('Nothing in the Library fitted the remaining scenes', {
-        description: 'Name your backgrounds and poses so the AI can tell them apart.',
-      })
+    try {
+      await saver.flushAll()
+      const full = await streamAnswer<ProjectFull, { scenes: SceneLayerChange[] }>(
+        `/api/projects/${project.id}/ai/compose`,
+        {},
+        {
+          partial: ({ scenes: changed }) =>
+            client.setQueryData<ProjectFull>(keys.project(project.id), (prev) =>
+              prev
+                ? {
+                    ...prev,
+                    scenes: prev.scenes.map((s) => {
+                      const change = changed.find((c) => c.id === s.id)
+                      return change ? { ...s, layer: change.layer } : s
+                    }),
+                  }
+                : prev,
+            ),
+        },
+      )
+      // A check on the project still under way would bring back how it was before.
+      await client.cancelQueries({ queryKey: keys.project(project.id) })
+      client.setQueryData(keys.project(project.id), full)
+      void client.invalidateQueries({ queryKey: keys.projects })
+      const added = full.scenes.filter(hasPicture).length - before
+      if (added > 0) toast.success(`Built ${plural(added, 'scene')} from the Library`)
+      else
+        toast('Nothing in the Library fitted the remaining scenes', {
+          description: 'Name your backgrounds and poses so the AI can tell them apart.',
+        })
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setComposing(false)
+    }
   }
 
   const picker = useFilePicker('image/*', true, uploadMany)
@@ -481,6 +511,15 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             </div>
             {composingElsewhere && (
               <StillRunning task={composingElsewhere} className="border-t border-line px-5 py-3" />
+            )}
+            {composing && (
+              <p
+                aria-live="polite"
+                className="flex items-center gap-2 border-t border-line px-5 py-3 text-[13px] text-ink-2"
+              >
+                <Spinner className="shrink-0 text-ink-3" />
+                Gemini is picking a background and pose for each scene: each shows as soon as it’s picked.
+              </p>
             )}
             {pictures?.running && (
               <div

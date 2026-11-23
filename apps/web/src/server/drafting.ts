@@ -9,6 +9,7 @@ import {
   generateIdeas,
   hasGeminiKey,
   type IdeaDraft,
+  type LayerPick,
   mapPartials,
   type PostDraft,
   pickSceneLayers,
@@ -30,7 +31,7 @@ import {
   type SeriesTemplate,
 } from '@cutroom/shared/types'
 import { and, desc, eq, gte, inArray } from 'drizzle-orm'
-import type { DraftBatchDTO } from '@/lib/dto'
+import type { DraftBatchDTO, SceneLayerChange } from '@/lib/dto'
 import { STOPPED_BY_YOU } from '@/lib/tasks'
 import { retentionLessons, searchTermsFor, topTitles } from './analytics'
 import { db, schema } from './db'
@@ -172,18 +173,25 @@ export async function writePost(id: string, events?: AnswerEvents<PostDetails>):
   return post
 }
 
-/** Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one. */
-export async function storyboardProject(id: string): Promise<void> {
+/**
+ * Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one.
+ * With `events`, the scenes are handed over as they're written (splitScript); the old scenes stay
+ * until the new ones replace them all at the end.
+ */
+export async function storyboardProject(id: string, events?: AnswerEvents<SceneDraft[]>): Promise<void> {
   const project = await getProjectRow(id)
   if (!project.script.trim()) badRequest('Write or paste the script first.')
   const characters = await getCharacters(id)
-  const drafts = await splitScript({
-    script: project.script,
-    pace: project.pace,
-    artStyle: project.artStyle,
-    format: project.format,
-    characters: characters.map((c) => ({ name: c.name, description: c.description })),
-  })
+  const drafts = await splitScript(
+    {
+      script: project.script,
+      pace: project.pace,
+      artStyle: project.artStyle,
+      format: project.format,
+      characters: characters.map((c) => ({ name: c.name, description: c.description })),
+    },
+    events,
+  )
   await placeScenes(id, drafts)
 }
 
@@ -240,10 +248,15 @@ export async function addProjectEffects(id: string): Promise<number> {
 /**
  * Builds scene pictures from the Library: for every scene without an uploaded picture (and, unless
  * `redo`, without layers yet), Gemini picks a background and a character pose that fit. Characters
- * in the project come first; the Library's other characters can appear too. Returns how many
- * scenes got layers.
+ * in the project come first; the Library's other characters can appear too. Each scene's layers
+ * are saved as soon as its pick is written, so they show while Gemini goes on, and `events` hears
+ * each one once saved. Returns how many scenes got layers.
  */
-export async function composeProject(id: string, redo = false): Promise<number> {
+export async function composeProject(
+  id: string,
+  redo = false,
+  events?: AnswerEvents<{ scenes: SceneLayerChange[] }>,
+): Promise<number> {
   const database = await db()
   const [scenes, characters, backgrounds, library] = await Promise.all([
     getScenes(id),
@@ -264,21 +277,13 @@ export async function composeProject(id: string, redo = false): Promise<number> 
   const targets = scenes.filter((s) => !s.imageUrl && (redo || !s.layer))
   if (targets.length === 0) return 0
 
-  const picks = await pickSceneLayers({
-    scenes: targets.map((s) => ({ narration: s.narration, visual: s.visual })),
-    backgrounds: usable.map((b) => b.name.trim()),
-    characters: cast.map((c) => ({
-      name: c.name.trim(),
-      poses: c.poses.map((p) => p.name.trim()).filter(Boolean),
-    })),
-  })
-  let placed = 0
-  for (const [i, pick] of picks.entries()) {
+  /** The layers a pick makes of the Library's files: null when nothing in it fitted. */
+  const layerOf = (pick: LayerPick): SceneLayer | null => {
     const background = usable.find((b) => named(b.name) === named(pick.background))
     const character = cast.find((c) => named(c.name) === named(pick.character))
     const pose = character?.poses.find((p) => named(p.name) === named(pick.pose))
-    if (!background && !pose) continue
-    const layer: SceneLayer = {
+    if (!background && !pose) return null
+    return {
       backgroundUrl: background?.url ?? null,
       background: background?.name ?? '',
       poseUrl: pose?.url ?? null,
@@ -287,9 +292,57 @@ export async function composeProject(id: string, redo = false): Promise<number> 
       pose: pose?.name ?? '',
       side: pick.side,
     }
-    await database.update(schema.scenes).set({ layer }).where(eq(schema.scenes.id, targets[i].id))
-    placed++
   }
+  // Saved one after another, in the order the picks come: what this run saved, by scene. A save
+  // that fails is reported at the end, not while Gemini is still writing.
+  const saved = new Map<string, SceneLayer | null>()
+  let saving = Promise.resolve()
+  let failed: unknown = null
+  const save = (scene: (typeof targets)[number], layer: SceneLayer | null) => {
+    const now = saved.has(scene.id) ? saved.get(scene.id) : scene.layer
+    if (JSON.stringify(now) === JSON.stringify(layer)) return
+    saved.set(scene.id, layer)
+    saving = saving
+      .then(async () => {
+        await database.update(schema.scenes).set({ layer }).where(eq(schema.scenes.id, scene.id))
+        // Just this scene: the page puts it in, and a long video's list would add up.
+        events?.onPartial?.({ scenes: [{ id: scene.id, layer }] })
+      })
+      .catch((error) => {
+        failed ??= error
+      })
+  }
+  // The scenes picked before a failure keep their layers: they were good picks.
+  const picks = await pickSceneLayers(
+    {
+      scenes: targets.map((s) => ({ narration: s.narration, visual: s.visual })),
+      backgrounds: usable.map((b) => b.name.trim()),
+      characters: cast.map((c) => ({
+        name: c.name.trim(),
+        poses: c.poses.map((p) => p.name.trim()).filter(Boolean),
+      })),
+    },
+    {
+      onPartial: (sofar) =>
+        sofar.forEach((pick, i) => {
+          const layer = pick && layerOf(pick)
+          if (layer) save(targets[i], layer)
+        }),
+    },
+  ).catch(async (error) => {
+    await saving
+    throw error
+  })
+  // The whole answer decides, as without streaming: a scene whose pick went with a retry, or
+  // that nothing fitted, keeps the layers it had.
+  let placed = 0
+  for (const [i, pick] of picks.entries()) {
+    const layer = layerOf(pick)
+    if (layer) placed++
+    save(targets[i], layer ?? targets[i].layer)
+  }
+  await saving
+  if (failed) throw failed
   await touchProject(id)
   return placed
 }

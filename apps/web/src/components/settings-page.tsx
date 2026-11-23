@@ -23,6 +23,7 @@ import type { ChannelDTO } from '@/lib/dto'
 import { formatBytes } from '@/lib/format'
 import { keys, useLibrary, usePlaylists, useSettings, useStatus, useVoices } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
+import { streamAnswer } from '@/lib/stream'
 import {
   Button,
   ButtonLink,
@@ -33,6 +34,7 @@ import {
   ProgressBar,
   Segmented,
   Select,
+  Spinner,
   Switch,
   Textarea,
   useConfirm,
@@ -1042,9 +1044,13 @@ interface LearnedStyle {
   videos: number
 }
 
+/** A learned style as far as Gemini has written it. */
+type Learning = Omit<LearnedStyle, 'suggestion'> & { suggestion: Partial<LearnedStyle['suggestion']> }
+
 /**
  * "Learn from a channel": paste a channel you want your videos to be like; Gemini describes its
- * format for your own narrator, and "Use this style" fills the niche in.
+ * format for your own narrator, each part shown as soon as it's written, and "Use this style"
+ * fills the niche in.
  */
 function LearnStyle({
   niche,
@@ -1057,15 +1063,25 @@ function LearnStyle({
   const [url, setUrl] = useState('')
   const [learning, setLearning] = useState(false)
   const [learned, setLearned] = useState<LearnedStyle | null>(null)
+  /** The style while Gemini writes it: shown, but used only once it's whole. */
+  const [sofar, setSofar] = useState<Learning | null>(null)
   const [adding, setAdding] = useState(false)
 
   const learn = async () => {
     setLearning(true)
+    setLearned(null)
     try {
-      setLearned(await api.post<LearnedStyle>('/api/settings/learn-style', { url }))
+      setLearned(
+        await streamAnswer<LearnedStyle, Learning>(
+          '/api/settings/learn-style',
+          { url },
+          { partial: setSofar, restart: () => setSofar(null) },
+        ),
+      )
     } catch (error) {
       toast.error(errorText(error))
     } finally {
+      setSofar(null)
       setLearning(false)
     }
   }
@@ -1093,7 +1109,8 @@ function LearnStyle({
     }
   }
 
-  const s = learned?.suggestion
+  const shown: Learning | null = learned ?? sofar
+  const s = shown?.suggestion
   return (
     <Field
       label="Learn from a channel"
@@ -1122,12 +1139,12 @@ function LearnStyle({
             </Button>
           )}
         </div>
-        {learned && s && (
+        {shown && s && (
           <div className="rounded-[var(--radius-control)] border border-line bg-sunk">
             <p className="border-b border-line px-3.5 py-2.5 text-[13px] text-ink-2">
-              From {learned.videos} videos on{' '}
-              <span className="font-medium text-ink">{learned.reference.title}</span>. Check it, then use it:
-              it replaces the niche fields below.
+              From {shown.videos} videos on{' '}
+              <span className="font-medium text-ink">{shown.reference.title}</span>. Check it, then use it: it
+              replaces the niche fields below.
             </p>
             <dl className="grid gap-x-5 gap-y-3 px-3.5 py-3 text-[13.5px] sm:grid-cols-[130px_1fr]">
               {(
@@ -1137,15 +1154,23 @@ function LearnStyle({
                   ['Audience', s.audience],
                   ['Tone', s.tone],
                   ['Art style', s.artStyle],
-                  ['Length', `About ${s.targetMinutes} min, a new picture every ${s.pace} s`],
+                  [
+                    'Length',
+                    s.pace === undefined
+                      ? undefined
+                      : `About ${s.targetMinutes} min, a new picture every ${s.pace} s`,
+                  ],
                 ] as const
-              ).map(([label, value]) => (
-                <div key={label} className="contents">
-                  <dt className="text-ink-3">{label}</dt>
-                  <dd className="leading-relaxed whitespace-pre-line">{value}</dd>
-                </div>
-              ))}
-              {s.ideas.length > 0 && (
+              )
+                // Each part once Gemini has written it.
+                .filter(([, value]) => value !== undefined)
+                .map(([label, value]) => (
+                  <div key={label} className="contents">
+                    <dt className="text-ink-3">{label}</dt>
+                    <dd className="leading-relaxed whitespace-pre-line">{value}</dd>
+                  </div>
+                ))}
+              {s.ideas && s.ideas.length > 0 && (
                 <div className="contents">
                   <dt className="text-ink-3">Ideas</dt>
                   <dd>
@@ -1161,19 +1186,29 @@ function LearnStyle({
                 </div>
               )}
             </dl>
-            <div className="flex flex-wrap gap-2 border-t border-line px-3.5 py-2.5">
-              <Button variant="go" size="sm" onClick={use}>
-                Use this style
-              </Button>
-              {s.ideas.length > 0 && (
-                <Button variant="plain" size="sm" busy={adding} onClick={addIdeas}>
-                  Add the {s.ideas.length} ideas
+            {learned ? (
+              <div className="flex flex-wrap gap-2 border-t border-line px-3.5 py-2.5">
+                <Button variant="go" size="sm" onClick={use}>
+                  Use this style
                 </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={() => setLearned(null)}>
-                Dismiss
-              </Button>
-            </div>
+                {learned.suggestion.ideas.length > 0 && (
+                  <Button variant="plain" size="sm" busy={adding} onClick={addIdeas}>
+                    Add the {learned.suggestion.ideas.length} ideas
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => setLearned(null)}>
+                  Dismiss
+                </Button>
+              </div>
+            ) : (
+              <p
+                aria-live="polite"
+                className="flex items-center gap-2 border-t border-line px-3.5 py-2.5 text-[13px] text-ink-2"
+              >
+                <Spinner className="text-ink-3" />
+                Gemini is still writing: each part shows as soon as it’s done.
+              </p>
+            )}
           </div>
         )}
       </div>

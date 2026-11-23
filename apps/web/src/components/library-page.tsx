@@ -14,6 +14,7 @@ import { cutOut } from '@/lib/cutout'
 import type { LibraryBackgroundDTO, LibraryCharacterDTO, SeriesDTO, StatusDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useBackgrounds, useLibrary, useSeriesList, useStatus } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 import { uploadTo } from '@/lib/upload'
 import { PoseTouchUp } from './pose-touch-up'
 import {
@@ -576,11 +577,14 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
     toast.success('Pose touched up', { description: 'Scenes using it show the new picture.' })
   }
 
+  /** Each pose shows as soon as Gemini has written it. */
   const suggest = async () => {
     setAsking(true)
     try {
-      const { suggestions: next } = await api.post<{ suggestions: PoseSuggestion[] }>(
+      const { suggestions: next } = await streamAnswer<{ suggestions: PoseSuggestion[] }>(
         `/api/library/characters/${character.id}/suggest-poses`,
+        {},
+        { partial: (sofar) => setSuggestions(sofar.suggestions), restart: () => setSuggestions(null) },
       )
       setSuggestions(next)
       if (next.length === 0) toast('No missing poses found', { description: 'The scripts are covered.' })
@@ -620,6 +624,7 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
         <PoseSuggestions
           name={character.name}
           suggestions={suggestions}
+          writing={asking}
           onClose={() => setSuggestions(null)}
         />
       )}
@@ -721,10 +726,13 @@ function PosesEditor({ character }: { character: LibraryCharacterDTO }) {
 function PoseSuggestions({
   name,
   suggestions,
+  writing,
   onClose,
 }: {
   name: string
   suggestions: PoseSuggestion[]
+  /** Gemini is still writing more of them. */
+  writing: boolean
   onClose: () => void
 }) {
   return (
@@ -762,6 +770,15 @@ function PoseSuggestions({
           </li>
         ))}
       </ol>
+      {writing && (
+        <p
+          aria-live="polite"
+          className="flex items-center gap-2 border-t border-line px-3 py-2.5 text-[12.5px] text-ink-2"
+        >
+          <Spinner className="text-ink-3" />
+          More on the way…
+        </p>
+      )}
     </div>
   )
 }

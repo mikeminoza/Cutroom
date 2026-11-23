@@ -1,5 +1,6 @@
 'use client'
 
+import type { SceneDraft } from '@cutroom/shared/ai'
 import {
   countWords,
   formatTimecode,
@@ -22,13 +23,14 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, ChevronDown, Plus, Scissors, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Button, Dialog, Field, Menu, Panel, Select, Textarea, useConfirm } from '@/components/ui'
+import { Button, Dialog, Field, Menu, Panel, Select, Spinner, Textarea, useConfirm } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { writeDraft } from '@/lib/draft'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { formatLength } from '@/lib/format'
 import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
+import { applyChange, type ListChange, streamAnswer } from '@/lib/stream'
 import { SyncedInput, SyncedTextarea } from './fields'
 import { ScenePromptsPanel } from './scene-prompts'
 import { ScriptDoctor } from './script-doctor'
@@ -69,7 +71,10 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const [live, setLive] = useState<{
     script: string
     parts: { done: number; started: number } | null
+    scenes: SceneDraft[]
   } | null>(null)
+  /** The scenes Gemini is writing for Split with AI, shown instead of the old ones until saved. */
+  const [splitting, setSplitting] = useState<SceneDraft[] | null>(null)
   const liveBox = useRef<HTMLTextAreaElement>(null)
   // The newest words in view as they arrive, unless you scrolled up to read.
   useEffect(() => {
@@ -108,7 +113,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     setBusy('split')
     const full =
       by === 'ai'
-        ? await action(`/api/projects/${project.id}/ai/scenes`, {}, undefined)
+        ? await splitLive()
         : await action(
             `/api/projects/${project.id}/scenes`,
             {
@@ -121,20 +126,52 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   }
 
   /**
+   * Gemini splits the script into scenes as you watch: each scene shows as soon as it's written, in
+   * script order, and they replace the old scenes once all are saved.
+   */
+  const splitLive = async (): Promise<ProjectFull | null> => {
+    setSplitting([])
+    try {
+      await saver.flushAll()
+      const full = await streamAnswer<ProjectFull, ListChange<SceneDraft>>(
+        `/api/projects/${project.id}/ai/scenes`,
+        {},
+        {
+          partial: (change) => setSplitting((now) => applyChange(now ?? [], change)),
+          restart: () => setSplitting([]),
+        },
+        'The connection broke before the scenes were saved. Reload the page to see them.',
+      )
+      // A check on the project still under way would bring back the scenes from before.
+      await client.cancelQueries({ queryKey: keys.project(project.id) })
+      client.setQueryData(keys.project(project.id), full)
+      void client.invalidateQueries({ queryKey: keys.projects })
+      return full
+    } catch (error) {
+      toast.error(errorText(error))
+      return null
+    } finally {
+      setSplitting(null)
+    }
+  }
+
+  /**
    * Gemini writes the script here as you watch, and storyboards each part as soon as it's written,
    * always with AI: only the AI split writes each scene's picture description and image prompt.
    */
   const writeLive = async (notes: string) => {
     setBusy('write')
     setWriting(false)
-    setLive({ script: '', parts: null })
+    setLive({ script: '', parts: null, scenes: [] })
     try {
       await saver.flushAll()
       const { project: full, storyboardError } = await writeDraft(project.id, notes, (event) => {
         if (event.type === 'text') setLive((now) => now && { ...now, script: now.script + event.add })
-        else if (event.type === 'restart') setLive({ script: '', parts: null })
+        else if (event.type === 'restart') setLive({ script: '', parts: null, scenes: [] })
         else if (event.type === 'part')
           setLive((now) => now && { ...now, parts: { done: event.done, started: event.started } })
+        else if (event.type === 'scenes')
+          setLive((now) => now && { ...now, scenes: applyChange(now.scenes, event) })
       })
       // A check on the project still under way would bring back the script from before.
       await client.cancelQueries({ queryKey: keys.project(project.id) })
@@ -237,10 +274,8 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                   : `Gemini picks the cuts, about every ${project.pace} seconds but quicker on jokes and fast moments, and writes a picture description and image prompt for every scene. You can edit all of it.`}
             </p>
             <StillRunning task={elsewhere} className="mt-3" />
-            {busy === 'split' && (
-              <p className="mt-3 text-[13px] text-ink-2">
-                Gemini is storyboarding your script. Long scripts take up to a minute.
-              </p>
+            {busy === 'split' && !splitting && (
+              <p className="mt-3 text-[13px] text-ink-2">Splitting your script into scenes…</p>
             )}
             {live && (
               <p className="mt-3 text-[13px] text-ink-2" aria-live="polite">
@@ -252,7 +287,18 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           </div>
         </Panel>
 
-        <ScenesPanel data={data} selectedSceneId={selectedSceneId} selectScene={selectScene} goTo={goTo} />
+        {splitting || live ? (
+          <LiveScenes
+            scenes={splitting ?? live?.scenes ?? []}
+            note={
+              splitting
+                ? 'Gemini is splitting the script: each scene shows as soon as it’s written. Your current scenes stay until these are saved.'
+                : 'Gemini storyboards the script as it writes it: each scene shows as soon as it’s written.'
+            }
+          />
+        ) : (
+          <ScenesPanel data={data} selectedSceneId={selectedSceneId} selectScene={selectScene} goTo={goTo} />
+        )}
       </div>
       {/* Outside the grid, so the sticky script panel never slides over them. */}
       <ScriptDoctor data={data} />
@@ -326,6 +372,35 @@ function WriteDialog({
         <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="min-h-28" />
       </Field>
     </Dialog>
+  )
+}
+
+/**
+ * The scenes Gemini is writing, in script order, before they're saved: read-only, numbered as
+ * they'll be. The list only grows at its end (a part Gemini starts over can take a few back).
+ */
+function LiveScenes({ scenes, note }: { scenes: SceneDraft[]; note: string }) {
+  return (
+    <Panel title={scenes.length ? `${scenes.length} new scenes so far` : 'New scenes'} description={note}>
+      <ol className="divide-y divide-line" aria-live="polite">
+        {scenes.map((scene, i) => (
+          <li key={i} className="px-5 py-4">
+            <div className="flex items-center gap-3">
+              <span className="tc grid h-6 min-w-6 place-items-center rounded-[4px] bg-ink px-1 text-[12px] font-semibold text-paper">
+                {i + 1}
+              </span>
+              <span className="text-[12.5px] text-ink-3">{MOTION_LABEL[scene.motion]}</span>
+            </div>
+            <p className="mt-3 text-[14.5px] leading-relaxed">{scene.narration}</p>
+            {scene.visual && <p className="mt-2 text-[13px] text-ink-2">Picture: {scene.visual}</p>}
+          </li>
+        ))}
+      </ol>
+      <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-[13px] text-ink-2 first:border-t-0">
+        <Spinner className="text-ink-3" />
+        {scenes.length ? 'More on the way…' : 'The first scenes show here in a few seconds.'}
+      </p>
+    </Panel>
   )
 }
 

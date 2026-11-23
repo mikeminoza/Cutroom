@@ -2,6 +2,7 @@
 // lib/stream.ts. Writing is most of an AI request's wait, so the page shows each item as soon as
 // it's written instead of all of them at the end.
 import type { AnswerEvents } from '@cutroom/shared/ai'
+import type { ListChange } from '@/lib/stream'
 import type { TaskKind } from '@/lib/tasks'
 import { describeError } from './http'
 import { startTracking, tracked } from './tasks'
@@ -44,6 +45,27 @@ export function eventStream(
       'x-accel-buffering': 'no',
     },
   })
+}
+
+/**
+ * What changed in a list that grows at its end (a storyboard's scenes), to send instead of the
+ * whole list each time: a long list sent whole on every scene would add up to megabytes. A list
+ * that got shorter (a part Gemini started over) is sent as where it ends now.
+ */
+export function listChanges<T>() {
+  let sent = 0
+  return {
+    /** The change from the list sent last to `list`. */
+    to(list: T[]): ListChange<T> {
+      const from = Math.min(sent, list.length)
+      sent = list.length
+      return { from, items: list.slice(from) }
+    },
+    /** The page dropped what it had (a restart): the next change is the whole list. */
+    reset() {
+      sent = 0
+    },
+  }
 }
 
 /**

@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { keys, useStatus } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 import {
   Button,
   ButtonLink,
@@ -314,17 +315,26 @@ function DetailsForm({
   const [drafting, setDrafting] = useState(false)
   const [aiTrailer, setAiTrailer] = useState<{ id: string; why: string } | null>(null)
 
-  /** Gemini drafts the description, keywords and trailer into the form, to check before saving. */
+  /**
+   * Gemini drafts the description, keywords and trailer into the form, to check before saving: each
+   * goes in as soon as Gemini has written it. The fields wait meanwhile, so nothing you type is lost.
+   */
   const draftWithAi = async () => {
     setDrafting(true)
-    try {
-      const draft = await api.post<ChannelSetupDraft>('/api/setup/suggest', { channel: channelId })
+    const fill = (draft: Partial<ChannelSetupDraft>) =>
       setForm((f) => ({
         ...f,
-        description: draft.description,
-        keywords: draft.keywords.join(', '),
-        trailer: draft.trailer?.id ?? f.trailer,
+        ...(draft.description !== undefined ? { description: draft.description } : {}),
+        ...(draft.keywords ? { keywords: draft.keywords.join(', ') } : {}),
+        ...(draft.trailer !== undefined ? { trailer: draft.trailer?.id ?? f.trailer } : {}),
       }))
+    try {
+      const draft = await streamAnswer<ChannelSetupDraft, Partial<ChannelSetupDraft>>(
+        '/api/setup/suggest',
+        { channel: channelId },
+        { partial: fill },
+      )
+      fill(draft)
       setAiTrailer(draft.trailer)
       toast.success('Draft filled in', { description: 'Check it, then Save to YouTube.' })
     } catch (error) {
@@ -425,6 +435,7 @@ function DetailsForm({
             rows={7}
             maxLength={1000}
             value={form.description}
+            readOnly={drafting}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
         </Field>
@@ -438,7 +449,11 @@ function DetailsForm({
               : 'Separate with commas. Short phrases people search for, most important first.'
           }
         >
-          <Input value={form.keywords} onChange={(e) => setForm({ ...form, keywords: e.target.value })} />
+          <Input
+            value={form.keywords}
+            readOnly={drafting}
+            onChange={(e) => setForm({ ...form, keywords: e.target.value })}
+          />
         </Field>
         <Field
           label="Country"
@@ -479,7 +494,11 @@ function DetailsForm({
               : "Plays at the top of your channel for people who haven't subscribed yet. Pick a short video that shows what the channel is."
           }
         >
-          <Select value={form.trailer} onChange={(e) => setForm({ ...form, trailer: e.target.value })}>
+          <Select
+            value={form.trailer}
+            disabled={drafting}
+            onChange={(e) => setForm({ ...form, trailer: e.target.value })}
+          >
             <option value="">No trailer</option>
             {uploads.map((u) => (
               <option key={u.id} value={u.id}>

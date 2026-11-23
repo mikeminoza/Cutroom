@@ -448,3 +448,388 @@ describe('streamed answers', () => {
     expect(partials.at(-1)).toEqual(plain)
   })
 })
+
+/** `n` distinct words, starting with `label`. */
+const words = (label: string, n: number) => Array.from({ length: n }, (_, i) => `${label}${i}.`).join(' ')
+const board = { pace: 3, artStyle: 'Doodles', format: 'landscape' as const, characters: [] }
+/** The part of the script a storyboard request is for, and its number. */
+const partOf = (contents: unknown) => /"""\n([\s\S]*?)\n"""/.exec(String(contents))?.[1] ?? ''
+const numberOf = (contents: unknown) => Number(/This is part (\d+)/.exec(String(contents))?.[1] ?? 1)
+/** A storyboard answer for one part: its words copied exactly, in scenes of `size` words. */
+function scenesFor(part: string, size = 50) {
+  const all = part.split(/\s+/)
+  const scenes = []
+  for (let i = 0; i < all.length; i += size) {
+    scenes.push({
+      narration: all.slice(i, i + size).join(' '),
+      visual: `Picture of ${all[i]}`,
+      imagePrompt: 'A prompt',
+      characters: [],
+      shot: 'wide',
+      motion: i === 0 ? 'drift' : 'pan-left',
+      transition: 'whip',
+      accent: 'zoom',
+      accentWord: all[i + 1],
+      onScreenText: '  Hi  ',
+      notes: '',
+    })
+  }
+  return { scenes }
+}
+/** Gemini storyboarding each part it's asked for, streamed in pieces of 40 characters. */
+const storyboarding =
+  (options: (number: number) => Parameters<typeof streamOf>[1] = () => ({})) =>
+  async ({ contents }: { contents: unknown }) =>
+    streamOf(piecesOf(JSON.stringify(scenesFor(partOf(contents))), 40), options(numberOf(contents)))()
+
+describe('storyboards, as Gemini writes them', () => {
+  const script = [words('a', 250), words('b', 250), words('c', 250)].join('\n\n')
+
+  it('hand over scenes in script order, each part once the parts before it are done', async () => {
+    const { splitScript } = await import('../src/ai')
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // Part 1 is the slow one: its last piece waits.
+    generateContentStream.mockImplementation(storyboarding((number) => (number === 1 ? { gate } : {})))
+    const lists: string[][] = []
+    const splitting = splitScript(
+      { ...board, script },
+      { onPartial: (scenes) => lists.push(scenes.map((s) => s.narration)) },
+    )
+    await vi.waitFor(() => expect(lists.at(-1)).toHaveLength(4))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    // Parts 2 and 3 are written, but wait for part 1: the list only grows at its end.
+    expect(generateContentStream).toHaveBeenCalledTimes(3)
+    expect(lists.flat().some((narration) => !narration.startsWith('a'))).toBe(false)
+    release()
+    const scenes = await splitting
+    expect(scenes).toHaveLength(15)
+    growsInto(
+      lists,
+      scenes.map((s) => s.narration),
+    )
+    expect(lists.at(-1)).toEqual(scenes.map((s) => s.narration))
+
+    // The same scenes as the storyboard in one piece, tidied the same way.
+    generateContent.mockImplementation(async ({ contents }: { contents: unknown }) => ({
+      text: JSON.stringify(scenesFor(partOf(contents))),
+    }))
+    expect(await splitScript({ ...board, script })).toEqual(scenes)
+    expect(scenes[0]).toMatchObject({ motion: 'zoom-in', transition: 'whip', onScreenText: 'Hi' })
+  })
+
+  it('take back the scenes of a part Gemini starts over, and end the same', async () => {
+    vi.useFakeTimers()
+    const { splitScript } = await import('../src/ai')
+    let broke = false
+    generateContentStream.mockImplementation(async ({ contents }: { contents: unknown }) => {
+      const pieces = piecesOf(JSON.stringify(scenesFor(partOf(contents))), 40)
+      if (numberOf(contents) === 1 && !broke) {
+        broke = true
+        return streamOf(pieces, { breakAt: Math.floor(pieces.length * 0.6) })()
+      }
+      return streamOf(pieces)()
+    })
+    const lengths: number[] = []
+    const splitting = splitScript(
+      { ...board, script },
+      { onPartial: (scenes) => lengths.push(scenes.length) },
+    )
+    await vi.advanceTimersByTimeAsync(5000)
+    const scenes = await splitting
+    expect(scenes).toHaveLength(15)
+    expect(lengths.some((n, i) => i > 0 && n < lengths[i - 1])).toBe(true)
+    expect(lengths.at(-1)).toBe(15)
+  })
+
+  it('hand over the scenes of Write with AI in order as its parts are storyboarded', async () => {
+    const { draftScript } = await import('../src/ai')
+    const [p1, p2] = [words('a', 200), words('b', 200)]
+    generateContentStream.mockImplementation(
+      async (request: { contents: unknown; config: { responseMimeType?: string } }) =>
+        request.config.responseMimeType === 'application/json'
+          ? storyboarding()(request)
+          : streamOf(['Why you wake up tired\n\n', `${p1}\n\n`, p2])(),
+    )
+    const lists: string[][] = []
+    const draft = await draftScript(
+      { topic: 'Sleep', audience: '', tone: '', language: 'en', minutes: 3, format: 'landscape' },
+      board,
+      { onScenes: (scenes) => lists.push(scenes.map((s) => s.narration)) },
+    )
+    expect(draft.scenes).toHaveLength(8)
+    growsInto(lists, draft.scenes?.map((s) => s.narration) ?? [])
+    expect(lists.at(-1)).toEqual(draft.scenes?.map((s) => s.narration))
+  })
+})
+
+describe('backgrounds and poses for scenes, as Gemini picks them', () => {
+  const library = {
+    backgrounds: ['Kitchen', 'Park'],
+    characters: [{ name: 'Cappy', poses: ['happy', 'sad'] }],
+  }
+  const scenesOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ narration: `Line ${i}`, visual: i % 2 ? `Picture ${i}` : '' }))
+  const pick = (sceneIndex: number, background = 'kitchen') => ({
+    sceneIndex,
+    background,
+    character: 'cappy',
+    pose: sceneIndex % 2 ? 'Sad' : 'happy',
+    side: 'left',
+  })
+
+  it('give each scene its pick as soon as it is written, as the whole answer would', async () => {
+    const { pickSceneLayers } = await import('../src/ai')
+    const { plain, streamed, partials } = await bothWays(
+      (events) => pickSceneLayers({ ...library, scenes: scenesOf(5) }, events),
+      { scenes: [pick(0), pick(1, 'Moon'), pick(0, 'Park'), pick(3), pick(2)] },
+    )
+    expect(streamed).toEqual(plain)
+    expect(plain[0]).toEqual({ background: 'Kitchen', character: 'Cappy', pose: 'happy', side: 'left' })
+    expect(plain[1]).toEqual({ background: '', character: 'Cappy', pose: 'sad', side: 'left' })
+    expect(plain[4]).toEqual({ background: '', character: '', pose: '', side: 'center' })
+    // Each scene's pick, once there, is the final one; a scene Gemini left out has none.
+    expect(partials.some((p) => p[0] !== null && p[3] === null)).toBe(true)
+    for (const partial of partials) {
+      expect(partial).toHaveLength(5)
+      partial.forEach((one, i) => {
+        if (one) expect(one).toEqual(plain[i])
+      })
+    }
+    expect(partials.at(-1)?.slice(0, 4)).toEqual(plain.slice(0, 4))
+    expect(partials.at(-1)?.[4]).toBeNull()
+    expect(generateContent.mock.calls[0][0].model).toMatch(/lite/)
+  })
+
+  it('split a long video into parts side by side, each knowing the scenes just before it', async () => {
+    const { pickSceneLayers } = await import('../src/ai')
+    const scenes = scenesOf(70)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    generateContent.mockImplementation(async ({ contents }: { contents: unknown }) => {
+      await gate
+      const listed = [...String(contents).matchAll(/^\[(\d+)\] Line (\d+)/gm)]
+      const background = listed.some((m) => m[2] === '0') ? 'Kitchen' : 'Park'
+      return { text: JSON.stringify({ scenes: listed.map((m) => pick(Number(m[1]), background)) }) }
+    })
+    const picking = pickSceneLayers({ ...library, scenes })
+    // Both parts asked at once.
+    await vi.waitFor(() => expect(generateContent).toHaveBeenCalledTimes(2))
+    release()
+    const picks = await picking
+    expect(picks.map((p) => p.background)).toEqual([...Array(35).fill('Kitchen'), ...Array(35).fill('Park')])
+    const [first, second] = generateContent.mock.calls.map(([request]) => String(request.contents))
+    expect(first).toContain('[34] Line 34')
+    expect(first).not.toContain('Line 35')
+    expect(second).toContain('[0] Line 35')
+    // The end of part one as context, for continuity, without numbers to pick for.
+    expect(second).toContain('- Line 32')
+    expect(second).toContain('- Line 34')
+    expect(second).not.toContain('[34] Line 34')
+
+    // A short video stays one call.
+    generateContent.mockClear()
+    await pickSceneLayers({ ...library, scenes: scenesOf(60) })
+    expect(generateContent).toHaveBeenCalledTimes(1)
+  })
+})
+
+/** Every field `partial` has, it has as `final` does. */
+function fieldsFrom(partial: object, final: object) {
+  for (const [key, value] of Object.entries(partial)) {
+    if (!Array.isArray(value)) expect(value).toEqual(final[key as keyof typeof final])
+  }
+}
+
+describe('more answers, as Gemini writes them', () => {
+  it('give pose suggestions one by one, never one the character has', async () => {
+    const { suggestPoses } = await import('../src/ai')
+    const { plain, streamed, partials } = await bothWays(
+      (events) =>
+        suggestPoses(
+          {
+            character: { name: 'Cappy', description: 'A capybara' },
+            artStyle: 'Doodles',
+            niche: 'Sleep facts',
+            have: ['Happy'],
+            scripts: ['Cappy yawns. Cappy is shocked.'],
+          },
+          events,
+        ),
+      {
+        poses: [
+          { name: 'yawning', why: 'Script 1 yawns.', prompt: 'Cappy yawning' },
+          { name: 'happy', why: 'Again.', prompt: 'Cappy happy' },
+          { name: ' shocked ', why: 'A twist.', prompt: 'Cappy shocked' },
+        ],
+      },
+    )
+    expect(streamed).toEqual(plain)
+    expect(plain.map((p) => p.name)).toEqual(['yawning', 'shocked'])
+    growsInto(partials, plain)
+    expect(partials.at(-1)).toEqual(plain)
+  })
+
+  it('give a learned channel style field by field, its ideas one by one', async () => {
+    const { learnChannelStyle } = await import('../src/ai')
+    const { plain, streamed, partials } = await bothWays(
+      (events) =>
+        learnChannelStyle(
+          {
+            reference: { title: 'Ref', description: '', videos: [] },
+            thumbnails: [],
+            character: { name: 'Cappy', description: '' },
+            audience: '',
+          },
+          events,
+        ),
+      {
+        description: ' Sleep science with Cappy. ',
+        narration: 'Dry and quick.',
+        audience: 'Adults',
+        tone: 'Funny',
+        artStyle: 'Doodles',
+        pace: 4,
+        ideas: [
+          { title: 'Why you yawn', angle: 'A' },
+          { title: ' ', angle: 'Untitled' },
+          { title: 'Why naps hurt', angle: 'B' },
+        ],
+      },
+    )
+    expect(streamed).toEqual(plain)
+    expect(plain).toMatchObject({ description: 'Sleep science with Cappy.', pace: 4 })
+    expect(partials.some((p) => p.description !== undefined && p.ideas === undefined)).toBe(true)
+    for (const partial of partials) fieldsFrom(partial, plain)
+    growsInto(
+      partials.filter((p) => p.ideas).map((p) => p.ideas ?? []),
+      plain.ideas,
+    )
+    expect(partials.at(-1)).toEqual(plain)
+  })
+
+  it('give the channel setup part by part, each as the whole draft keeps it', async () => {
+    const { suggestChannelSetup } = await import('../src/ai')
+    const { plain, streamed, partials } = await bothWays(
+      (events) =>
+        suggestChannelSetup(
+          {
+            channel: 'Cappy Sleeps',
+            niche: 'Sleep science',
+            narration: '',
+            audience: '',
+            tone: '',
+            market: 'US',
+            targetMinutes: 6,
+            schedule: '',
+            uploads: [{ id: 'v2', title: 'Cappy tries to sleep', seconds: 75, views: 3000 }],
+          },
+          events,
+        ),
+      {
+        description: ' Funny sleep science. ',
+        keywords: ['sleep science', 'Sleep Science'],
+        tags: ['#capybara'],
+        subscribeLine: 'Subscribe.',
+        category: { id: '22', why: '' },
+        madeForKids: { value: false, why: 'Adults.' },
+        cadence: { perWeek: 3, why: 'Fine.' },
+        trailer: { id: 'v2', why: 'Typical.' },
+        audience: { text: 'US adults', why: 'Specific.' },
+        length: { minutes: 9.4, why: 'Ads.' },
+        pillars: ['1. Myths'],
+        rules: ['Hook first'],
+        monetization: { rates: 'high', why: 'Pays.', risks: [] },
+      },
+    )
+    expect(streamed).toEqual(plain)
+    expect(plain).toMatchObject({ category: { id: '27' }, length: { minutes: 9 } })
+    expect(partials.some((p) => p.description !== undefined && p.monetization === undefined)).toBe(true)
+    for (const partial of partials) fieldsFrom(partial, plain)
+    expect(partials.at(-1)).toEqual(plain)
+  })
+
+  it('give translations one language at a time, from calls side by side', async () => {
+    const { translatePost } = await import('../src/ai')
+    const to = ['de', 'fr', 'es', 'it', 'nl', 'pt']
+    const answer = (contents: unknown) => ({
+      translations: to
+        .filter((code) => String(contents).includes(`${code} (`))
+        .map((language) => ({ language, title: ` Title ${language} `, description: `Text ${language}` })),
+    })
+    const input = { title: 'Sleep', description: 'About sleep', from: 'en', to }
+    generateContent.mockImplementation(async ({ contents }: { contents: unknown }) => ({
+      text: JSON.stringify(answer(contents)),
+    }))
+    const plain = await translatePost(input)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // The first call (four languages) is slow: the second call's languages show first.
+    generateContentStream.mockImplementation(async ({ contents }: { contents: unknown }) =>
+      streamOf(
+        piecesOf(JSON.stringify(answer(contents)), 30),
+        String(contents).includes('de (') ? { gate } : {},
+      )(),
+    )
+    const partials: string[][] = []
+    const translating = translatePost(input, {
+      onPartial: (list) => partials.push(list.map((t) => t.language)),
+    })
+    await vi.waitFor(() => expect(partials.at(-1)).toEqual(expect.arrayContaining(['nl', 'pt'])))
+    expect(partials.at(-1)).not.toContain('it')
+    release()
+    const streamed = await translating
+    expect(streamed).toEqual(plain)
+    expect(plain.map((t) => t.language)).toEqual(to)
+    expect(partials.at(-1)).toEqual(to)
+    // A language shown is never taken back.
+    for (const [i, list] of partials.entries()) {
+      if (i > 0) expect(list).toEqual(expect.arrayContaining(partials[i - 1]))
+    }
+  })
+
+  it('give reply drafts comment by comment, as the whole answer keeps them', async () => {
+    const { draftReplies } = await import('../src/ai')
+    const { plain, streamed, partials } = await bothWays(
+      (events) =>
+        draftReplies(
+          {
+            channel: 'Body Facts',
+            niche: '',
+            narration: '',
+            language: 'en',
+            video: { title: 'Why 3 AM', topic: '', script: '' },
+            comments: [
+              { author: '@sam', text: 'Is it the liver?' },
+              { author: '@bot', text: 'spam' },
+              { author: '@kim', text: 'Great!' },
+            ],
+          },
+          events,
+        ),
+      {
+        replies: [
+          { comment: 2, action: 'reply', text: 'Thanks, Kim! www.example.com', why: '' },
+          { comment: 1, action: 'skip', text: '', why: 'Spam.' },
+          { comment: 2, action: 'skip', text: '', why: 'A second answer.' },
+          { comment: 0, action: 'reply', text: ' Partly! ', why: '' },
+        ],
+      },
+    )
+    expect(streamed).toEqual(plain)
+    expect(plain).toEqual([{ reply: 'Partly!' }, { skip: 'Spam.' }, { reply: 'Thanks, Kim!' }])
+    expect(partials.some((p) => p[2] !== null && p[0] === null)).toBe(true)
+    for (const partial of partials) {
+      partial.forEach((draft, i) => {
+        if (draft) expect(draft).toEqual(plain[i])
+      })
+    }
+    expect(partials.at(-1)).toEqual(plain)
+  })
+})

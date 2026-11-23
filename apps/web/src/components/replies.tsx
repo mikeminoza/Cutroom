@@ -8,9 +8,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { RepliesDTO, ReplyCommentDTO, ReplyVideoDTO, SentRepliesDTO } from '@/lib/dto'
+import type { RepliesDTO, ReplyChange, ReplyCommentDTO, ReplyVideoDTO, SentRepliesDTO } from '@/lib/dto'
 import { plural, timeAgo } from '@/lib/format'
 import { keys, useStatus } from '@/lib/hooks'
+import { streamAnswer } from '@/lib/stream'
 import { Button, Panel, Textarea } from './ui'
 
 const commentUrl = (video: ReplyVideoDTO, id: string) =>
@@ -106,10 +107,19 @@ function ChannelReplies({ channel, named }: { channel: { id: string; title: stri
       return next
     })
 
+  /** Each draft shows on its comment as soon as Gemini has written it; all are saved at the end. */
   const draft = async (video: ReplyVideoDTO) => {
     setDrafting(video.projectId)
     try {
-      const next = await api.post<RepliesDTO>('/api/replies/draft', { projectId: video.projectId })
+      const next = await streamAnswer<RepliesDTO, { comments: ReplyChange[] }>(
+        '/api/replies/draft',
+        { projectId: video.projectId },
+        {
+          partial: ({ comments }) => {
+            for (const { id, ...change } of comments) patchCache(id, change)
+          },
+        },
+      )
       client.setQueryData(key, next)
       toast.success('Replies drafted', {
         description: 'Read each one, change what you like and approve it. Nothing is posted until you click.',

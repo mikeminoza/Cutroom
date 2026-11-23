@@ -19,7 +19,8 @@ import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import type { ChannelDTO } from '@/lib/dto'
 import { keys } from '@/lib/hooks'
-import { Button, ButtonLink, Input, Panel, Textarea, type useConfirm } from './ui'
+import { streamAnswer } from '@/lib/stream'
+import { Button, ButtonLink, Input, Panel, Spinner, Textarea, type useConfirm } from './ui'
 
 type Confirm = ReturnType<typeof useConfirm>['confirm']
 type Key =
@@ -60,8 +61,9 @@ const lines = (text: string) =>
 const RATES = { high: 'High', medium: 'Medium', low: 'Low' } as const
 
 /**
- * "Set up with AI": one Gemini draft of the whole setup, shown as proposals to tick and edit.
- * Nothing changes until Apply, and the YouTube part only after a confirm.
+ * "Set up with AI": one Gemini draft of the whole setup, shown as proposals to tick and edit. Each
+ * proposal shows as soon as Gemini has written its part; ticking and editing wait for the whole
+ * draft. Nothing changes until Apply, and the YouTube part only after a confirm.
  */
 export function AiSetup({
   settings,
@@ -78,6 +80,8 @@ export function AiSetup({
 }) {
   const client = useQueryClient()
   const [draft, setDraft] = useState<ChannelSetupDraft | null>(null)
+  /** The draft while Gemini writes it: shown, to pick from once it's whole. */
+  const [sofar, setSofar] = useState<Partial<ChannelSetupDraft> | null>(null)
   const [busy, setBusy] = useState<'draft' | 'apply' | null>(null)
   const [picked, setPicked] = useState<Set<Key>>(new Set())
   const [description, setDescription] = useState('')
@@ -99,8 +103,15 @@ export function AiSetup({
 
   const run = async () => {
     setBusy('draft')
+    // Shown again if this one fails.
+    const before = draft
+    setDraft(null)
     try {
-      const next = await api.post<ChannelSetupDraft>('/api/setup/suggest', { channel: channel?.id })
+      const next = await streamAnswer<ChannelSetupDraft, Partial<ChannelSetupDraft>>(
+        '/api/setup/suggest',
+        { channel: channel?.id },
+        { partial: setSofar, restart: () => setSofar(null) },
+      )
       setDraft(next)
       setDescription(next.description)
       setKeywords(next.keywords.join(', '))
@@ -126,16 +137,21 @@ export function AiSetup({
       )
     } catch (error) {
       toast.error(errorText(error))
+      setDraft(before)
     } finally {
+      setSofar(null)
       setBusy(null)
     }
   }
 
-  /** What the draft would change: only what differs from now, and YouTube only when connected. */
-  function proposalsFor(d: ChannelSetupDraft): Proposal[] {
+  /**
+   * What the draft would change: only what differs from now, and YouTube only when connected. From
+   * a draft Gemini is still writing, only the parts it has written.
+   */
+  function proposalsFor(d: Partial<ChannelSetupDraft>): Proposal[] {
     const out: Proposal[] = []
-    const slots = presetSlots(d.cadence.perWeek, SLOT_TIME)
-    if (d.audience.text && d.audience.text !== niche.audience) {
+    const slots = d.cadence ? presetSlots(d.cadence.perWeek, SLOT_TIME) : []
+    if (d.audience?.text && d.audience.text !== niche.audience) {
       out.push({
         key: 'audience',
         where: 'cutroom',
@@ -144,7 +160,7 @@ export function AiSetup({
         why: `${d.audience.why} Scripts, titles and ideas are written for them.`,
       })
     }
-    if (d.length.minutes !== niche.targetMinutes) {
+    if (d.length && d.length.minutes !== niche.targetMinutes) {
       out.push({
         key: 'length',
         where: 'cutroom',
@@ -153,7 +169,7 @@ export function AiSetup({
         why: d.length.why,
       })
     }
-    if (d.pillars.length) {
+    if (d.pillars?.length) {
       out.push({
         key: 'pillars',
         where: 'cutroom',
@@ -162,7 +178,7 @@ export function AiSetup({
         why: 'The kinds of video the channel keeps making: viewers know what to expect, and the uploads never look like copies of one template. New ideas fit one of them.',
       })
     }
-    if (d.rules.length) {
+    if (d.rules?.length) {
       out.push({
         key: 'rules',
         where: 'cutroom',
@@ -172,20 +188,24 @@ export function AiSetup({
       })
     }
     if (yt) {
-      out.push({
-        key: 'description',
-        where: 'youtube',
-        title: 'Channel description',
-        now: yt.description.trim() ? `${yt.description.trim().length} characters` : 'none',
-        why: 'Written from your channel niche. The first sentence is the one search shows.',
-      })
-      out.push({
-        key: 'keywords',
-        where: 'youtube',
-        title: 'Channel keywords',
-        now: yt.keywords.length ? yt.keywords.join(', ') : 'none',
-        why: 'Search phrases for the channel as a whole.',
-      })
+      if (d.description !== undefined) {
+        out.push({
+          key: 'description',
+          where: 'youtube',
+          title: 'Channel description',
+          now: yt.description.trim() ? `${yt.description.trim().length} characters` : 'none',
+          why: 'Written from your channel niche. The first sentence is the one search shows.',
+        })
+      }
+      if (d.keywords) {
+        out.push({
+          key: 'keywords',
+          where: 'youtube',
+          title: 'Channel keywords',
+          now: yt.keywords.length ? yt.keywords.join(', ') : 'none',
+          why: 'Search phrases for the channel as a whole.',
+        })
+      }
       if (market && (yt.country !== market.code || !yt.defaultLanguage.startsWith(market.language))) {
         out.push({
           key: 'country',
@@ -205,7 +225,9 @@ export function AiSetup({
         })
       }
     }
-    const newTags = d.tags.filter((t) => !defaults.tags.some((x) => x.toLowerCase() === t.toLowerCase()))
+    const newTags = (d.tags ?? []).filter(
+      (t) => !defaults.tags.some((x) => x.toLowerCase() === t.toLowerCase()),
+    )
     if (newTags.length) {
       out.push({
         key: 'tags',
@@ -219,7 +241,7 @@ export function AiSetup({
       settings.timezone === zone.timezone &&
       settings.slots.length === slots.length &&
       slots.every((s) => settings.slots.some((x) => x.day === s.day && x.time === s.time))
-    if (!sameSchedule) {
+    if (d.cadence && !sameSchedule) {
       out.push({
         key: 'schedule',
         where: 'cutroom',
@@ -228,14 +250,16 @@ export function AiSetup({
         why: d.cadence.why,
       })
     }
-    out.push({
-      key: 'footer',
-      where: 'cutroom',
-      title: 'Description footer',
-      now: defaults.descriptionFooter.trim() ? 'your current footer' : 'none',
-      why: 'Under every description: when new videos come out and a reason to subscribe.',
-    })
-    if (d.category.id !== defaults.categoryId) {
+    if (d.subscribeLine !== undefined) {
+      out.push({
+        key: 'footer',
+        where: 'cutroom',
+        title: 'Description footer',
+        now: defaults.descriptionFooter.trim() ? 'your current footer' : 'none',
+        why: 'Under every description: when new videos come out and a reason to subscribe.',
+      })
+    }
+    if (d.category && d.category.id !== defaults.categoryId) {
       out.push({
         key: 'category',
         where: 'cutroom',
@@ -244,7 +268,7 @@ export function AiSetup({
         why: d.category.why,
       })
     }
-    if (d.madeForKids.value !== defaults.madeForKids) {
+    if (d.madeForKids && d.madeForKids.value !== defaults.madeForKids) {
       out.push({
         key: 'kids',
         where: 'cutroom',
@@ -256,7 +280,9 @@ export function AiSetup({
     return out
   }
 
-  const proposals = draft ? proposalsFor(draft) : []
+  // The whole draft, or what Gemini has written of it so far.
+  const shown = draft ?? sofar
+  const proposals = shown ? proposalsFor(shown) : []
   const chosen = proposals.filter((p) => picked.has(p.key))
   const toggle = (key: Key) => {
     const next = new Set(picked)
@@ -431,7 +457,7 @@ export function AiSetup({
             </>
           )}
         </p>
-      ) : !draft ? (
+      ) : !shown ? (
         <p className="px-5 py-4 text-[13.5px] text-ink-2">
           {channel
             ? `Takes about half a minute. Drafts for ${channel.title}${market ? `, written for viewers in ${market.name}` : ''}.`
@@ -440,34 +466,38 @@ export function AiSetup({
         </p>
       ) : (
         <>
-          <div className="flex gap-3 border-b border-line bg-sunk/60 px-5 py-3.5">
-            <CircleDollarSign className="mt-0.5 size-4 shrink-0 text-ink-2" aria-hidden />
-            <div className="min-w-0 text-[13px] leading-snug">
-              <p>
-                <span className="font-semibold">
-                  Earning outlook: {RATES[draft.monetization.rates]} ad rates.
-                </span>{' '}
-                <span className="text-ink-2">{draft.monetization.why}</span>
-              </p>
-              {draft.monetization.risks.length > 0 && (
-                <ul className="mt-1.5 list-disc pl-4 text-ink-2">
-                  {draft.monetization.risks.map((risk) => (
-                    <li key={risk}>{risk}</li>
-                  ))}
-                </ul>
-              )}
+          {shown.monetization && (
+            <div className="flex gap-3 border-b border-line bg-sunk/60 px-5 py-3.5">
+              <CircleDollarSign className="mt-0.5 size-4 shrink-0 text-ink-2" aria-hidden />
+              <div className="min-w-0 text-[13px] leading-snug">
+                <p>
+                  <span className="font-semibold">
+                    Earning outlook: {RATES[shown.monetization.rates]} ad rates.
+                  </span>{' '}
+                  <span className="text-ink-2">{shown.monetization.why}</span>
+                </p>
+                {shown.monetization.risks.length > 0 && (
+                  <ul className="mt-1.5 list-disc pl-4 text-ink-2">
+                    {shown.monetization.risks.map((risk) => (
+                      <li key={risk}>{risk}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-          </div>
-          <ul className="divide-y divide-line">
+          )}
+          <ul className="divide-y divide-line" aria-live="polite">
             {proposals.map((p) => {
-              const on = picked.has(p.key)
-              const editor = editors[p.key]
+              // While Gemini writes, proposals are only shown: ticking waits for the whole draft.
+              const on = draft ? picked.has(p.key) : true
+              const editor = draft && editors[p.key]
               return (
                 <li key={p.key} className={cn('px-5 py-3.5', !on && 'opacity-60')}>
                   <label className="flex cursor-pointer items-start gap-3">
                     <input
                       type="checkbox"
-                      checked={on}
+                      checked={draft ? on : false}
+                      disabled={!draft}
                       onChange={() => toggle(p.key)}
                       className="mt-1 size-4 shrink-0 accent-[var(--color-ink)]"
                     />
@@ -488,7 +518,18 @@ export function AiSetup({
               )
             })}
           </ul>
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3">
+          {!draft && (
+            <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-[13px] text-ink-2">
+              <Spinner className="text-ink-3" />
+              Gemini is still writing: each part shows as soon as it’s done.
+            </p>
+          )}
+          <div
+            className={cn(
+              'flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3',
+              !draft && 'hidden',
+            )}
+          >
             <Button variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={busy === 'apply'}>
               Discard
             </Button>

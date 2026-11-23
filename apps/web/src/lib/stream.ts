@@ -66,6 +66,17 @@ export async function postForEvents<E extends { type: string }>(
   throw new Error(broken)
 }
 
+/** A long list sent as what changed (server/stream.ts): the items from position `from` on. */
+export interface ListChange<T> {
+  from: number
+  items: T[]
+}
+
+/** The list with a change in: its items from `from` on replaced by the change's. */
+export function applyChange<T>(list: T[], change: ListChange<T>): T[] {
+  return [...list.slice(0, change.from), ...change.items]
+}
+
 /** What an AI answer sent as Gemini writes it says along the way. */
 export interface AnswerHandlers<P> {
   /** The answer so far, shaped like the whole one: each part shows once Gemini has written it. */
