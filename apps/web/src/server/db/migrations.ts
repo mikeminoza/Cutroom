@@ -101,4 +101,13 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'ALTER TABLE "ideas" ADD CONSTRAINT "ideas_follow_up_of_projects_id_fk" FOREIGN KEY ("follow_up_of") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;',
     ],
   },
+  {
+    tag: '0012_comment_replies',
+    statements: [
+      'CREATE TABLE "comment_replies" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"channel_id" text NOT NULL,\n\t"project_id" text NOT NULL,\n\t"author" text DEFAULT \'\' NOT NULL,\n\t"text" text DEFAULT \'\' NOT NULL,\n\t"likes" integer DEFAULT 0 NOT NULL,\n\t"published_at" timestamp with time zone,\n\t"status" text DEFAULT \'waiting\' NOT NULL,\n\t"draft" text,\n\t"skip_reason" text,\n\t"reply_id" text,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'ALTER TABLE "channels" ADD COLUMN "replies_checked_at" timestamp with time zone;',
+      'ALTER TABLE "comment_replies" ADD CONSTRAINT "comment_replies_channel_id_channels_id_fk" FOREIGN KEY ("channel_id") REFERENCES "public"."channels"("id") ON DELETE cascade ON UPDATE no action;',
+      'ALTER TABLE "comment_replies" ADD CONSTRAINT "comment_replies_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;',
+    ],
+  },
 ]

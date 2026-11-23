@@ -669,6 +669,16 @@ export interface VideoComment {
   likes: number
 }
 
+/** Comments turned off, or the video gone: there are no comments to read, not an error. */
+function noComments(error: unknown): boolean {
+  const e = error as {
+    errors?: { reason?: string }[]
+    response?: { data?: { error?: { errors?: { reason?: string }[] } } }
+  } | null
+  const reason = e?.errors?.[0]?.reason ?? e?.response?.data?.error?.errors?.[0]?.reason
+  return reason === 'commentsDisabled' || reason === 'videoNotFound'
+}
+
 /**
  * A video's top-level comments, most relevant first (1 quota unit per call, up to 100). A video
  * with comments turned off, or gone, has none.
@@ -689,14 +699,90 @@ export async function videoComments(client: OAuthClient, videoId: string, max = 
       return text ? [{ text, likes: Number(top?.likeCount ?? 0) }] : []
     })
   } catch (error) {
-    const e = error as {
-      errors?: { reason?: string }[]
-      response?: { data?: { error?: { errors?: { reason?: string }[] } } }
-    }
-    const reason = e.errors?.[0]?.reason ?? e.response?.data?.error?.errors?.[0]?.reason
-    if (reason === 'commentsDisabled' || reason === 'videoNotFound') return []
+    if (noComments(error)) return []
     throw error
   }
+}
+
+/** A viewer's top-level comment and who has replied to it, for answering it (shared/replies.ts). */
+export interface CommentThread {
+  /** The top-level comment's id: a reply goes under it (it is the reply's parentId). */
+  id: string
+  author: string
+  /** The author's YouTube channel id; '' when YouTube doesn't say. */
+  authorChannelId: string
+  text: string
+  likes: number
+  publishedAt: string | null
+  /** False when YouTube takes no reply to it from this channel. */
+  canReply: boolean
+  /** How many replies the thread has in all. */
+  replies: number
+  /** The channel ids of the replies YouTube sent with the thread: a few of them, not always all. */
+  replyAuthors: string[]
+}
+
+const authorOf = (comment: youtube_v3.Schema$Comment | undefined) =>
+  comment?.snippet?.authorChannelId?.value ?? ''
+
+/**
+ * A video's top-level comments, newest first, each with the replies YouTube sends along (1 quota
+ * unit, up to 100 comments). `complete` is false when the video has more than were read. A video
+ * with comments turned off, or gone, has none.
+ */
+export async function videoCommentThreads(
+  client: OAuthClient,
+  videoId: string,
+  max = 100,
+): Promise<{ threads: CommentThread[]; complete: boolean }> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  try {
+    const res = await yt.commentThreads.list({
+      part: ['snippet', 'replies'],
+      videoId,
+      maxResults: Math.min(100, Math.max(1, max)),
+      order: 'time',
+      textFormat: 'plainText',
+    })
+    const threads = (res.data.items ?? []).flatMap((thread): CommentThread[] => {
+      const top = thread.snippet?.topLevelComment
+      if (!top?.id) return []
+      return [
+        {
+          id: top.id,
+          author: top.snippet?.authorDisplayName ?? '',
+          authorChannelId: authorOf(top),
+          text: top.snippet?.textDisplay?.trim() ?? '',
+          likes: Number(top.snippet?.likeCount ?? 0),
+          publishedAt: top.snippet?.publishedAt ?? null,
+          canReply: thread.snippet?.canReply !== false,
+          replies: Number(thread.snippet?.totalReplyCount ?? 0),
+          replyAuthors: (thread.replies?.comments ?? []).map(authorOf).filter(Boolean),
+        },
+      ]
+    })
+    return { threads, complete: !res.data.nextPageToken }
+  } catch (error) {
+    if (noComments(error)) return { threads: [], complete: true }
+    throw error
+  }
+}
+
+/** The channel ids of everyone who replied to a comment (1 quota unit, up to 100 replies). */
+export async function threadReplyAuthors(client: OAuthClient, commentId: string): Promise<string[]> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.comments.list({ part: ['snippet'], parentId: commentId, maxResults: 100 })
+  return (res.data.items ?? []).map(authorOf).filter(Boolean)
+}
+
+/** Posts a reply in a comment's thread, from the channel (50 quota units). Returns the reply's id. */
+export async function replyToComment(client: OAuthClient, parentId: string, text: string): Promise<string> {
+  const yt = youtubeApi({ version: 'v3', auth: client })
+  const res = await yt.comments.insert({
+    part: ['snippet'],
+    requestBody: { snippet: { parentId, textOriginal: text } },
+  })
+  return res.data.id ?? ''
 }
 
 export interface VideoAnalytics {

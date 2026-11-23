@@ -7,6 +7,7 @@ import type {
   JobType,
   WorkerInfo,
 } from '@cutroom/shared/protocol'
+import type { ReplyStatus } from '@cutroom/shared/replies'
 import type {
   Accent,
   AppSettings,
@@ -199,6 +200,8 @@ export const channels = pgTable('channels', {
   refreshToken: text('refresh_token').notNull(),
   scope: text('scope'),
   isDefault: boolean('is_default').notNull().default(false),
+  /** When its recent videos' comments were last read for replies (server/replies.ts); null = never. */
+  repliesCheckedAt: timestamp('replies_checked_at', { withTimezone: true }),
   createdAt: created(),
 })
 
@@ -266,6 +269,35 @@ export const commentInsights = pgTable('comment_insights', {
   updatedAt: updated(),
 })
 
+/**
+ * Viewers' comments on a channel's recent videos that wait for its reply, with the reply Gemini
+ * drafted (or you wrote) and what became of it (server/replies.ts). Kept so a reload never pays
+ * Gemini twice, and so a reply already posted is never listed or posted again. The id is
+ * YouTube's id of the comment.
+ */
+export const commentReplies = pgTable('comment_replies', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id')
+    .notNull()
+    .references(() => channels.id, { onDelete: 'cascade' }),
+  /** The video it is on. */
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  author: text('author').notNull().default(''),
+  text: text('text').notNull().default(''),
+  likes: integer('likes').notNull().default(0),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  status: text('status').$type<ReplyStatus>().notNull().default('waiting'),
+  /** The reply to post, as drafted or edited (once posted, what was posted); null = not drafted. */
+  draft: text('draft'),
+  /** Why Gemini suggests no reply; '' when you skipped it yourself. */
+  skipReason: text('skip_reason'),
+  /** YouTube's id of the reply Cutroom posted. */
+  replyId: text('reply_id'),
+  createdAt: created(),
+})
+
 export const ideas = pgTable('ideas', {
   id: text('id').primaryKey(),
   title: text('title').notNull().default(''),
@@ -304,4 +336,5 @@ export type SeriesRow = typeof series.$inferSelect
 export type LibraryCharacterRow = typeof libraryCharacters.$inferSelect
 export type LibraryBackgroundRow = typeof libraryBackgrounds.$inferSelect
 export type IdeaRow = typeof ideas.$inferSelect
+export type CommentReplyRow = typeof commentReplies.$inferSelect
 export type WorkerCheckRow = typeof workerChecks.$inferSelect

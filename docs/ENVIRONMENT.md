@@ -81,7 +81,7 @@ The Gemini text model. It defaults to `gemini-3.8-flash`. Google renames models 
 
 ### `GEMINI_LITE_MODEL`
 
-The faster, lighter model for the simple jobs: picking scene effects ("Add effects with AI"), building scene pictures from Library layers, summing up viewer comments, and the searches behind breakouts. It defaults to `gemini-3.5-flash-lite`, which is on the free tier with a quota of its own, so these jobs don't use up `GEMINI_MODEL`'s requests. Everything you publish (scripts, storyboards, titles, descriptions, translations, ideas) and the checks (script doctor, hook, packaging) stay on `GEMINI_MODEL`.
+The faster, lighter model for the simple jobs: picking scene effects ("Add effects with AI"), building scene pictures from Library layers, summing up viewer comments, drafting replies to them, and the searches behind breakouts. It defaults to `gemini-3.5-flash-lite`, which is on the free tier with a quota of its own, so these jobs don't use up `GEMINI_MODEL`'s requests. Everything you publish (scripts, storyboards, titles, descriptions, translations, ideas) and the checks (script doctor, hook, packaging) stay on `GEMINI_MODEL`.
 
 Web app only: the worker doesn't run these jobs. To send them to the main model instead, set it to the same value as `GEMINI_MODEL`. If a simple job fails with "model not found", pick a current Flash-Lite model from https://ai.google.dev/gemini-api/docs/models.
 

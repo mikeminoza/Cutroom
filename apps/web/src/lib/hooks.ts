@@ -31,6 +31,7 @@ export const keys = {
   ideas: ['ideas'] as const,
   performance: ['performance'] as const,
   comments: ['comments'] as const,
+  replies: (channelId: string) => ['replies', channelId] as const,
   voices: ['voices'] as const,
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
   channel: (channelId: string | null) => ['channel', channelId ?? 'default'] as const,

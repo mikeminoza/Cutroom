@@ -257,17 +257,11 @@ export function GrowPage() {
         return {
           key: `reply-${move.project.id}`,
           title: `Reply to the comments on "${move.project.title}"`,
-          detail: `It went out ${move.hours < 1 ? 'less than an hour' : plural(move.hours, 'hour')} ago. Answer every comment today: replies bring more comments while the video is new, and YouTube reads an active comment section as viewers caring. Pin the question Cutroom posted, too.`,
+          detail: `It went out ${move.hours < 1 ? 'less than an hour' : plural(move.hours, 'hour')} ago. Answer every comment today: replies bring more comments while the video is new, and YouTube reads an active comment section as viewers caring. Cutroom lists the ones waiting and drafts replies in your narrator's voice for you to check and post. Pin the question Cutroom posted, too.`,
           action: videoId && (
             <>
-              <ButtonLink
-                href={`${STUDIO}video/${videoId}/comments`}
-                size="sm"
-                variant="go"
-                icon={<ExternalLink className="size-3.5" />}
-                {...external}
-              >
-                Comments
+              <ButtonLink href="/performance#replies" size="sm" variant="go">
+                Reply
               </ButtonLink>
               <ButtonLink
                 href={`https://www.youtube.com/watch?v=${videoId}`}
@@ -397,9 +391,9 @@ export function GrowPage() {
     },
     {
       title: 'Reply to comments in the first hour',
-      body: 'Answer every comment while the video is new. Replies bring more comments, and an active comment section tells YouTube viewers care.',
-      where: 'YouTube Studio → Comments',
-      link: { href: studio('comments/inbox'), label: 'Comments', external: true },
+      body: 'Answer every comment while the video is new. Replies bring more comments, and an active comment section tells YouTube viewers care. Cutroom drafts the replies in your narrator’s voice; you check them and post with a click.',
+      where: 'Performance → Comments to answer',
+      link: { href: '/performance#replies', label: 'Reply' },
     },
     {
       title: 'An end screen to your best related video',
@@ -604,7 +598,7 @@ export function GrowPage() {
           title="For every video"
           description={`The same routine each time. The first four happen in Cutroom${
             making ? ` (Open goes to “${making.title || 'Untitled video'}”)` : ''
-          }; the rest on YouTube once it's out.`}
+          }; once it's out, replies too, and the rest on YouTube.`}
         >
           <Routine heading="Before it posts" steps={before} start={1} />
           <Routine heading="After it posts" steps={after} start={before.length + 1} />

@@ -2,9 +2,12 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { CommentThread } from '@cutroom/shared/google'
 import { localPath, putFile } from '@cutroom/shared/storage'
+import type { PostDetails } from '@cutroom/shared/types'
 import { eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { RepliesDTO, SentRepliesDTO } from '../src/lib/dto'
 
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
@@ -26,11 +29,15 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
     // Stubbed: each test says what Gemini writes.
     followUpIdeas: vi.fn(),
+    draftReplies: vi.fn(),
   }
 })
-// Reading comments from YouTube is stubbed too.
+// Reading comments from YouTube is stubbed too, and so is answering them.
 const videoComments = vi.hoisted(() => vi.fn())
 const postComment = vi.hoisted(() => vi.fn())
+const videoCommentThreads = vi.hoisted(() => vi.fn())
+const threadReplyAuthors = vi.hoisted(() => vi.fn())
+const replyToComment = vi.hoisted(() => vi.fn())
 vi.mock('@cutroom/shared/google', async (original) => {
   const actual = await original<typeof import('@cutroom/shared/google')>()
   // Video statistics stay real unless a test says otherwise.
@@ -38,6 +45,9 @@ vi.mock('@cutroom/shared/google', async (original) => {
     ...actual,
     videoComments,
     postComment,
+    videoCommentThreads,
+    threadReplyAuthors,
+    replyToComment,
     searchRecentVideos: vi.fn(),
     videoStatistics: vi.fn(actual.videoStatistics),
     channelUploads: vi.fn(actual.channelUploads),
@@ -120,6 +130,10 @@ const hits = await import('../src/server/hits')
 const hitsRoute = await import('../src/app/api/hits/route')
 const hitIdeasRoute = await import('../src/app/api/hits/[id]/ideas/route')
 const ideasRoute = await import('../src/app/api/ideas/route')
+const repliesRoute = await import('../src/app/api/replies/route')
+const replyRoute = await import('../src/app/api/replies/[id]/route')
+const draftRepliesRoute = await import('../src/app/api/replies/draft/route')
+const sendRepliesRoute = await import('../src/app/api/replies/send/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2606,5 +2620,319 @@ describe('your hits', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+describe('answering comments', () => {
+  const day = 86_400_000
+  const channelId = 'replies-channel'
+  const ME = 'UC-replies'
+  let fresh = ''
+  let older = ''
+  /** What YouTube has on each video, by its YouTube id. */
+  const threads = new Map<string, CommentThread[]>()
+
+  const thread = (id: string, minutesAgo: number, over: Partial<CommentThread> = {}): CommentThread => ({
+    id,
+    author: `@${id}`,
+    authorChannelId: `UC-viewer-${id}`,
+    text: `What about ${id}?`,
+    likes: 0,
+    publishedAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+    canReply: true,
+    replies: 0,
+    replyAuthors: [],
+    ...over,
+  })
+
+  /** A video on the replies channel that went public `age` days ago. */
+  async function video(
+    youtubeVideoId: string,
+    age: number,
+    over: Partial<typeof schema.projects.$inferInsert> = {},
+    post: Partial<PostDetails> = {},
+  ) {
+    const id = await newProject()
+    const database = await db()
+    const project = await projects.getProjectRow(id)
+    await database
+      .update(schema.projects)
+      .set({
+        title: `Video ${youtubeVideoId}`,
+        topic: `All about ${youtubeVideoId}`,
+        script: `The script of ${youtubeVideoId}.`,
+        channelId,
+        youtubeVideoId,
+        status: 'published',
+        scheduledAt: new Date(Date.now() - age * day),
+        post: { ...project.post, title: `Video ${youtubeVideoId}`, privacy: 'public', ...post },
+        ...over,
+      })
+      .where(eq(schema.projects.id, id))
+    return id
+  }
+
+  const json = (body: unknown, method = 'POST') =>
+    new Request('http://localhost/api/replies', {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const ok = async (response: Response) => {
+    expect(response.status).toBe(200)
+    return response.json()
+  }
+  const list = async (): Promise<RepliesDTO> =>
+    ok(await repliesRoute.GET(new Request(`http://localhost/api/replies?channel=${channelId}`), undefined))
+  const check = async (): Promise<RepliesDTO> => ok(await repliesRoute.POST(json({ channelId }), undefined))
+  const draft = (projectId: string) => draftRepliesRoute.POST(json({ projectId }), undefined)
+  const send = async (replies: { id: string; text: string }[]): Promise<SentRepliesDTO> =>
+    ok(await sendRepliesRoute.POST(json({ replies }), undefined))
+  const patch = async (id: string, body: object) =>
+    replyRoute.PATCH(json(body, 'PATCH'), { params: Promise.resolve({ id }) })
+  const comments = (dto: RepliesDTO, projectId: string) =>
+    dto.videos.find((v) => v.projectId === projectId)?.comments ?? []
+  const ids = (dto: RepliesDTO, projectId: string) => comments(dto, projectId).map((c) => c.id)
+
+  beforeAll(async () => {
+    const database = await db()
+    await database.insert(schema.channels).values([
+      { id: channelId, youtubeId: ME, title: 'Body Facts Daily', refreshToken: 'r' },
+      {
+        id: 'replies-second',
+        youtubeId: 'UC-replies-second',
+        title: 'Body Facts Shorts',
+        refreshToken: 'r2',
+      },
+    ])
+    fresh = await video('fresh-video', 1)
+    older = await video('older-video', 10)
+    // Not read: out too long ago, not public, comments off, not out yet, another channel's.
+    await video('old-video', 30)
+    await video('unlisted-video', 1, {}, { privacy: 'unlisted' })
+    await video('kids-video', 1, {}, { madeForKids: true })
+    await video('upcoming-video', -2, { status: 'scheduled' })
+    await video('other-channel-video', 1, { channelId: 'replies-second' })
+    videoCommentThreads.mockImplementation(async (_client, videoId: string) => ({
+      threads: threads.get(videoId) ?? [],
+      complete: true,
+    }))
+    threadReplyAuthors.mockImplementation(async (_client, commentId: string) =>
+      commentId === 'long-answered' ? ['UC-viewer-x', ME] : ['UC-viewer-x'],
+    )
+  })
+
+  beforeEach(() => {
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'id')
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'secret')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('lists the comments still waiting for your reply on recent public videos, reading YouTube only when asked', async () => {
+    videoCommentThreads.mockClear()
+    expect(await list()).toMatchObject({ channelId, checkedAt: null, videos: [] })
+    expect(videoCommentThreads).not.toHaveBeenCalled()
+
+    // Viewers' channels (other tests connect channels with short ids like UC-a).
+    const others = ['UC-viewer-a', 'UC-viewer-b', 'UC-viewer-c', 'UC-viewer-d', 'UC-viewer-e']
+    threads.set('fresh-video', [
+      thread('first', 120, { text: 'Is it really the liver?' }),
+      thread('own', 110, { authorChannelId: ME }),
+      thread('answered', 100, { replies: 1, replyAuthors: [ME] }),
+      // Your other channel is you too.
+      thread('from-second', 90, { authorChannelId: 'UC-replies-second' }),
+      // YouTube sends a few replies with a thread: the rest are read when none of those are yours.
+      thread('long-answered', 80, { replies: 8, replyAuthors: others }),
+      thread('long-waiting', 70, { replies: 8, replyAuthors: others }),
+      thread('closed', 60, { canReply: false }),
+      thread('second', 50, { text: 'Great video!' }),
+    ])
+    threads.set('older-video', [thread('older', 3000)])
+    for (const name of ['old', 'unlisted', 'kids', 'upcoming', 'other-channel']) {
+      threads.set(`${name}-video`, [thread(`on-${name}`, 60)])
+    }
+
+    const checked = await check()
+    expect(checked.checkedAt).toEqual(expect.any(String))
+    // The newest video first; on each, the comment waiting longest first.
+    expect(checked.videos.map((v) => v.projectId)).toEqual([fresh, older])
+    expect(ids(checked, fresh)).toEqual(['first', 'long-waiting', 'second'])
+    expect(comments(checked, fresh)[0]).toMatchObject({
+      author: '@first',
+      text: 'Is it really the liver?',
+      status: 'waiting',
+      draft: null,
+    })
+    expect(ids(checked, older)).toEqual(['older'])
+    // One call per recent public video of this channel, and the rest of a thread only when needed.
+    expect(videoCommentThreads.mock.calls.map((call) => call[1])).toEqual(['fresh-video', 'older-video'])
+    expect(threadReplyAuthors.mock.calls.map((call) => call[1]).sort()).toEqual([
+      'long-answered',
+      'long-waiting',
+    ])
+
+    // A reload shows the same without asking YouTube again.
+    expect(await list()).toEqual(checked)
+    expect(videoCommentThreads).toHaveBeenCalledTimes(2)
+  })
+
+  it('drafts a video’s replies in one Gemini call when asked, and keeps them so none is drafted twice', async () => {
+    const drafter = vi.mocked(ai.draftReplies)
+    drafter.mockClear()
+    const before = await settingsModule.getSettings()
+    await settingsModule.saveSettings({
+      ...before,
+      niche: { ...before.niche, narration: 'A sarcastic stick figure' },
+    })
+    try {
+      vi.stubEnv('GEMINI_API_KEY', '')
+      const refused = await draft(fresh)
+      expect(refused.status).toBe(400)
+      expect((await refused.json()).error).toMatch(/GEMINI_API_KEY/)
+      expect(drafter).not.toHaveBeenCalled()
+
+      vi.stubEnv('GEMINI_API_KEY', 'key')
+      drafter.mockResolvedValueOnce([
+        { reply: 'Partly! Your liver is on the night shift.' },
+        { skip: 'Nothing to answer: it replies to someone else.' },
+        { reply: 'Thank you!' },
+      ])
+      const drafted: RepliesDTO = await ok(await draft(fresh))
+      expect(drafter).toHaveBeenCalledTimes(1)
+      expect(drafter.mock.lastCall?.[0]).toMatchObject({
+        channel: 'Body Facts Daily',
+        narration: 'A sarcastic stick figure',
+        video: {
+          title: 'Video fresh-video',
+          topic: 'All about fresh-video',
+          script: 'The script of fresh-video.',
+        },
+        comments: [
+          { author: '@first', text: 'Is it really the liver?' },
+          { author: '@long-waiting', text: 'What about long-waiting?' },
+          { author: '@second', text: 'Great video!' },
+        ],
+      })
+      expect(comments(drafted, fresh)).toEqual([
+        expect.objectContaining({
+          id: 'first',
+          status: 'waiting',
+          draft: 'Partly! Your liver is on the night shift.',
+        }),
+        expect.objectContaining({
+          id: 'long-waiting',
+          status: 'skipped',
+          draft: null,
+          skipReason: 'Nothing to answer: it replies to someone else.',
+        }),
+        expect.objectContaining({ id: 'second', status: 'waiting', draft: 'Thank you!' }),
+      ])
+      // The other video waits for its own click.
+      expect(comments(drafted, older)[0]).toMatchObject({ draft: null })
+
+      // Clicked again, after a reload, or after reading YouTube again: kept, and no new Gemini call.
+      expect(await ok(await draft(fresh))).toEqual(drafted)
+      expect(await list()).toEqual(drafted)
+      expect(comments(await check(), fresh)).toEqual(comments(drafted, fresh))
+      expect(drafter).toHaveBeenCalledTimes(1)
+
+      // A new comment: only it is drafted.
+      threads.set('fresh-video', [
+        ...(threads.get('fresh-video') ?? []),
+        thread('third', 5, { text: 'Does coffee matter?' }),
+      ])
+      await check()
+      drafter.mockResolvedValueOnce([{ reply: 'It does!' }])
+      const more: RepliesDTO = await ok(await draft(fresh))
+      expect(drafter.mock.lastCall?.[0].comments).toEqual([{ author: '@third', text: 'Does coffee matter?' }])
+      expect(comments(more, fresh).find((c) => c.id === 'third')).toMatchObject({ draft: 'It does!' })
+    } finally {
+      await settingsModule.saveSettings(before)
+    }
+  })
+
+  it('posts only the replies you approve, each under its own comment, a few per click', async () => {
+    replyToComment.mockReset()
+    replyToComment.mockImplementation(async (_client, parentId: string) => `${parentId}.reply`)
+    // Your edit is kept for next time, and nothing goes out until you click.
+    expect((await patch('first', { draft: 'Partly! Your liver works nights.' })).status).toBe(200)
+    expect(comments(await list(), fresh)[0]).toMatchObject({ draft: 'Partly! Your liver works nights.' })
+    expect(replyToComment).not.toHaveBeenCalled()
+
+    // One reply, exactly as shown, as a reply in that comment's thread.
+    const one = await send([{ id: 'first', text: '  Partly! Your liver works nights.  ' }])
+    expect(replyToComment.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+      ['first', 'Partly! Your liver works nights.'],
+    ])
+    expect(one).toEqual({
+      sent: [{ id: 'first', replyId: 'first.reply', text: 'Partly! Your liver works nights.' }],
+      notes: [],
+    })
+
+    // Twelve approved at once: ten go out, and the message says why the other two wait.
+    const many = Array.from({ length: 12 }, (_, i) => thread(`many-${i}`, 2000 - i))
+    threads.set('older-video', [thread('older', 3000), ...many])
+    await check()
+    replyToComment.mockClear()
+    const batch = await send(many.map((c) => ({ id: c.id, text: `Thanks, ${c.author}!` })))
+    expect(replyToComment.mock.calls.map((call) => [call[1], call[2]])).toEqual(
+      many.slice(0, 10).map((c) => [c.id, `Thanks, ${c.author}!`]),
+    )
+    expect(batch.sent).toHaveLength(10)
+    expect(batch.notes.join(' ')).toMatch(/2 approved replies are left.*10 a click/)
+
+    const after = await list()
+    expect(
+      comments(after, older)
+        .filter((c) => c.status === 'replied')
+        .map((c) => c.id),
+    ).toEqual(many.slice(0, 10).map((c) => c.id))
+    // Not sent, not posted: the drafts you didn't approve and the comment Gemini would skip.
+    expect(comments(after, fresh).find((c) => c.id === 'second')).toMatchObject({
+      status: 'waiting',
+      draft: 'Thank you!',
+    })
+    expect(comments(after, fresh).find((c) => c.id === 'long-waiting')).toMatchObject({ status: 'skipped' })
+    expect(comments(after, older).find((c) => c.id === 'older')).toMatchObject({ status: 'waiting' })
+
+    // Never twice: not when sent again, nor when YouTube doesn't show the reply yet.
+    replyToComment.mockClear()
+    expect((await send([{ id: 'first', text: 'Again!' }])).sent).toEqual([])
+    expect(replyToComment).not.toHaveBeenCalled()
+    expect(comments(await check(), fresh).find((c) => c.id === 'first')).toMatchObject({
+      status: 'replied',
+      replyId: 'first.reply',
+      draft: 'Partly! Your liver works nights.',
+    })
+    expect((await patch('first', { draft: 'Changed my mind' })).status).toBe(400)
+    const gone = await send([{ id: 'deleted-comment', text: 'Hi!' }])
+    expect(gone.sent).toEqual([])
+    expect(gone.notes.join(' ')).toMatch(/1 comment is no longer listed/)
+    expect(replyToComment).not.toHaveBeenCalled()
+
+    // YouTube's quota runs out: it stops there and keeps your text for later.
+    replyToComment.mockRejectedValueOnce(
+      Object.assign(new Error('quota'), { errors: [{ reason: 'quotaExceeded' }] }),
+    )
+    const stopped = await send([
+      { id: 'many-10', text: 'Thanks!' },
+      { id: 'many-11', text: 'Thank you!' },
+    ])
+    expect(stopped.sent).toEqual([])
+    expect(stopped.notes.join(' ')).toMatch(/quota/)
+    expect(replyToComment).toHaveBeenCalledTimes(1)
+    expect(comments(await list(), older).find((c) => c.id === 'many-10')).toMatchObject({
+      status: 'waiting',
+      draft: 'Thanks!',
+    })
+
+    // Skipping one yourself, and changing your mind about one Gemini would skip.
+    expect(await ok(await patch('second', { status: 'skipped' }))).toMatchObject({
+      status: 'skipped',
+      skipReason: '',
+    })
+    expect(await ok(await patch('long-waiting', { status: 'waiting' }))).toMatchObject({ status: 'waiting' })
   })
 })

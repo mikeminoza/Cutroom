@@ -11,6 +11,7 @@ import type { PerformanceDTO, PerformanceVideo } from '@/lib/dto'
 import { formatWhen, timeAgo } from '@/lib/format'
 import { keys, usePerformance, useSeriesList, useStatus } from '@/lib/hooks'
 import { CommentInsightsPanels } from './comment-insights'
+import { ReplyPanels } from './replies'
 import { Button, Panel, Segmented, Select } from './ui'
 import { SearchesThatFindYou, WhereViewersAre, WhereViewersLeave } from './viewer-insights'
 
@@ -264,6 +265,7 @@ export function PerformancePage() {
             )}
           </div>
 
+          <ReplyPanels channels={shownChannel ? [shownChannel] : channels} />
           <CommentInsightsPanels channels={shownChannel ? [shownChannel] : channels} />
         </div>
       )}

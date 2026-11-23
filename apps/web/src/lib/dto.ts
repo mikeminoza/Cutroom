@@ -8,6 +8,7 @@ import type {
   JobType,
   WorkerInfo,
 } from '@cutroom/shared/protocol'
+import type { ReplyStatus } from '@cutroom/shared/replies'
 import type { GrowthNumbers } from '@cutroom/shared/setup'
 import type {
   CaptionStyle,
@@ -281,6 +282,52 @@ export interface CommentInsightsDTO {
 export interface PerformanceDTO {
   videos: PerformanceVideo[]
   channels: ChannelDTO[]
+  notes: string[]
+}
+
+/** A viewer's comment waiting for the channel's reply (server/replies.ts). */
+export interface ReplyCommentDTO {
+  /** YouTube's id of the comment. */
+  id: string
+  author: string
+  text: string
+  likes: number
+  publishedAt: string | null
+  status: ReplyStatus
+  /** The reply to post, as drafted or edited; once posted, what was posted. null = not drafted. */
+  draft: string | null
+  /** Why Gemini suggests no reply; '' when you skipped it yourself. */
+  skipReason: string | null
+  /** YouTube's id of the reply Cutroom posted. */
+  replyId: string | null
+}
+
+export interface ReplyVideoDTO {
+  projectId: string
+  title: string
+  format: VideoFormat
+  youtubeVideoId: string
+  /** When it went public. */
+  publishedAt: string
+  /** The comment waiting longest first. */
+  comments: ReplyCommentDTO[]
+}
+
+/** A channel's comments to answer, on its videos out in the last REPLIES.days. */
+export interface RepliesDTO {
+  channelId: string
+  /** When YouTube was last read; null = never. */
+  checkedAt: string | null
+  /** How many recent videos are read. */
+  read: number
+  /** The videos with comments, newest first. */
+  videos: ReplyVideoDTO[]
+}
+
+/** What one click posted. */
+export interface SentRepliesDTO {
+  sent: { id: string; replyId: string; text: string }[]
+  /** Why some were not posted: the cap per click, or a YouTube error. */
   notes: string[]
 }
 
