@@ -179,20 +179,64 @@ function httpStatus(error: unknown): number | null {
   return typeof status === 'number' ? status : null
 }
 
+/** What a Gemini call took, for the timing log: tries, and time spent waiting to ask again. */
+interface CallStats {
+  tries: number
+  waitedMs: number
+}
+
+/** The token counts Gemini reports with an answer. */
+interface Usage {
+  thoughtsTokenCount?: number
+  candidatesTokenCount?: number
+}
+
+/**
+ * One line in the server's log per Gemini call (Vercel's logs, or the worker run's): how long it
+ * took and where the time went, e.g. "AI script (gemini-3.8-flash): 18.2 s, 1 try, 310 thinking
+ * + 2,040 written tokens". Writing is most of the wait, so the written tokens say the most.
+ */
+function logCall(
+  task: string,
+  model: string,
+  started: number,
+  stats: CallStats,
+  usage: Usage | undefined,
+  error?: unknown,
+) {
+  if (process.env.VITEST) return
+  const seconds = ((Date.now() - started) / 1000).toFixed(1)
+  const tries = `${stats.tries} ${stats.tries === 1 ? 'try' : 'tries'}`
+  const waited =
+    stats.waitedMs >= 1000 ? `, ${Math.round(stats.waitedMs / 1000)} s of it waiting to ask again` : ''
+  if (error !== undefined) {
+    const why = error instanceof AiError ? error.code : 'failed'
+    console.info(`AI ${task} (${model}): failed after ${seconds} s, ${tries}${waited} (${why})`)
+    return
+  }
+  const count = (n: number | undefined) => (n ?? 0).toLocaleString('en-US')
+  const tokens = usage
+    ? `, ${count(usage.thoughtsTokenCount)} thinking + ${count(usage.candidatesTokenCount)} written tokens`
+    : ''
+  console.info(`AI ${task} (${model}): ${seconds} s, ${tries}${waited}${tokens}`)
+}
+
 /**
  * Runs a Gemini request, asking again after temporary failures. `run` gets the signal to pass
  * to the SDK: it aborts when the caller does, at the deadline, or when the try has run for
- * `attemptMs`, which counts as a temporary failure.
+ * `attemptMs`, which counts as a temporary failure. `stats` gets the tries and the waits.
  */
 async function withRetry<T>(
   run: (signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
   deadline?: number,
   attemptMs: number = ATTEMPT_MS.quick,
+  stats: CallStats = { tries: 0, waitedMs: 0 },
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt++) {
     signal?.throwIfAborted()
+    stats.tries = attempt + 1
     if (deadline && Date.now() >= deadline) throw new AiError(TOO_SLOW, 'timeout')
     const atDeadline = deadline ? AbortSignal.timeout(Math.max(1000, deadline - Date.now())) : undefined
     // A timer rather than AbortSignal.timeout, so tests can fake the clock.
@@ -243,6 +287,7 @@ async function withRetry<T>(
       const wait = Math.max(1500 * 2 ** attempt, asked ?? 0) + Math.random() * 500
       // No time left for another try (it needs a few seconds itself).
       if (deadline && Date.now() + wait + 5000 > deadline) break
+      stats.waitedMs += wait
       await sleep(wait, signal)
     } finally {
       clearTimeout(timer)
@@ -273,13 +318,19 @@ async function generateJson<T>(
   parser: z.ZodType<T>,
   system: string,
   options: {
+    /** What the call is for, in the timing log ("script", "storyboard part 2"). */
+    task: string
     /** 'default' leaves thinking to the model, for tasks where accuracy beats speed. */
     thinking?: 'quick' | 'default'
     /** Tokens the answer may need, when it can be longer than ANSWER_TOKENS. */
     maxTokens?: number
     /** A simple job, for the Flash-Lite model (geminiLiteModel). */
     lite?: boolean
-  } = {},
+    /** Stops the call (and its retries) when it aborts. */
+    signal?: AbortSignal
+    /** When the work this call is part of has to be done by (a request's own budget otherwise). */
+    deadline?: number
+  },
 ): Promise<T> {
   const ai = client()
   const model = options.lite ? geminiLiteModel() : geminiModel()
@@ -294,41 +345,56 @@ async function generateJson<T>(
   const attemptMs = maxOutputTokens
     ? Math.max(ATTEMPT_MS.quick, (maxOutputTokens / TOKENS_PER_SECOND) * 1000)
     : ATTEMPT_MS.thorough
-  return withRetry(
-    async (signal) => {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction: system,
-          responseMimeType: 'application/json',
-          responseJsonSchema: jsonSchema,
-          // No temperature: Gemini 3 models are tuned for their default (1.0), and below it they can
-          // loop, writing until the output limit, which runs past the time budget.
-          thinkingConfig: thorough ? undefined : quickThinking(model),
-          ...(maxOutputTokens ? { maxOutputTokens } : {}),
-          abortSignal: signal,
-        },
-      })
-      // Cut off at the length limit: the JSON is unfinished.
-      if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS') throw new AiError(RAN_TOO_LONG, 'too_long')
-      const text = response.text ?? ''
-      let data: unknown
-      try {
-        data = JSON.parse(text)
-      } catch {
-        throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
-      }
-      const parsed = parser.safeParse(data)
-      if (!parsed.success) {
-        throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
-      }
-      return parsed.data
-    },
-    undefined,
-    requestDeadline(),
-    attemptMs,
-  )
+  const deadline = options.deadline ?? requestDeadline()
+  const started = Date.now()
+  const stats: CallStats = { tries: 0, waitedMs: 0 }
+  let usage: Usage | undefined
+  try {
+    const result = await withRetry(
+      async (signal) => {
+        const response = await ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: system,
+            responseMimeType: 'application/json',
+            responseJsonSchema: jsonSchema,
+            // No temperature: Gemini 3 models are tuned for their default (1.0), and below it they can
+            // loop, writing until the output limit, which runs past the time budget.
+            thinkingConfig: thorough ? undefined : quickThinking(model),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
+            abortSignal: signal,
+          },
+        })
+        usage = response.usageMetadata
+        // Cut off at the length limit: the JSON is unfinished.
+        if (response.candidates?.[0]?.finishReason === 'MAX_TOKENS')
+          throw new AiError(RAN_TOO_LONG, 'too_long')
+        const text = response.text ?? ''
+        let data: unknown
+        try {
+          data = JSON.parse(text)
+        } catch {
+          throw new AiError('Gemini returned something that is not valid JSON. Try again.', 'bad_output')
+        }
+        const parsed = parser.safeParse(data)
+        if (!parsed.success) {
+          throw new AiError('Gemini returned an unexpected shape. Try again.', 'bad_output')
+        }
+        return parsed.data
+      },
+      options.signal,
+      deadline,
+      attemptMs,
+      stats,
+    )
+    logCall(options.task, model, started, stats, usage)
+    return result
+  } catch (error) {
+    // Stopped on purpose (the script it was for started over): nothing went wrong.
+    if (!options.signal?.aborted) logCall(options.task, model, started, stats, usage, error)
+    throw error
+  }
 }
 
 const str = { type: 'string' }
@@ -354,9 +420,16 @@ export interface ScriptBrief {
   rules?: string[]
 }
 
-export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
-  const words = Math.round(brief.minutes * 60 * 2.5)
-  const prompt = [
+/** Spoken words in a script of the brief's length, at a natural pace. */
+const scriptWords = (brief: ScriptBrief) => Math.round(brief.minutes * 60 * 2.5)
+
+const SCRIPT_SYSTEM =
+  'You are a scriptwriter for YouTube channels, faceless or narrated by a recurring character. You write narration that sounds natural when read aloud, in the narrator voice the creator asks for.'
+
+/** What to write: the brief, the channel's rules and lessons, and how a script should sound. */
+function scriptPrompt(brief: ScriptBrief): string[] {
+  const words = scriptWords(brief)
+  return [
     `Write a narration script for a ${brief.format === 'portrait' ? 'YouTube Short (vertical video)' : 'YouTube video'}.`,
     `Topic: ${brief.topic}`,
     brief.audience && `Audience: ${brief.audience}`,
@@ -374,16 +447,152 @@ export async function writeScript(brief: ScriptBrief): Promise<{ title: string; 
     brief.lessons?.length &&
       `Where viewers stopped watching this channel's recent videos. Learn from it: get to the point faster in the opening, and keep moments like the ones where they left shorter, livelier or cut:\n${brief.lessons.map((l) => `- ${l}`).join('\n')}`,
     'Open with a hook in the first sentence. Give the video its own angle: the narrator explains, reacts and takes a view, never just reads facts out, so no two videos on the channel sound like the same template. Keep it advertiser-friendly: no swearing, slurs or graphic detail. Use short, spoken sentences. Plain text only: no headings, no stage directions, no emoji, no scene labels, no markdown. Separate paragraphs with a blank line.',
-  ]
-    .filter(Boolean)
-    .join('\n')
+  ].filter((line): line is string => Boolean(line))
+}
+
+/** Writes the whole script in one answer. The live way, with the storyboard, is draftScript. */
+export async function writeScript(brief: ScriptBrief): Promise<{ title: string; script: string }> {
   return generateJson(
-    prompt,
+    scriptPrompt(brief).join('\n'),
     { type: 'object', properties: { title: str, script: str }, required: ['title', 'script'] },
     z.object({ title: z.string(), script: z.string().min(20) }),
-    'You are a scriptwriter for YouTube channels, faceless or narrated by a recurring character. You write narration that sounds natural when read aloud, in the narrator voice the creator asks for.',
-    { maxTokens: words * TOKENS_PER_WORD + 1000 },
+    SCRIPT_SYSTEM,
+    { task: 'script', maxTokens: scriptWords(brief) * TOKENS_PER_WORD + 1000 },
   )
+}
+
+/**
+ * The title Gemini puts on the first line of a live script, and the script after it, from the text
+ * written so far. Null until the first line ends. A first line too long for a title is the script's.
+ */
+export function titleAndScript(text: string): { title: string; script: string } | null {
+  const newline = text.indexOf('\n')
+  if (newline < 0) return null
+  const title = text
+    .slice(0, newline)
+    .replace(/^\s*#+\s*/, '')
+    .replace(/^\s*title\s*:\s*/i, '')
+    .replace(/^[\s*_"'“”‘’]+|[\s*_"'“”‘’]+$/g, '')
+  if (!title || title.length > 120) return { title: '', script: text.replace(/^\s+/, '') }
+  return { title, script: text.slice(newline + 1).replace(/^\s+/, '') }
+}
+
+/** What draftScript tells its caller as it goes. */
+export interface DraftEvents {
+  /** The title, once its line is written. */
+  onTitle?: (title: string) => void
+  /** More of the script, as it's written (not the title line). */
+  onText?: (add: string) => void
+  /** Gemini starts the script over (a retry): everything sent so far is dropped. */
+  onRestart?: () => void
+  /** One more part of the script is storyboarded: how many are done, of how many started. */
+  onPart?: (done: number, started: number) => void
+}
+
+export interface Draft {
+  title: string
+  script: string
+  /** Null when the storyboard failed: the script is good all the same. */
+  scenes: SceneDraft[] | null
+  storyboardError: string | null
+}
+
+/**
+ * Writes the script live and storyboards it at the same time. Gemini streams the script, and each
+ * part of about STORYBOARD_PART_WORDS words is storyboarded as soon as it's written, while the
+ * rest is still coming. The same requests as writing it and then splitting it, so no more of the
+ * free tier, in about the time of the writing alone.
+ */
+export async function draftScript(
+  brief: ScriptBrief,
+  board: StoryboardInput,
+  events: DraftEvents = {},
+): Promise<Draft> {
+  const ai = client()
+  const model = geminiModel()
+  // One budget for the script and its storyboard together: they run in one request.
+  const deadline = requestDeadline()
+  const maxOutputTokens = Math.min(
+    MAX_OUTPUT_TOKENS,
+    scriptWords(brief) * TOKENS_PER_WORD + 1000 + THINKING_ROOM,
+  )
+  const attemptMs = Math.max(ATTEMPT_MS.quick, (maxOutputTokens / TOKENS_PER_SECOND) * 1000)
+  const contents = [
+    ...scriptPrompt(brief),
+    'Put the video title alone on the first line (no quotes, no "Title:"), then a blank line, then the script.',
+  ].join('\n')
+  /** The storyboard of the script being written now: a retry starts the script, and it, over. */
+  const latest: { storyboard: Storyboard | null } = { storyboard: null }
+  const started = Date.now()
+  const stats: CallStats = { tries: 0, waitedMs: 0 }
+  let usage: Usage | undefined
+  let written: { title: string; script: string; storyboard: Storyboard }
+  try {
+    written = await withRetry(
+      async (signal) => {
+        if (latest.storyboard) {
+          latest.storyboard.cancel()
+          events.onRestart?.()
+        }
+        const current = storyboardAsWritten(board, deadline, events.onPart)
+        latest.storyboard = current
+        const stream = await ai.models.generateContentStream({
+          model,
+          contents,
+          config: {
+            systemInstruction: SCRIPT_SYSTEM,
+            thinkingConfig: quickThinking(model),
+            maxOutputTokens,
+            abortSignal: signal,
+          },
+        })
+        let text = ''
+        let finish: string | undefined
+        let titled = false
+        let sent = 0
+        /** Paragraphs handed to the storyboard so far. */
+        let fed = 0
+        for await (const chunk of stream) {
+          text += chunk.text ?? ''
+          finish = chunk.candidates?.[0]?.finishReason ?? finish
+          if (chunk.usageMetadata) usage = chunk.usageMetadata
+          const sofar = titleAndScript(text)
+          if (!sofar) continue
+          if (!titled) {
+            titled = true
+            if (sofar.title) events.onTitle?.(sofar.title)
+          }
+          if (sofar.script.length > sent) {
+            events.onText?.(sofar.script.slice(sent))
+            sent = sofar.script.length
+          }
+          // Every paragraph but the last is finished; the last may still be growing.
+          const paragraphs = sofar.script.split(/\n\s*\n/)
+          for (; fed < paragraphs.length - 1; fed++) current.add(paragraphs[fed])
+        }
+        // Cut off at the length limit: unfinished, and most likely looping.
+        if (finish === 'MAX_TOKENS') throw new AiError(RAN_TOO_LONG, 'too_long')
+        const whole = titleAndScript(text) ?? { title: '', script: text }
+        const script = whole.script.trim()
+        if (script.length < 20) throw new AiError('Gemini returned an empty script. Try again.', 'bad_output')
+        if (whole.script.length > sent) events.onText?.(whole.script.slice(sent))
+        const paragraphs = whole.script.split(/\n\s*\n/)
+        for (; fed < paragraphs.length; fed++) current.add(paragraphs[fed])
+        return { title: whole.title, script, storyboard: current }
+      },
+      undefined,
+      deadline,
+      attemptMs,
+      stats,
+    )
+    logCall('script (live)', model, started, stats, usage)
+  } catch (error) {
+    latest.storyboard?.cancel()
+    logCall('script (live)', model, started, stats, usage, error)
+    throw error
+  }
+  const { scenes, error } = await written.storyboard.finish()
+  return { title: written.title, script: written.script, scenes, storyboardError: error }
 }
 
 // ---------------------------------------------------------------------------
@@ -419,64 +628,148 @@ const sceneSchema = z.object({
 
 /** Words per Gemini call when storyboarding: longer scripts go in parallel parts. */
 const STORYBOARD_PART_WORDS = 260
+/** Parts storyboarded at once: quick answers, within the free tier's requests per minute. */
+const STORYBOARD_AT_ONCE = 3
+
+/**
+ * Cuts a script into storyboard parts of about `size` words as its paragraphs come in: between
+ * paragraphs, or between sentences in a paragraph longer than a part. `onPart` gets each part once
+ * the next piece doesn't fit in it, so the script can still be coming; `end` hands over the last.
+ */
+export function partCutter(size: number, onPart: (part: string) => void) {
+  let current: string[] = []
+  let words = 0
+  const flush = () => {
+    if (current.length) onPart(current.join('\n\n'))
+    current = []
+    words = 0
+  }
+  return {
+    add(paragraph: string) {
+      const text = paragraph.trim()
+      if (!text) return
+      for (const piece of countWords(text) <= size ? [text] : sentencesOf(text)) {
+        const n = countWords(piece)
+        if (current.length && words + n > size) flush()
+        current.push(piece)
+        words += n
+      }
+    },
+    end: flush,
+  }
+}
 
 /** The script in parts of about `size` words, cut between paragraphs, or sentences if need be. */
 export function scriptParts(script: string, size = STORYBOARD_PART_WORDS): string[] {
-  const pieces = script
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .flatMap((paragraph) => (countWords(paragraph) <= size ? [paragraph] : sentencesOf(paragraph)))
   const parts: string[] = []
-  let current: string[] = []
-  let words = 0
-  for (const piece of pieces) {
-    const n = countWords(piece)
-    if (current.length && words + n > size) {
-      parts.push(current.join('\n\n'))
-      current = []
-      words = 0
-    }
-    current.push(piece)
-    words += n
-  }
-  if (current.length) parts.push(current.join('\n\n'))
+  const cutter = partCutter(size, (part) => parts.push(part))
+  for (const paragraph of script.split(/\n\s*\n/)) cutter.add(paragraph)
+  cutter.end()
   return parts
 }
 
-export async function splitScript(input: {
-  script: string
+/** What storyboarding needs besides the script: the pace, the look and the cast. */
+export interface StoryboardInput {
   pace: number
   artStyle: string
   format: VideoFormat
   characters: { name: string; description: string }[]
-}): Promise<SceneDraft[]> {
+}
+
+/** Where a part sits in its script: its number, how many there are (once known), the last one. */
+interface PartPlace {
+  number: number
+  total: number | null
+  last: boolean
+}
+
+export async function splitScript(input: StoryboardInput & { script: string }): Promise<SceneDraft[]> {
   const parts = scriptParts(input.script)
   const results: SceneDraft[][] = new Array(parts.length)
-  // A few at a time: quick answers, within the free tier's requests per minute.
   let next = 0
   await Promise.all(
-    Array.from({ length: Math.min(3, parts.length) }, async () => {
+    Array.from({ length: Math.min(STORYBOARD_AT_ONCE, parts.length) }, async () => {
       while (next < parts.length) {
         const i = next++
-        results[i] = await storyboardPart(input, parts[i], i, parts.length)
+        results[i] = await storyboardPart(input, parts[i], {
+          number: i + 1,
+          total: parts.length,
+          last: i === parts.length - 1,
+        })
       }
     }),
   )
   return results.flat()
 }
 
+type Storyboard = ReturnType<typeof storyboardAsWritten>
+
+/**
+ * Storyboards a script while it's being written: `add` its paragraphs as they're finished, and each
+ * part goes to Gemini as soon as it's complete, STORYBOARD_AT_ONCE at a time. `finish` hands over
+ * the last part and waits for all the scenes (or the first problem); `cancel` drops it all, for a
+ * script that starts over.
+ */
+function storyboardAsWritten(
+  board: StoryboardInput,
+  deadline: number | undefined,
+  onPart?: (done: number, started: number) => void,
+) {
+  const stop = new AbortController()
+  const results: Promise<SceneDraft[]>[] = []
+  const waiting: (() => void)[] = []
+  let running = 0
+  let done = 0
+  let last = false
+  const launch = (part: string) => {
+    const place = { number: results.length + 1, total: last ? results.length + 1 : null, last }
+    const result = new Promise<SceneDraft[]>((resolve, reject) => {
+      const go = () => {
+        running++
+        storyboardPart(board, part, place, { signal: stop.signal, deadline })
+          .then(resolve, reject)
+          .finally(() => {
+            running--
+            done++
+            if (!stop.signal.aborted) onPart?.(done, results.length)
+            waiting.shift()?.()
+          })
+      }
+      if (running < STORYBOARD_AT_ONCE) go()
+      else waiting.push(go)
+    })
+    // Read in finish; until then a failure mustn't count as unhandled.
+    result.catch(() => {})
+    results.push(result)
+  }
+  const cutter = partCutter(STORYBOARD_PART_WORDS, launch)
+  return {
+    add: (paragraph: string) => cutter.add(paragraph),
+    cancel: () => stop.abort(new Error('The script started over.')),
+    async finish(): Promise<{ scenes: SceneDraft[] | null; error: string | null }> {
+      last = true
+      cutter.end()
+      try {
+        return { scenes: (await Promise.all(results)).flat(), error: null }
+      } catch (error) {
+        stop.abort(error)
+        return { scenes: null, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  }
+}
+
 async function storyboardPart(
-  input: Parameters<typeof splitScript>[0],
+  input: StoryboardInput,
   script: string,
-  part: number,
-  parts: number,
+  place: PartPlace,
+  call: { signal?: AbortSignal; deadline?: number } = {},
 ): Promise<SceneDraft[]> {
   const cast = input.characters.length
     ? input.characters.map((c) => `- ${c.name}: ${c.description}`).join('\n')
     : '(no recurring characters)'
   const pace = input.pace
-  const prompt = `Split this narration script into scenes for an image-based video. Each scene shows ONE still picture while its narration plays.${parts > 1 ? ` This is part ${part + 1} of ${parts} of one script: split only this part.` : ''}
+  const prompt = `Split this narration script into scenes for an image-based video. Each scene shows ONE still picture while its narration plays.${place.total === 1 ? '' : ` This is part ${place.number}${place.total ? ` of ${place.total}` : ''} of one script: split only this part.`}
 
 Rules:
 - Pacing: a new picture about every ${pace} seconds on average (≈${Math.round(pace * 2.5)} words). Let the script decide the rhythm: cut quicker, even 1–2 seconds and a few words, on punchlines, reactions, lists, quick actions and surprises (several quick pictures in a row are great for a joke or a list); stay up to about ${Math.round(pace * 1.7)} seconds on calm or descriptive moments.
@@ -491,7 +784,7 @@ Rules:
 - shot: camera framing, e.g. "wide establishing shot", "medium shot", "close-up", "over-the-shoulder", "top-down".
 - motion: one of ${MOTIONS.join(', ')}: keep the same move through a run of scenes within a section, and change it when the script moves on to a new section or idea. Every picture moves at the same steady speed, so a run of the same move cuts together smoothly.
 - onScreenText: a short optional title shown at the top of the frame (max 5 words), or "". Use it sparingly: key numbers, names, chapter-like moments.
-- transition: how this scene's picture replaces the previous one: "cut" (the default, nearly every scene, and always for quick cuts), "whip" (a fast sideways slide with a whoosh) when the script moves on to a new section or idea, "crossfade" for a soft change of place or time, "fade-black" only for a big jump${parts > 1 && part < parts - 1 ? '' : ' or the closing scene'}.
+- transition: how this scene's picture replaces the previous one: "cut" (the default, nearly every scene, and always for quick cuts), "whip" (a fast sideways slide with a whoosh) when the script moves on to a new section or idea, "crossfade" for a soft change of place or time, "fade-black" only for a big jump${place.last ? ' or the closing scene' : ''}.
 ${EFFECT_RULES}
 - notes: optional sound-effect or music cue, or "".
 
@@ -535,7 +828,12 @@ ${script.trim()}
     z.object({ scenes: z.array(sceneSchema).min(1) }),
     'You are a storyboard artist and video editor for faceless YouTube channels.',
     // Each scene repeats its words and describes its picture: quick cuts take ~70 tokens a word.
-    { maxTokens: countWords(script) * 80 + 2000 },
+    {
+      task: `storyboard part ${place.number}`,
+      maxTokens: countWords(script) * 80 + 2000,
+      signal: call.signal,
+      deadline: call.deadline,
+    },
   )
   const scenes = result.scenes.map((s) => ({
     ...s,
@@ -666,7 +964,7 @@ ${list}`
       ),
     }),
     'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
-    { maxTokens: scenes.length * 60 + 1000, lite: true },
+    { task: 'effects', maxTokens: scenes.length * 60 + 1000, lite: true },
   )
   return result.scenes
 }
@@ -787,7 +1085,7 @@ ${input.script.trim()}
     }),
     'You are a sharp, funny script editor and a careful fact checker for educational YouTube channels.',
     // Facts need thought.
-    { thinking: 'default' },
+    { task: 'script doctor', thinking: 'default' },
   )
   const kinds = ['funnier', 'tighter', 'clearer', 'cut'] as const
   const verdicts = ['ok', 'check', 'wrong'] as const
@@ -892,6 +1190,7 @@ Return:
       openings: z.array(z.object({ text: z.string(), why: z.string().default('') })),
     }),
     'You are a YouTube retention expert who writes openings that make people stay.',
+    { task: 'hook check' },
   )
   // The part to replace must really be the start of the script; otherwise the first sentence.
   const found = findPassage(input.script, result.replaces)
@@ -955,6 +1254,7 @@ Return notes: up to 5, the most important first, each with level "good", "look" 
     },
     z.object({ notes: z.array(z.object({ level: z.string(), text: z.string() })) }),
     'You are a YouTube packaging strategist: titles, thumbnails and openings that get honest clicks.',
+    { task: 'packaging review' },
   )
   const levels = ['good', 'look', 'fix'] as const
   return result.notes
@@ -1005,7 +1305,7 @@ Timestamps must be accurate to the spoken words, increasing, and never overlap.`
     z.object({ segments: z.array(z.object({ start: z.number(), end: z.number(), text: z.string() })) }),
     'You are a precise transcription engine that returns timestamps in seconds.',
     // Timestamps need care, and this runs on the worker, where there is time for it.
-    { thinking: 'default' },
+    { task: 'transcription', thinking: 'default' },
   )
   try {
     await ai.files.delete({ name: file.name! })
@@ -1148,6 +1448,7 @@ Return:
       comment: z.string().default(''),
     }),
     'You are a YouTube growth strategist who writes clear, honest, search-friendly metadata.',
+    { task: 'post details' },
   )
   const chapters = normalizeChapters(
     draft.chapterPicks
@@ -1229,6 +1530,7 @@ ${input.description}
           'You translate YouTube titles and descriptions for creators, so they read as if written in each language.',
           // At most a token a character (languages written in other scripts), and some to spare.
           {
+            task: `translation (${codes.join(', ')})`,
             maxTokens:
               Math.ceil(codes.length * (input.title.length + input.description.length) * 1.25) + 2000,
           },
@@ -1459,6 +1761,7 @@ export async function generateIdeas(input: IdeaRequest): Promise<{ title: string
     },
     z.object({ ideas: z.array(z.object({ title: z.string(), angle: z.string() })).min(1) }),
     'You are a YouTube strategist who finds video ideas that people search for and click on.',
+    { task: 'ideas' },
   )
   return result.ideas
     .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
@@ -1488,7 +1791,7 @@ export async function breakoutQueries(input: {
     { type: 'object', properties: { queries: { type: 'array', items: str } }, required: ['queries'] },
     z.object({ queries: z.array(z.string()).min(1) }),
     'You are a YouTube strategist who knows what people search for.',
-    { lite: true },
+    { task: 'breakout searches', lite: true },
   )
   return [
     ...new Set(result.queries.map((q) => q.replace(/["“”]/g, '').trim().slice(0, 100)).filter(Boolean)),
@@ -1522,6 +1825,7 @@ export async function ideaFromBreakout(input: {
     { type: 'object', properties: { title: str, angle: str }, required: ['title', 'angle'] },
     z.object({ title: z.string().min(1), angle: z.string() }),
     'You are a YouTube strategist who finds video ideas that people search for and click on.',
+    { task: 'breakout idea' },
   )
   return { title: result.title.trim().slice(0, 200), angle: result.angle.trim().slice(0, 1000) }
 }
@@ -1716,6 +2020,7 @@ export async function suggestChannelSetup(input: {
       }),
     }),
     'You are a YouTube growth strategist who sets up channels so the right viewers find them, keep watching and the channel gets monetized. You know the Partner Program and its policies well, and you are honest about what earns.',
+    { task: 'channel setup' },
   )
   const clean = (values: string[], max: number) =>
     dedupe(values.map((v) => v.replace(/^#/, '').replace(/"/g, '').trim()).filter(Boolean)).slice(0, max)
@@ -1838,6 +2143,7 @@ Pick ONE run of consecutive scenes that works on its own as a Short: it opens wi
     },
     z.object({ startIndex: z.number(), endIndex: z.number(), title: z.string(), reason: z.string() }),
     'You are a video editor who turns long videos into Shorts that hold attention.',
+    { task: 'Short moment' },
   )
   return {
     ...clampShortPick(input.scenes, result.startIndex, result.endIndex, input.maxSeconds),
@@ -1888,6 +2194,7 @@ Pick up to ${input.count} runs of consecutive scenes that do not overlap. Each m
       shorts: z.array(z.object({ startIndex: z.number(), endIndex: z.number(), title: z.string() })),
     }),
     'You are a video editor who turns long videos into Shorts that hold attention.',
+    { task: 'Short moments' },
   )
   const picks: { startIndex: number; endIndex: number; title: string }[] = []
   for (const raw of result.shorts) {
@@ -1983,6 +2290,7 @@ Describe the reference's format so the creator can make videos like it with ${na
       ideas: z.array(z.object({ title: z.string(), angle: z.string() })).catch([]),
     }),
     'You are a YouTube strategist who studies successful channels and adapts their format for new creators.',
+    { task: 'channel style' },
   )
   const clip = (text: string, max: number) => text.trim().slice(0, max)
   return {
@@ -2052,6 +2360,7 @@ List up to 8 poses or expressions the character is missing, most needed first: o
     },
     z.object({ poses: z.array(z.object({ name: z.string(), why: z.string(), prompt: z.string() })) }),
     'You are the art director of a 2D cartoon YouTube channel.',
+    { task: 'poses' },
   )
   const had = new Set(input.have.map((h) => h.trim().toLowerCase()))
   return result.poses
@@ -2115,7 +2424,7 @@ Leave a list empty when the comments don't support it. Comments with more likes 
       questions: list5,
     }),
     'You read YouTube comments for a creator and tell them, plainly and kindly, what their audience wants.',
-    { lite: true },
+    { task: 'comment summary', lite: true },
   )
 }
 
@@ -2180,7 +2489,7 @@ For each scene, in order, pick the background that fits where it happens, and th
       ),
     }),
     'You are a storyboard artist for a 2D cartoon channel.',
-    { maxTokens: input.scenes.length * 60 + 1000, lite: true },
+    { task: 'scene layers', maxTokens: input.scenes.length * 60 + 1000, lite: true },
   )
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
   return input.scenes.map((_, i) => {

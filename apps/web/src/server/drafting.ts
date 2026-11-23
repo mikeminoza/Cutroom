@@ -3,9 +3,13 @@
 // the Library), so all that is left is recording the voice-over and checking.
 import { spaceEffects } from '@cutroom/shared/accents'
 import {
+  type DraftEvents,
+  draftScript,
   generateIdeas,
   hasGeminiKey,
   pickSceneLayers,
+  type SceneDraft,
+  type ScriptBrief,
   splitScript,
   suggestEffects,
   writeScript,
@@ -30,12 +34,13 @@ import {
 import { getSeries } from './series'
 import { appUrl, getSettings } from './settings'
 
-/** Gemini writes the project's script from its brief; an empty title takes the script's. */
-export async function writeProjectScript(id: string, notes = ''): Promise<void> {
-  const project = await getProjectRow(id)
+type ProjectRow = Awaited<ReturnType<typeof getProjectRow>>
+
+/** What Gemini writes the project's script from: its brief, the channel's rules and lessons. */
+async function scriptBrief(project: ProjectRow, notes: string): Promise<ScriptBrief> {
   if (!project.topic.trim()) badRequest('Add a topic on the Brief step first.')
   const settings = await getSettings()
-  const result = await writeScript({
+  return {
     topic: project.topic,
     audience: project.audience,
     tone: project.tone,
@@ -43,14 +48,54 @@ export async function writeProjectScript(id: string, notes = ''): Promise<void> 
     minutes: project.targetMinutes,
     format: project.format,
     notes: notes || project.notes,
-    characters: (await getCharacters(id))
+    characters: (await getCharacters(project.id))
       .filter((c) => c.name.trim())
       .map((c) => ({ name: c.name.trim(), description: c.description })),
     market: settings.niche.market,
     lessons: await retentionLessons(project.channelId, project.channelYoutubeId, project.format),
     rules: settings.niche.rules ?? [],
-  })
+  }
+}
+
+/** Gemini writes the project's script from its brief; an empty title takes the script's. */
+export async function writeProjectScript(id: string, notes = ''): Promise<void> {
+  const project = await getProjectRow(id)
+  const result = await writeScript(await scriptBrief(project, notes))
   await updateProject(id, { script: result.script, title: project.title.trim() || result.title })
+}
+
+/** Checks a project can be drafted before anything is written: it has a topic. */
+export async function assertDraftable(id: string): Promise<void> {
+  await scriptBrief(await getProjectRow(id), '')
+}
+
+/**
+ * Gemini writes the script live and storyboards it as it goes (draftScript): `events` hear the
+ * script as it's written and each part of the storyboard as it's done. The script is saved, an
+ * empty title takes the script's, and the scenes replace the old ones. When only the storyboard
+ * fails, the script is still saved, the old scenes stay, and the reason comes back.
+ */
+export async function draftProject(
+  id: string,
+  notes: string,
+  events: DraftEvents = {},
+): Promise<{ storyboardError: string | null }> {
+  const project = await getProjectRow(id)
+  const brief = await scriptBrief(project, notes)
+  const characters = await getCharacters(id)
+  const draft = await draftScript(
+    brief,
+    {
+      pace: project.pace,
+      artStyle: project.artStyle,
+      format: project.format,
+      characters: characters.map((c) => ({ name: c.name, description: c.description })),
+    },
+    events,
+  )
+  await updateProject(id, { script: draft.script, title: project.title.trim() || draft.title })
+  if (draft.scenes) await placeScenes(id, draft.scenes)
+  return { storyboardError: draft.storyboardError }
 }
 
 /** Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one. */
@@ -65,6 +110,12 @@ export async function storyboardProject(id: string): Promise<void> {
     format: project.format,
     characters: characters.map((c) => ({ name: c.name, description: c.description })),
   })
+  await placeScenes(id, drafts)
+}
+
+/** A storyboard's scenes, timed by estimate (or to the voice-over if there is one), as the scenes. */
+async function placeScenes(id: string, drafts: SceneDraft[]): Promise<void> {
+  const project = await getProjectRow(id)
   let placed = layoutByEstimate(drafts)
   // A timed voice-over already exists: line the new scenes up with it straight away.
   if (project.transcript?.words.length) {

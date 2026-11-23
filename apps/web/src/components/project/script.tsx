@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 import { Button, Dialog, Field, Menu, Panel, Select, Textarea, useConfirm } from '@/components/ui'
 import { api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { writeDraft } from '@/lib/draft'
 import type { CharacterDTO, ProjectFull, SceneDTO } from '@/lib/dto'
 import { formatLength } from '@/lib/format'
 import { keys, useProjectAction, useSaver, useStatus } from '@/lib/hooks'
@@ -62,7 +63,19 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const { confirm, element } = useConfirm()
   const [writing, setWriting] = useState(false)
   const [busy, setBusy] = useState<'split' | 'write' | null>(null)
-  const words = countWords(project.script)
+  const client = useQueryClient()
+  /** The script as Gemini writes it, in place of the editor until it's saved, and the storyboard so far. */
+  const [live, setLive] = useState<{
+    script: string
+    parts: { done: number; started: number } | null
+  } | null>(null)
+  const liveBox = useRef<HTMLTextAreaElement>(null)
+  // The newest words in view as they arrive, unless you scrolled up to read.
+  useEffect(() => {
+    const box = liveBox.current
+    if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight
+  })
+  const words = countWords(live ? live.script : project.script)
   const aiReady = status?.gemini.configured !== false
   const [method, setMethod] = useSplitMethod()
   // Without a Gemini key, AI splitting isn't on offer: fall back to your own paragraphs.
@@ -102,6 +115,39 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
     if (full) toast.success(`Split into ${full.scenes.length} scenes`)
   }
 
+  /**
+   * Gemini writes the script here as you watch, and storyboards each part as soon as it's written,
+   * always with AI: only the AI split writes each scene's picture description and image prompt.
+   */
+  const writeLive = async (notes: string) => {
+    setBusy('write')
+    setWriting(false)
+    setLive({ script: '', parts: null })
+    try {
+      await saver.flushAll()
+      const { project: full, storyboardError } = await writeDraft(project.id, notes, (event) => {
+        if (event.type === 'text') setLive((now) => now && { ...now, script: now.script + event.add })
+        else if (event.type === 'restart') setLive({ script: '', parts: null })
+        else if (event.type === 'part')
+          setLive((now) => now && { ...now, parts: { done: event.done, started: event.started } })
+      })
+      client.setQueryData(keys.project(project.id), full)
+      void client.invalidateQueries({ queryKey: keys.projects })
+      if (storyboardError) {
+        toast.error(`Script written, but splitting it into scenes failed: ${storyboardError}`, {
+          description: 'Press “Split into scenes” to try again.',
+        })
+      } else {
+        toast.success(`Script written and split into ${full.scenes.length} scenes`)
+      }
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally {
+      setLive(null)
+      setBusy(null)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
@@ -114,6 +160,8 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
               variant="plain"
               size="sm"
               icon={<Sparkles className="size-3.5" />}
+              busy={busy === 'write'}
+              disabled={busy !== null}
               onClick={() => setWriting(true)}
             >
               Write with AI
@@ -121,13 +169,24 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           }
         >
           <div className="px-5 py-4">
-            <SyncedTextarea
-              aria-label="Script"
-              value={project.script}
-              onValue={(script) => saver.project({ script })}
-              placeholder="Paste your script here."
-              className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
-            />
+            {live ? (
+              <Textarea
+                ref={liveBox}
+                readOnly
+                aria-label="Script, as Gemini writes it"
+                value={live.script}
+                placeholder="Gemini is starting to write…"
+                className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
+              />
+            ) : (
+              <SyncedTextarea
+                aria-label="Script"
+                value={project.script}
+                onValue={(script) => saver.project({ script })}
+                placeholder="Paste your script here."
+                className="min-h-[46vh] text-[15px] leading-[1.7] xl:min-h-[52vh]"
+              />
+            )}
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-3">
               <span className="tc text-[13px] text-ink-2">
                 {words.toLocaleString()} words · about {formatLength(words / WORDS_PER_SECOND)} spoken
@@ -146,7 +205,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
                 <Button
                   variant={scenes.length ? 'plain' : 'go'}
                   busy={busy === 'split'}
-                  disabled={!project.script.trim()}
+                  disabled={!project.script.trim() || busy === 'write'}
                   onClick={split}
                   icon={<Scissors className="size-4" />}
                 >
@@ -164,6 +223,13 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             {busy === 'split' && (
               <p className="mt-3 text-[13px] text-ink-2">
                 Gemini is storyboarding your script. Long scripts take up to a minute.
+              </p>
+            )}
+            {live && (
+              <p className="mt-3 text-[13px] text-ink-2" aria-live="polite">
+                {live.parts
+                  ? `Gemini is writing, and storyboarding as it goes: ${live.parts.done} of ${live.parts.started} ${live.parts.started === 1 ? 'part' : 'parts'} done.`
+                  : 'Gemini is writing your script. Its storyboard starts as soon as the first part is written.'}
               </p>
             )}
           </div>
@@ -192,15 +258,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
           ) {
             return
           }
-          setBusy('write')
-          const full = await action(`/api/projects/${project.id}/ai/script`, { notes }, 'Script written')
-          setBusy(null)
-          if (!full) return
-          setWriting(false)
-          // Straight into scenes, always with AI (Gemini just wrote the script, so it's set up): only
-          // the AI split writes each scene's picture description and image prompt for the
-          // storyboard below, whatever the menu is set to for splitting your own scripts.
-          await splitNow(full.project.script, 'ai')
+          await writeLive(notes)
         }}
       />
       {element}

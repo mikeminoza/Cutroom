@@ -20,8 +20,12 @@ export function badRequest(message: string): never {
   throw new HttpError(400, message)
 }
 
-export function toErrorResponse(error: unknown): NextResponse {
-  if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status })
+/**
+ * What a thrown error tells the browser: the HTTP status, and the message to show (with the AI's
+ * error code when it's one). Unexpected errors and AI failures are logged too.
+ */
+export function describeError(error: unknown): { status: number; body: { error: string; code?: string } } {
+  if (error instanceof HttpError) return { status: error.status, body: { error: error.message } }
   if (error instanceof AiError) {
     // Logged too, so failed AI calls show up in the server logs and not only in the browser.
     console.error(`AI request failed (${error.code}): ${error.message}`)
@@ -37,18 +41,19 @@ export function toErrorResponse(error: unknown): NextResponse {
               : error.code === 'timeout'
                 ? 504
                 : 502
-    return NextResponse.json({ error: error.message, code: error.code }, { status })
+    return { status, body: { error: error.message, code: error.code } }
   }
   if (error instanceof z.ZodError) {
     const issue = error.issues[0]
-    return NextResponse.json(
-      { error: `${issue.path.join('.') || 'Request'}: ${issue.message}` },
-      { status: 400 },
-    )
+    return { status: 400, body: { error: `${issue.path.join('.') || 'Request'}: ${issue.message}` } }
   }
   console.error(error)
-  const message = error instanceof Error ? error.message : 'Something went wrong.'
-  return NextResponse.json({ error: message }, { status: 500 })
+  return { status: 500, body: { error: error instanceof Error ? error.message : 'Something went wrong.' } }
+}
+
+export function toErrorResponse(error: unknown): NextResponse {
+  const { status, body } = describeError(error)
+  return NextResponse.json(body, { status })
 }
 
 type Handler<C> = (request: Request, context: C) => Promise<Response | unknown>

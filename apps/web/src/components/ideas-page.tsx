@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ApiError, api, errorText } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { writeDraft } from '@/lib/draft'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
 import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
@@ -25,6 +26,9 @@ import {
 } from './ui'
 
 type Tab = 'new' | 'used' | 'dismissed' | 'breakouts'
+
+/** A draft whose script is written but whose scenes aren't. */
+class PartlyWritten extends Error {}
 
 export function IdeasPage() {
   const { data: ideas, isLoading, error } = useIdeas()
@@ -128,9 +132,19 @@ export function IdeasPage() {
         client.invalidateQueries({ queryKey: keys.projects }),
       ])
       const steps = [
-        { path: 'ai/script', body: { notes: '' }, label: 'script' },
-        { path: 'ai/scenes', body: {}, label: 'scenes and image prompts' },
-        { path: 'ai/post', body: {}, label: 'title, description and tags' },
+        {
+          // Written live and storyboarded as it goes: both in about the time of the writing.
+          label: 'script, scenes and image prompts',
+          run: async (projectId: string) => {
+            const { storyboardError } = await writeDraft(projectId, '')
+            if (storyboardError)
+              throw new PartlyWritten(`The script is written, but not its scenes: ${storyboardError}`)
+          },
+        },
+        {
+          label: 'title, description and tags',
+          run: (projectId: string) => api.post(`/api/projects/${projectId}/ai/post`, {}),
+        },
       ] as const
       let complete = 0
       let partial = 0
@@ -143,9 +157,9 @@ export function IdeasPage() {
               label: `Writing draft ${i + 1} of ${created.length}: ${step.label}…`,
             })
             try {
-              await api.post(`/api/projects/${projectId}/${step.path}`, step.body)
+              await step.run(projectId)
             } catch (err) {
-              if (j > 0) partial++
+              if (j > 0 || err instanceof PartlyWritten) partial++
               toast.error(errorText(err), {
                 description: 'Finish this draft from its project page: each step has its own button there.',
               })

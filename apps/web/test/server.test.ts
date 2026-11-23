@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { localPath, putFile } from '@cutroom/shared/storage'
 import { eq } from 'drizzle-orm'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Gemini's picks for layered scenes are stubbed; everything else is the real module.
 const pickSceneLayers = vi.hoisted(() => vi.fn())
@@ -19,6 +19,7 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     suggestPoses,
     // Real unless a test says otherwise.
     writeScript: vi.fn(actual.writeScript),
+    draftScript: vi.fn(actual.draftScript),
     splitScript: vi.fn(actual.splitScript),
     suggestEffects: vi.fn(actual.suggestEffects),
     generateIdeas: vi.fn(actual.generateIdeas),
@@ -105,6 +106,7 @@ const channelRoute = await import('../src/app/api/channel/route')
 const watermarkRoute = await import('../src/app/api/channel/watermark/route')
 const suggestPosesRoute = await import('../src/app/api/library/characters/[id]/suggest-poses/route')
 const effectsRoute = await import('../src/app/api/projects/[id]/ai/effects/route')
+const draftRoute = await import('../src/app/api/projects/[id]/ai/draft/route')
 const breakoutsModule = await import('../src/server/breakouts')
 const breakoutsRoute = await import('../src/app/api/breakouts/route')
 const translateRoute = await import('../src/app/api/projects/[id]/ai/translate/route')
@@ -1832,6 +1834,125 @@ describe('the edit', () => {
       ['cut', 'none'],
       ['cut', 'zoom'],
     ])
+  })
+})
+
+describe('writing a script live', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  beforeEach(() => {
+    vi.stubEnv('GEMINI_API_KEY', 'test-key')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+  const scene = (narration: string) => ({
+    narration,
+    visual: '',
+    imagePrompt: '',
+    characters: [],
+    shot: '',
+    motion: 'zoom-in' as const,
+    onScreenText: '',
+    transition: 'cut' as const,
+    accent: 'none' as const,
+    accentWord: '',
+    notes: '',
+  })
+  /** The route's answer, one event per line. */
+  const eventsOf = async (response: Response) =>
+    (await response.text())
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  const write = (id: string) =>
+    draftRoute.POST(
+      new Request('http://localhost/api', {
+        method: 'POST',
+        body: JSON.stringify({ notes: 'Mention ink.' }),
+      }),
+      ctx(id),
+    )
+
+  it('streams the script as it is written, then saves it with its scenes', async () => {
+    const id = await newProject()
+    await projects.updateProject(id, { title: '' })
+    vi.mocked(ai.draftScript).mockImplementationOnce(async (brief, _board, events) => {
+      expect(brief.notes).toBe('Mention ink.')
+      events?.onTitle?.('Octopus hearts')
+      events?.onText?.('Octopuses have three hearts.')
+      events?.onText?.(' Two pump blood to the gills.')
+      events?.onPart?.(1, 1)
+      return {
+        title: 'Octopus hearts',
+        script: 'Octopuses have three hearts. Two pump blood to the gills.',
+        scenes: [scene('Octopuses have three hearts.'), scene('Two pump blood to the gills.')],
+        storyboardError: null,
+      }
+    })
+    const response = await write(id)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('application/x-ndjson')
+    const events = await eventsOf(response)
+    expect(events.map((event) => event.type)).toEqual(['title', 'text', 'text', 'part', 'done'])
+    expect(events[1]).toEqual({ type: 'text', add: 'Octopuses have three hearts.' })
+    const done = events.at(-1)
+    expect(done.storyboardError).toBeNull()
+    expect(done.project.project).toMatchObject({
+      title: 'Octopus hearts',
+      script: 'Octopuses have three hearts. Two pump blood to the gills.',
+    })
+    expect(done.project.scenes.map((s: { narration: string }) => s.narration)).toEqual([
+      'Octopuses have three hearts.',
+      'Two pump blood to the gills.',
+    ])
+  })
+
+  it('keeps the script when its storyboard fails', async () => {
+    const id = await newProject()
+    await projects.replaceScenes(id, [{ start: 0, end: 3, narration: 'An old scene.' }])
+    vi.mocked(ai.draftScript).mockResolvedValueOnce({
+      title: 'Octopus hearts',
+      script: 'A brand new script about octopuses.',
+      scenes: null,
+      storyboardError: 'Gemini is busy right now. Try again in a minute.',
+    })
+    const done = (await eventsOf(await write(id))).at(-1)
+    expect(done.storyboardError).toBe('Gemini is busy right now. Try again in a minute.')
+    expect(done.project.project.script).toBe('A brand new script about octopuses.')
+    // The old scenes stay until a split succeeds.
+    expect(done.project.scenes.map((s: { narration: string }) => s.narration)).toEqual(['An old scene.'])
+  })
+
+  it('says so when the script can’t be written', async () => {
+    const id = await newProject()
+    vi.mocked(ai.draftScript).mockRejectedValueOnce(
+      new ai.AiError(
+        "Gemini's free daily limit is used up. It resets at midnight Pacific time.",
+        'daily_limit',
+      ),
+    )
+    const events = await eventsOf(await write(id))
+    expect(events).toEqual([
+      {
+        type: 'error',
+        error: "Gemini's free daily limit is used up. It resets at midnight Pacific time.",
+        code: 'daily_limit',
+      },
+    ])
+  })
+
+  it('answers plainly, before writing anything, without a topic or a Gemini key', async () => {
+    const drafts = vi.mocked(ai.draftScript).mock.calls.length
+    const id = await newProject()
+    await projects.updateProject(id, { topic: '' })
+    const noTopic = await write(id)
+    expect(noTopic.status).toBe(400)
+    expect((await noTopic.json()).error).toMatch(/topic/)
+    vi.stubEnv('GEMINI_API_KEY', '')
+    const noKey = await write(await newProject())
+    expect(noKey.status).toBe(400)
+    expect((await noKey.json()).error).toMatch(/GEMINI_API_KEY/)
+    expect(vi.mocked(ai.draftScript).mock.calls).toHaveLength(drafts)
   })
 })
 
