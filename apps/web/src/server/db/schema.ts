@@ -91,6 +91,11 @@ export const projects = pgTable('projects', {
   autopilot: boolean('autopilot').notNull().default(false),
   /** The long video a Short was cut from. */
   sourceProjectId: text('source_project_id'),
+  /**
+   * When the daily check first found it doing far better than usual (server/hits.ts) and told
+   * you; null = not yet. So you hear about each hit once.
+   */
+  hitAt: timestamp('hit_at', { withTimezone: true }),
   createdAt: created(),
   updatedAt: updated(),
 })
@@ -268,6 +273,8 @@ export const ideas = pgTable('ideas', {
   seriesId: text('series_id').references(() => series.id, { onDelete: 'set null' }),
   status: text('status').$type<'new' | 'used' | 'dismissed'>().notNull().default('new'),
   projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+  /** The hit of yours it follows up (Ideas → Your hits). */
+  followUpOf: text('follow_up_of').references(() => projects.id, { onDelete: 'set null' }),
   createdAt: created(),
 })
 

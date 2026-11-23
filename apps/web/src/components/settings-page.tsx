@@ -435,7 +435,7 @@ function Connections() {
           detail={
             notifyNames.length
               ? 'Choose which events send a message under Notifications below.'
-              : 'Get a message when a video needs your approval, fails or goes out. Set up Discord, Telegram or email in the environment (see ENVIRONMENT.md).'
+              : 'Get a message when a video needs your approval, fails, goes out or takes off. Set up Discord, Telegram or email in the environment (see ENVIRONMENT.md).'
           }
         >
           {notifyNames.length > 0 && (
@@ -973,6 +973,12 @@ function PreferencesForm() {
               checked={settings.notifications.posted}
               onCheckedChange={(posted) => update({ notifications: { ...settings.notifications, posted } })}
               label="A video is posted or scheduled"
+            />
+            <Switch
+              checked={settings.notifications.hits}
+              onCheckedChange={(hits) => update({ notifications: { ...settings.notifications, hits } })}
+              label="One of your videos is taking off"
+              description="It has far more views than your videos usually get. Once per video, with a link to follow it up."
             />
           </div>
         </Panel>

@@ -185,7 +185,7 @@ If `APP_PASSWORD` is set but `CRON_SECRET` is not, `/api/cron` refuses every cal
 
 ### Notifications: `NOTIFY_DISCORD_WEBHOOK_URL`, `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID`, `RESEND_API_KEY`, `NOTIFY_EMAIL_TO`, `NOTIFY_EMAIL_FROM`
 
-Optional, web app only. Cutroom sends a message when a video waits for your approval, when something fails, and when a video is posted or scheduled (choose which in **Settings → Notifications**). It also tells you about a job that has not moved for an hour. Set up any or all of these:
+Optional, web app only. Cutroom sends a message when a video waits for your approval, when something fails, when a video is posted or scheduled, and when one of your videos is doing far better than usual (once per video, linking to **Ideas → Your hits**; choose which in **Settings → Notifications**). It also tells you about a job that has not moved for an hour. Set up any or all of these:
 
 - **Discord:** in your server, **Server settings → Integrations → Webhooks → New webhook**, pick a channel, **Copy webhook URL**, and set it as `NOTIFY_DISCORD_WEBHOOK_URL`.
 - **Telegram:**

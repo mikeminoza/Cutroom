@@ -24,6 +24,8 @@ vi.mock('@cutroom/shared/ai', async (original) => {
     suggestEffects: vi.fn(actual.suggestEffects),
     generateIdeas: vi.fn(actual.generateIdeas),
     learnChannelStyle: vi.fn(actual.learnChannelStyle),
+    // Stubbed: each test says what Gemini writes.
+    followUpIdeas: vi.fn(),
   }
 })
 // Reading comments from YouTube is stubbed too.
@@ -114,6 +116,10 @@ const monetizationRoute = await import('../src/app/api/channel/monetization/rout
 const scriptEditRoute = await import('../src/app/api/projects/[id]/script-edit/route')
 const reviewRoute = await import('../src/app/api/projects/[id]/ai/review/route')
 const workerCheck = await import('../src/server/worker-check')
+const hits = await import('../src/server/hits')
+const hitsRoute = await import('../src/app/api/hits/route')
+const hitIdeasRoute = await import('../src/app/api/hits/[id]/ideas/route')
+const ideasRoute = await import('../src/app/api/ideas/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -2400,5 +2406,205 @@ describe('testing the worker', () => {
     expect(await workerCheck.clipProblem('https://x.public.blob.vercel-storage.com/c.mp4')).toBe(
       "Cutroom couldn't read the clip back: storage answered HTTP 403.",
     )
+  })
+})
+
+describe('your hits', () => {
+  const day = 86_400_000
+  const channelId = 'hits-channel'
+  let views = 0
+  /** A video posted to the hits channel `age` days ago, with `count` views counted now. */
+  async function posted(
+    title: string,
+    count: number,
+    age: number,
+    over: Partial<typeof schema.projects.$inferInsert> = {},
+  ) {
+    const id = await newProject()
+    const database = await db()
+    const project = await projects.getProjectRow(id)
+    await database
+      .update(schema.projects)
+      .set({
+        title,
+        channelId,
+        youtubeVideoId: `hit-video-${++views}`,
+        status: 'published',
+        post: { ...project.post, title, privacy: 'public' },
+        stats: {
+          views: count,
+          likes: 0,
+          comments: 0,
+          watchMinutes: null,
+          averageViewSeconds: null,
+          averageViewPercent: 72,
+          subscribersGained: null,
+          publishedAt: new Date(Date.now() - age * day).toISOString(),
+          fetchedAt: new Date().toISOString(),
+        },
+        ...over,
+      })
+      .where(eq(schema.projects.id, id))
+    return id
+  }
+
+  const mine = new Set<string>()
+  let hit = ''
+  let steady = ''
+  let short = ''
+
+  beforeAll(async () => {
+    const database = await db()
+    await database
+      .insert(schema.channels)
+      .values({ id: channelId, youtubeId: 'UC-hits', title: 'Body Facts', refreshToken: 'r' })
+    for (const [i, count] of [80, 90, 100, 110, 120].entries()) {
+      mine.add(await posted(`Usual video ${i + 1}`, count, 40 + i * 10))
+    }
+    steady = await posted('Steady video', 150, 35)
+    hit = await posted('Why you wake up at 3 AM', 900, 30)
+    // Shorts are compared with Shorts (there are none to compare with), and an unlisted video
+    // only gets views from its link: neither is a hit, nor part of the usual.
+    short = await posted('A Short', 50_000, 30, { format: 'portrait' })
+    const unlisted = await posted('Unlisted video', 50_000, 30)
+    const project = await projects.getProjectRow(unlisted)
+    await database
+      .update(schema.projects)
+      .set({ post: { ...project.post, privacy: 'unlisted' } })
+      .where(eq(schema.projects.id, unlisted))
+    for (const id of [steady, hit, short, unlisted]) mine.add(id)
+  })
+
+  const listHits = async () => {
+    const response = await hitsRoute.GET(new Request('http://localhost/api/hits'), undefined)
+    expect(response.status).toBe(200)
+    const all: { id: string }[] = await response.json()
+    return all.filter((h) => mine.has(h.id))
+  }
+
+  it("finds videos doing far better than their channel's usual, and tells you about each once", async () => {
+    expect(await listHits()).toEqual([
+      expect.objectContaining({
+        id: hit,
+        title: 'Why you wake up at 3 AM',
+        format: 'landscape',
+        channelTitle: 'Body Facts',
+        views: 900,
+        // The middle of the six others: 100 and 110.
+        usual: 105,
+        times: 8.6,
+        foundAt: null,
+      }),
+    ])
+
+    process.env.NOTIFY_DISCORD_WEBHOOK_URL = 'https://discord.test/webhook'
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response('{}'))
+    vi.stubGlobal('fetch', fetchMock)
+    const sent = () => fetchMock.mock.calls.map(([, init]) => JSON.parse(init?.body as string).content)
+    try {
+      expect(await hits.announceNewHits('https://app.test')).toMatch(/new hit/)
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      expect(sent()[0]).toContain('Why you wake up at 3 AM')
+      expect(sent()[0]).toContain('8.6 times')
+      expect(sent()[0]).toContain('https://app.test/ideas#hits')
+      expect((await listHits())[0]).toMatchObject({ id: hit, foundAt: expect.any(String) })
+
+      // The next day: nothing new, nothing sent.
+      expect(await hits.announceNewHits('https://app.test')).toBeNull()
+      await new Promise((r) => setTimeout(r, 50))
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // The steady video takes off too: a message about it alone.
+      const database = await db()
+      const project = await projects.getProjectRow(steady)
+      await database
+        .update(schema.projects)
+        .set({ stats: { ...(project.stats as NonNullable<typeof project.stats>), views: 1_200 } })
+        .where(eq(schema.projects.id, steady))
+      expect(await hits.announceNewHits('https://app.test')).toMatch(/new hit/)
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      expect(sent()[1]).toContain('Steady video')
+      expect(sent()[1]).not.toContain('Why you wake up at 3 AM')
+      expect((await listHits()).map((h) => h.id).sort()).toEqual([hit, steady].sort())
+
+      // Turned off in Settings: still remembered as told, so turning it back on sends no backlog.
+      const settings = await settingsModule.getSettings()
+      await settingsModule.saveSettings({
+        ...settings,
+        notifications: { ...settings.notifications, hits: false },
+      })
+      const quiet = await posted('Quiet hit', 2_000, 30)
+      mine.add(quiet)
+      expect(await hits.announceNewHits('https://app.test')).toMatch(/new hit/)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect((await projects.getProjectRow(quiet)).hitAt).toBeInstanceOf(Date)
+      await settingsModule.saveSettings({
+        ...settings,
+        notifications: { ...settings.notifications, hits: true },
+      })
+    } finally {
+      delete process.env.NOTIFY_DISCORD_WEBHOOK_URL
+    }
+  })
+
+  it('has Gemini write follow-up ideas for a hit, one call per click, into the backlog', async () => {
+    const followUp = (id: string) =>
+      hitIdeasRoute.POST(new Request(`http://localhost/api/hits/${id}/ideas`, { method: 'POST' }), {
+        params: Promise.resolve({ id }),
+      })
+    // The hit is an episode of a series: its follow-ups are the next episodes.
+    const { id: seriesId } = await series.createSeriesFromProject(hit, 'Body clock', '')
+    const database = await db()
+    await database.insert(schema.ideas).values({ id: crypto.randomUUID(), title: 'Why naps make you groggy' })
+
+    vi.stubEnv('GEMINI_API_KEY', '')
+    try {
+      const response = await followUp(hit)
+      expect(response.status).toBe(400)
+      expect((await response.json()).error).toMatch(/GEMINI_API_KEY/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    vi.stubEnv('GEMINI_API_KEY', 'key')
+    try {
+      vi.mocked(ai.followUpIdeas).mockResolvedValueOnce([
+        { title: 'Why you can’t fall back asleep', angle: 'The racing mind at 3 AM.' },
+        { title: 'Why 4 AM feels different', angle: 'Body clocks.' },
+      ])
+      const response = await followUp(hit)
+      expect(response.status).toBe(200)
+      const added = await response.json()
+      expect(added).toEqual([
+        expect.objectContaining({
+          title: 'Why you can’t fall back asleep',
+          status: 'new',
+          followUpOf: hit,
+          seriesId,
+        }),
+        expect.objectContaining({ title: 'Why 4 AM feels different', followUpOf: hit }),
+      ])
+      expect(ai.followUpIdeas).toHaveBeenCalledTimes(1)
+      const asked = vi.mocked(ai.followUpIdeas).mock.lastCall?.[0]
+      expect(asked).toMatchObject({
+        format: 'landscape',
+        video: { title: 'Why you wake up at 3 AM', views: 900, watched: 72 },
+      })
+      expect(asked?.avoid).toEqual(
+        expect.arrayContaining(['Why you wake up at 3 AM', 'Why naps make you groggy']),
+      )
+      // In the backlog with the other ideas.
+      const ideas: { id: string; followUpOf: string | null }[] = await (
+        await ideasRoute.GET(new Request('http://localhost/api/ideas'), undefined)
+      ).json()
+      expect(ideas.filter((i) => i.followUpOf === hit)).toHaveLength(2)
+
+      // Only hits get follow-ups, and only videos that exist.
+      expect((await followUp(short)).status).toBe(400)
+      expect((await followUp('no-such-video')).status).toBe(404)
+      expect(ai.followUpIdeas).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

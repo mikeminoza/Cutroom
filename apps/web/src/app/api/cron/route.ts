@@ -1,7 +1,8 @@
 // Daily Vercel cron: wakes the worker, nudges any job that stalled while nobody was watching,
-// tells you about jobs that have been stuck for an hour, refreshes YouTube stats, once a week
-// searches YouTube for videos breaking out in the niche, and once a week per channel has Gemini
-// read what viewers say in the comments.
+// tells you about jobs that have been stuck for an hour, refreshes YouTube stats and tells you
+// about your videos now doing far better than usual, once a week searches YouTube for videos
+// breaking out in the niche, and once a week per channel has Gemini read what viewers say in the
+// comments.
 
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
@@ -11,6 +12,7 @@ import { postDueComments, readDueComments } from '@/server/comments'
 import { cronDenied } from '@/server/cron'
 import { db, schema } from '@/server/db'
 import { runAutopilot } from '@/server/drafting'
+import { announceNewHits } from '@/server/hits'
 import { pingWorker, watchJob } from '@/server/jobs'
 import { notify } from '@/server/notify'
 import { appUrl } from '@/server/settings'
@@ -51,6 +53,10 @@ export async function GET(request: Request): Promise<Response> {
   } catch (error) {
     stats.notes.push(error instanceof Error ? error.message : String(error))
   }
+  // From the numbers just stored, no AI: each new hit gets one message.
+  const hits = await announceNewHits(appUrl(request)).catch((error) =>
+    error instanceof Error ? error.message : String(error),
+  )
   // Comments for viewers on videos that went public since yesterday.
   stats.notes.push(...(await postDueComments().catch((error) => [String(error)])))
   const breakouts = await scanDueBreakouts().catch((error) =>
@@ -69,6 +75,7 @@ export async function GET(request: Request): Promise<Response> {
     nudged: active.length,
     stuck: stuck.length,
     stats,
+    hits,
     breakouts,
     autopilot,
     comments,

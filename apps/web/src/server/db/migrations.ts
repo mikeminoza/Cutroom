@@ -93,4 +93,12 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'CREATE TABLE "worker_checks" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"status" text DEFAULT \'queued\' NOT NULL,\n\t"steps" jsonb NOT NULL,\n\t"info" jsonb,\n\t"clip_url" text,\n\t"error" text,\n\t"heard_at" timestamp with time zone,\n\t"finished_at" timestamp with time zone,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL,\n\t"updated_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
     ],
   },
+  {
+    tag: '0011_your_hits',
+    statements: [
+      'ALTER TABLE "ideas" ADD COLUMN "follow_up_of" text;',
+      'ALTER TABLE "projects" ADD COLUMN "hit_at" timestamp with time zone;',
+      'ALTER TABLE "ideas" ADD CONSTRAINT "ideas_follow_up_of_projects_id_fk" FOREIGN KEY ("follow_up_of") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;',
+    ],
+  },
 ]

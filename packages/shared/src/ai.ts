@@ -1830,6 +1830,85 @@ export async function ideaFromBreakout(input: {
   return { title: result.title.trim().slice(0, 200), angle: result.angle.trim().slice(0, 1000) }
 }
 
+/**
+ * Up to 3 follow-ups to one of the channel's own videos that is doing far better than usual: the
+ * same pull that made it work (its question, hook or surprise) taken to the next question its
+ * viewers would have, never the same video again.
+ */
+export async function followUpIdeas(input: {
+  niche: string
+  narration: string
+  language: string
+  market?: string
+  format: VideoFormat
+  video: {
+    title: string
+    /** What it is about (its brief). */
+    topic: string
+    /** The start of its script, where the hook usually is. */
+    opening: string
+    views: number
+    /** What the channel's videos of its kind usually get (see shared/hits.ts). */
+    usual: number
+    /** Average percentage watched, when YouTube Analytics has it. */
+    watched: number | null
+    /** YouTube searches that found it, most views first. */
+    searches: string[]
+  }
+  /** Titles already made or planned, so ideas don't repeat them. */
+  avoid: string[]
+}): Promise<{ title: string; angle: string }[]> {
+  const { video } = input
+  const kind = input.format === 'portrait' ? 'Shorts' : 'videos'
+  const times = Math.round((video.views / Math.max(video.usual, 1)) * 10) / 10
+  const avoid = input.avoid
+    .filter(Boolean)
+    .slice(0, 80)
+    .map((t) => `- ${t.slice(0, 120)}`)
+    .join('\n')
+  const prompt = [
+    `One of this channel's own ${kind} is doing far better than usual: "${video.title}" has ${video.views.toLocaleString('en-US')} views, ${times} times the ${video.usual.toLocaleString('en-US')} its ${kind} usually get.`,
+    video.topic && `What it is about: ${video.topic.slice(0, 500)}`,
+    video.opening && `How it opens: "${video.opening.slice(0, 600)}"`,
+    video.watched !== null && `Viewers watched ${Math.round(video.watched)}% of it on average.`,
+    video.searches.length &&
+      `Searches that found it:\n${video.searches
+        .slice(0, 5)
+        .map((s) => `- ${s}`)
+        .join('\n')}`,
+    `Work out what made people click and keep watching: its question, hook or surprise. Then suggest up to 3 follow-up ${input.format === 'portrait' ? 'Shorts (under a minute)' : 'videos'} that give viewers the same pull, taken to the next question someone who watched it would have. Each is a new video: never the same one again, a retelling of it, or a part 2 of the same answer.`,
+    `Channel niche: ${input.niche || 'general interest'}`,
+    input.narration && `Narration: ${input.narration}`,
+    `Language: ${input.language || 'English'}`,
+    marketNote(input.market),
+    avoid && `Already made or planned (do not repeat these or make near-duplicates):\n${avoid}`,
+    'Each idea: a working title (max 60 characters with the hook in the first 40, curiosity-driven but honest, no emoji) and an angle: one or two sentences on the hook and what the viewer learns, specific enough to write a script from.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const result = await generateJson(
+    prompt,
+    {
+      type: 'object',
+      properties: {
+        ideas: {
+          type: 'array',
+          items: { type: 'object', properties: { title: str, angle: str }, required: ['title', 'angle'] },
+        },
+      },
+      required: ['ideas'],
+    },
+    z.object({ ideas: z.array(z.object({ title: z.string(), angle: z.string() })).min(1) }),
+    'You are a YouTube strategist who finds video ideas that people search for and click on.',
+    { task: 'follow-up ideas' },
+  )
+  const same = (title: string) => title.toLowerCase() === video.title.trim().toLowerCase()
+  return result.ideas
+    .map((i) => ({ title: i.title.trim().slice(0, 200), angle: i.angle.trim().slice(0, 1000) }))
+    .filter((i) => i.title && !same(i.title))
+    .slice(0, 3)
+}
+
 // ---------------------------------------------------------------------------
 // Channel setup
 

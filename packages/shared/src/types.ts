@@ -544,6 +544,8 @@ export interface NotificationPrefs {
   approval: boolean
   failed: boolean
   posted: boolean
+  /** One of your videos is doing far better than usual (Ideas → Your hits). */
+  hits: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -568,7 +570,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   freeBlobAfterPosting: true,
   voice: DEFAULT_VOICE,
-  notifications: { approval: true, failed: true, posted: true },
+  notifications: { approval: true, failed: true, posted: true, hits: true },
   niche: EMPTY_NICHE,
   shorts: { count: 2, maxSeconds: 60 },
   autopilot: { perWeek: 0 },

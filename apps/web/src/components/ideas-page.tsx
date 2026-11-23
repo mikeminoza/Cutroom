@@ -10,8 +10,9 @@ import { cn } from '@/lib/cn'
 import { writeDraft } from '@/lib/draft'
 import type { IdeaDTO } from '@/lib/dto'
 import { plural } from '@/lib/format'
-import { keys, useIdeas, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
+import { keys, useIdeas, useProjects, useSeriesList, useSettings, useStatus } from '@/lib/hooks'
 import { Breakouts } from './breakouts'
+import { Hits } from './hits'
 import {
   Button,
   ButtonLink,
@@ -25,7 +26,7 @@ import {
   Textarea,
 } from './ui'
 
-type Tab = 'new' | 'used' | 'dismissed' | 'breakouts'
+type Tab = 'new' | 'used' | 'dismissed' | 'breakouts' | 'hits'
 
 /** A draft whose script is written but whose scenes aren't. */
 class PartlyWritten extends Error {}
@@ -36,10 +37,15 @@ export function IdeasPage() {
   const { data: status } = useStatus()
   const client = useQueryClient()
   const [tab, setTab] = useState<Tab>('new')
-  // Grow the channel links to /ideas#breakouts.
+  // Grow the channel links to /ideas#breakouts, and the message about a new hit to /ideas#hits.
   useEffect(() => {
     if (window.location.hash === '#breakouts') setTab('breakouts')
+    if (window.location.hash === '#hits') setTab('hits')
   }, [])
+  // Breakouts and Your hits are lists of videos, not of ideas.
+  const videos = tab === 'breakouts' || tab === 'hits'
+  // For the video an idea follows up.
+  const { data: projects } = useProjects()
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [niche, setNiche] = useState('')
   const [ownTitle, setOwnTitle] = useState('')
@@ -224,8 +230,8 @@ export function IdeasPage() {
         <h1 className="display text-[34px]">Ideas</h1>
         <p className="mt-2 max-w-[64ch] text-[14.5px] text-ink-2">
           A backlog of video ideas. Gemini suggests them from your niche or series, avoiding what you have
-          already made, and Breakouts finds videos taking off in your niche. Pick the good ones and turn them
-          into drafts.
+          already made. Breakouts finds videos taking off in your niche, and Your hits the ones taking off on
+          your own channel. Pick the good ones and turn them into drafts.
         </p>
       </header>
 
@@ -358,11 +364,13 @@ export function IdeasPage() {
               { value: 'used', label: `Made (${counts.used})` },
               { value: 'dismissed', label: `Dismissed (${counts.dismissed})` },
               { value: 'breakouts', label: 'Breakouts' },
+              { value: 'hits', label: 'Your hits' },
             ]}
-            className="self-start"
+            className="max-w-full self-start overflow-x-auto"
           />
 
           {tab === 'breakouts' && <Breakouts />}
+          {tab === 'hits' && <Hits />}
 
           {tab === 'new' && (picked.length > 0 || creating) && (
             <div className="sticky top-2 z-10 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-[var(--radius-panel)] border border-ink bg-ink px-4 py-3 text-paper">
@@ -402,7 +410,7 @@ export function IdeasPage() {
           )}
 
           {error && <p className="text-[14px] text-bad">Could not load ideas: {errorText(error)}</p>}
-          {isLoading && tab !== 'breakouts' && (
+          {isLoading && !videos && (
             <div className="h-48 animate-pulse-soft rounded-[var(--radius-panel)] bg-line/50" />
           )}
           {tab === 'new' && suggesting && (
@@ -423,7 +431,7 @@ export function IdeasPage() {
               ))}
             </div>
           )}
-          {ideas && tab !== 'breakouts' && list.length === 0 && !(tab === 'new' && suggesting) && (
+          {ideas && !videos && list.length === 0 && !(tab === 'new' && suggesting) && (
             <div className="flex flex-col items-center gap-2 rounded-[var(--radius-panel)] border border-line bg-panel px-6 py-12 text-center">
               <Lightbulb className="size-6 text-ink-3" aria-hidden />
               <p className="max-w-[46ch] text-[14px] text-ink-2">
@@ -439,6 +447,7 @@ export function IdeasPage() {
             <ul className="overflow-hidden rounded-[var(--radius-panel)] border border-line bg-panel">
               {list.map((idea) => {
                 const seriesName = seriesList.data?.find((s) => s.id === idea.seriesId)?.name
+                const hit = idea.followUpOf ? projects?.find((p) => p.id === idea.followUpOf) : undefined
                 const on = selected.has(idea.id)
                 return (
                   <li
@@ -466,6 +475,11 @@ export function IdeasPage() {
                         <p className="mt-0.5 text-[13.5px] leading-snug text-ink-2">{idea.angle}</p>
                       )}
                       {seriesName && <p className="mt-1 text-[12px] text-ink-3">Series: {seriesName}</p>}
+                      {hit && (
+                        <p className="mt-1 text-[12px] text-ink-3">
+                          Follows up your hit “{hit.title || 'Untitled video'}”
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       {tab === 'used' && idea.projectId && (

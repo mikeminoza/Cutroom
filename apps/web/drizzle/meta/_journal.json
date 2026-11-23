@@ -78,6 +78,13 @@
       "when": 1793948542392,
       "tag": "0010_worker_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795396295449,
+      "tag": "0011_your_hits",
+      "breakpoints": true
     }
   ]
 }

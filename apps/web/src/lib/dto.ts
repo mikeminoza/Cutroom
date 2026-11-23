@@ -191,7 +191,31 @@ export interface IdeaDTO {
   seriesId: string | null
   status: 'new' | 'used' | 'dismissed'
   projectId: string | null
+  /** The hit of yours it follows up (Ideas → Your hits). */
+  followUpOf: string | null
   createdAt: string
+}
+
+/** One of your own videos doing far better than usual (server/hits.ts). */
+export interface HitDTO {
+  /** The project. */
+  id: string
+  title: string
+  format: VideoFormat
+  youtubeVideoId: string
+  /** null while its channel is disconnected. */
+  channelTitle: string | null
+  views: number
+  /** What the channel's videos of this format usually get (see shared/hits.ts). */
+  usual: number
+  /** Views over usual. */
+  times: number
+  /** How many videos the usual comes from. */
+  peers: number
+  averageViewPercent: number | null
+  publishedAt: string
+  /** When the daily check found it and told you; null = not yet. */
+  foundAt: string | null
 }
 
 /** A video breaking out in the niche (server/breakouts.ts). */

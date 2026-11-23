@@ -20,6 +20,7 @@
     "./sfx": "./src/sfx.ts",
     "./retention": "./src/retention.ts",
     "./breakouts": "./src/breakouts.ts",
+    "./hits": "./src/hits.ts",
     "./review": "./src/review.ts",
     "./growth": "./src/growth.ts",
     "./audience": "./src/audience.ts",
