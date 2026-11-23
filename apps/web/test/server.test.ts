@@ -140,6 +140,8 @@ const draftRepliesRoute = await import('../src/app/api/replies/draft/route')
 const sendRepliesRoute = await import('../src/app/api/replies/send/route')
 const slowStartersRoute = await import('../src/app/api/second-chance/route')
 const secondChanceRoute = await import('../src/app/api/projects/[id]/second-chance/route')
+const videoRoute = await import('../src/app/api/projects/[id]/video/route')
+const crossPostsRoute = await import('../src/app/api/projects/[id]/cross-posts/route')
 
 const stored = (key: string) => existsSync(localPath(key))
 const keyOfUrl = (url: string) => url.replace('/api/files/', '')
@@ -3241,5 +3243,184 @@ describe('second-chance titles', () => {
     expect(disconnected.status).toBe(400)
     expect((await disconnected.json()).error).toMatch(/channel/)
     expect(retitleVideo).not.toHaveBeenCalled()
+  })
+})
+
+describe('TikTok and Reels', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const download = (id: string) => videoRoute.GET(new Request('http://localhost/api'), ctx(id))
+  const mark = (id: string, body: unknown) =>
+    crossPostsRoute.POST(
+      new Request('http://localhost/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      ctx(id),
+    )
+  const savePost = (id: string, post: unknown) =>
+    projectRoute.PATCH(
+      new Request('http://localhost/api', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ post }),
+      }),
+      ctx(id),
+    )
+
+  /** A finished Short with its video stored (a file of its own unless `over` says otherwise). */
+  async function finishedShort(over: Partial<typeof schema.projects.$inferInsert> = {}) {
+    const id = await newProject('portrait')
+    const video = await putFile(`projects/${id}/renders/video.mp4`, Buffer.from('the video'), 'video/mp4')
+    const project = await projects.getProjectRow(id)
+    const database = await db()
+    await database
+      .update(schema.projects)
+      .set({
+        outputUrl: video.url,
+        status: 'published',
+        youtubeVideoId: `yt-${id}`,
+        post: { ...project.post, title: 'Why you wake up tired' },
+        ...over,
+      })
+      .where(eq(schema.projects.id, id))
+    return id
+  }
+
+  async function retitle(id: string, title: string) {
+    const database = await db()
+    const project = await projects.getProjectRow(id)
+    await database
+      .update(schema.projects)
+      .set({ post: { ...project.post, title } })
+      .where(eq(schema.projects.id, id))
+  }
+
+  it('downloads the finished video named after its title', async () => {
+    const id = await finishedShort()
+    const response = await download(id)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('video/mp4')
+    expect(response.headers.get('content-disposition')).toBe(
+      `attachment; filename="why-you-wake-up-tired.mp4"; filename*=UTF-8''why-you-wake-up-tired.mp4`,
+    )
+    expect(await response.text()).toBe('the video')
+
+    // A title in another script keeps its name, with a plain one for older browsers.
+    await retitle(id, 'なぜ疲れて起きるのか')
+    expect((await download(id)).headers.get('content-disposition')).toBe(
+      `attachment; filename="video.mp4"; filename*=UTF-8''${encodeURIComponent('なぜ疲れて起きるのか')}.mp4`,
+    )
+  })
+
+  it('says so when there is no video to download, and never serves another project’s file', async () => {
+    const none = await download(await newProject('portrait'))
+    expect(none.status).toBe(404)
+    expect((await none.json()).error).toMatch(/finished video/)
+
+    const other = await finishedShort()
+    const borrowing = await finishedShort({ outputUrl: (await projects.getProjectRow(other)).outputUrl })
+    expect((await download(borrowing)).status).toBe(404)
+
+    // Its file gone from storage.
+    const removed = await finishedShort()
+    rmSync(localPath(keyOfUrl((await projects.getProjectRow(removed)).outputUrl ?? '')))
+    expect((await download(removed)).status).toBe(404)
+  })
+
+  it('streams a Blob video through the app, so the name holds on another domain', async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_test'
+    try {
+      const fetchMock = vi.fn(
+        async (_url: string, _init?: RequestInit) =>
+          new Response('blob video', { headers: { 'content-length': '10', 'content-type': 'video/mp4' } }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      const id = await newProject('portrait')
+      const blobUrl = `https://store.public.blob.vercel-storage.com/projects/${id}/renders/video.mp4`
+      const database = await db()
+      await database.update(schema.projects).set({ outputUrl: blobUrl }).where(eq(schema.projects.id, id))
+      await retitle(id, 'Why you wake up tired')
+      const response = await download(id)
+      expect(response.status).toBe(200)
+      expect(fetchMock.mock.calls[0][0]).toBe(blobUrl)
+      expect(response.headers.get('content-disposition')).toMatch(/filename="why-you-wake-up-tired\.mp4"/)
+      expect(response.headers.get('content-length')).toBe('10')
+      expect(await response.text()).toBe('blob video')
+
+      // Only from the Blob store, and only this project's render.
+      for (const outputUrl of [
+        `https://example.com/projects/${id}/renders/video.mp4`,
+        `https://store.public.blob.vercel-storage.com/projects/${id}/music/song.mp3`,
+      ]) {
+        await database.update(schema.projects).set({ outputUrl }).where(eq(schema.projects.id, id))
+        expect((await download(id)).status).toBe(404)
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      delete process.env.BLOB_READ_WRITE_TOKEN
+    }
+  })
+
+  it('marks a Short as posted on each app, with the date and an optional link', async () => {
+    const id = await finishedShort()
+    const before = Date.now()
+    const tiktok = await mark(id, { platform: 'tiktok', posted: true })
+    expect(tiktok.status).toBe(200)
+    const full = (await tiktok.json()) as ProjectFull
+    const at = full.project.post.crossPosts?.tiktok?.at ?? ''
+    expect(Date.parse(at)).toBeGreaterThanOrEqual(before)
+    expect(full.project.post.crossPosts).toEqual({ tiktok: { at, url: null } })
+
+    // A link added later keeps the date it was posted.
+    const link = 'https://www.tiktok.com/@me/video/7300000000000000000'
+    await mark(id, { platform: 'tiktok', posted: true, url: ` ${link} ` })
+    await mark(id, { platform: 'reels', posted: true, url: 'https://www.instagram.com/reel/abc/' })
+    expect((await projects.getProjectRow(id)).post.crossPosts).toEqual({
+      tiktok: { at, url: link },
+      reels: { at: expect.any(String), url: 'https://www.instagram.com/reel/abc/' },
+    })
+
+    // Not a link, not one of the apps, not a Short: refused, and nothing changes.
+    const notLink = await mark(id, { platform: 'reels', posted: true, url: 'my reel' })
+    expect(notLink.status).toBe(400)
+    expect((await notLink.json()).error).toMatch(/link/)
+    expect((await mark(id, { platform: 'youtube', posted: true })).status).toBe(400)
+    const landscape = await mark(await newProject('landscape'), { platform: 'tiktok', posted: true })
+    expect(landscape.status).toBe(400)
+    expect((await landscape.json()).error).toMatch(/Shorts/)
+
+    // Undone on one app, the other stays.
+    await mark(id, { platform: 'reels', posted: false })
+    expect((await projects.getProjectRow(id)).post.crossPosts).toEqual({ tiktok: { at, url: link } })
+
+    // The Projects list shows where each Short is.
+    const listed = (await projects.listProjects()).find((p) => p.id === id)
+    expect(listed?.crossPosts).toEqual(['tiktok'])
+  })
+
+  it('keeps the marks when the browser or the worker saves the post', async () => {
+    const id = await finishedShort()
+    const response = await mark(id, { platform: 'reels', posted: true })
+    const marked = (await response.json()) as ProjectFull
+    const kept = marked.project.post.crossPosts
+    expect(kept?.reels).toBeTruthy()
+
+    // The browser's copy without them, or with its own: what is stored stays.
+    const { crossPosts: _, ...withoutMarks } = marked.project.post
+    expect((await savePost(id, { ...withoutMarks, description: 'Edited.' })).status).toBe(200)
+    expect((await savePost(id, { ...marked.project.post, crossPosts: {} })).status).toBe(200)
+    expect((await projects.getProjectRow(id)).post).toMatchObject({ crossPosts: kept })
+
+    // A worker sending back the post it started with doesn't undo a mark made meanwhile.
+    const job = await jobs.startJob(id, 'publish')
+    await jobs.applyEvent(job.id, {
+      type: 'result',
+      patch: { post: { ...withoutMarks, title: 'From the worker' } },
+    })
+    expect((await projects.getProjectRow(id)).post).toMatchObject({
+      title: 'From the worker',
+      crossPosts: kept,
+    })
   })
 })

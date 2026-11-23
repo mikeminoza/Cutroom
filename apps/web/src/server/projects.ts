@@ -1,3 +1,4 @@
+import { postedOn } from '@cutroom/shared/cross-post'
 import type { JobType } from '@cutroom/shared/protocol'
 import { findPassage } from '@cutroom/shared/review'
 import { copyStoredFile, deleteFile, isStoredUnder } from '@cutroom/shared/storage'
@@ -362,6 +363,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       seriesId: row.seriesId,
       channelId: row.channelId,
       stats: row.stats ?? null,
+      crossPosts: postedOn(row.post ?? {}),
       // A layered scene shows its background (or the pose) as its thumbnail.
       frames: frames.map((f) => ({ start: f.start, end: f.end, imageUrl: thumbnailOf(f) })),
       hasScript: Boolean(row.script.trim()),

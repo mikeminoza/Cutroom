@@ -22,6 +22,7 @@
     "./breakouts": "./src/breakouts.ts",
     "./hits": "./src/hits.ts",
     "./second-chance": "./src/second-chance.ts",
+    "./cross-post": "./src/cross-post.ts",
     "./replies": "./src/replies.ts",
     "./review": "./src/review.ts",
     "./growth": "./src/growth.ts",

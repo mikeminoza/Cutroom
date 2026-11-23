@@ -1,8 +1,9 @@
 'use client'
 
+import { CROSS_PLATFORMS } from '@cutroom/shared/cross-post'
 import type { VideoFormat } from '@cutroom/shared/types'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Eye, Layers, Plus } from 'lucide-react'
+import { Check, ChevronRight, Eye, Layers, Plus } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
@@ -123,6 +124,15 @@ function ProjectRow({ project, series }: { project: ProjectSummary; series: Seri
             <span className="text-[12.5px] text-ink-3">
               {project.format === 'portrait' ? 'Short' : 'Video'}
             </span>
+            {project.crossPosts.length > 0 && (
+              <span className="inline-flex items-center gap-1 text-[12.5px] text-ink-2">
+                <Check className="size-3" aria-hidden />
+                Also on{' '}
+                {CROSS_PLATFORMS.filter((p) => project.crossPosts.includes(p.id))
+                  .map((p) => p.short)
+                  .join(' and ')}
+              </span>
+            )}
             {series && (
               <span className="inline-flex items-center gap-1 text-[12.5px] text-ink-3">
                 <Layers className="size-3" aria-hidden />

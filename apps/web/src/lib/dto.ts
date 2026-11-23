@@ -15,6 +15,7 @@ import type {
   CharacterInput,
   CharacterPose,
   CommentInsights,
+  CrossPlatform,
   PostDetails,
   PostingMode,
   ProjectStatus,
@@ -117,6 +118,8 @@ export interface ProjectSummary {
   seriesId: string | null
   channelId: string | null
   stats: VideoStats | null
+  /** Where a Short was also posted by hand. */
+  crossPosts: CrossPlatform[]
   frames: { start: number; end: number; imageUrl: string | null }[]
   hasScript: boolean
   hasVoiceover: boolean

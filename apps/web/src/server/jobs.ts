@@ -513,7 +513,13 @@ async function applyResultToProject(projectId: string, patch: JobResult) {
     update.transcript = patch.transcript
     update.voiceoverDuration = patch.transcript.duration
   }
-  if (patch.post) update.post = patch.post
+  if (patch.post) {
+    // The worker's post is a copy from when the job started: marks for where the Short was posted
+    // by hand (TikTok, Reels) made since then stay as stored.
+    const { crossPosts: _, ...post } = patch.post
+    const stored = (await getProjectRow(projectId)).post?.crossPosts
+    update.post = stored ? { ...post, crossPosts: stored } : post
+  }
   if (patch.outputUrl) update.outputUrl = patch.outputUrl
   if (patch.srtUrl) update.srtUrl = patch.srtUrl
   if (patch.driveFolderId) update.driveFolderId = patch.driveFolderId

@@ -37,6 +37,9 @@ export const PATCH = route(async (request, { params }: Ctx) => {
   // Title changes made on YouTube are the server's to keep: a save from the browser never drops them.
   const titleChanges = current.post?.titleChanges
   if (patch.post && titleChanges) update.post = { ...patch.post, titleChanges }
+  // So are the marks for where a Short was posted by hand (TikTok, Reels).
+  const crossPosts = current.post?.crossPosts
+  if (update.post && crossPosts) update.post = { ...update.post, crossPosts }
   // The YouTube id lets the video find its channel again if it is disconnected and reconnected.
   if (patch.channelId !== undefined) update.channelYoutubeId = channel?.youtubeId ?? null
   for (const [field, kind] of [

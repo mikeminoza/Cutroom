@@ -369,6 +369,22 @@ export interface PostDetails {
    * Only the server writes it: the browser's saves keep what is stored.
    */
   titleChanges?: TitleChange[]
+  /**
+   * Where a Short was posted by hand besides YouTube, marked on the Publish step (cross-post.ts).
+   * Only the server writes it: the browser's saves keep what is stored.
+   */
+  crossPosts?: Partial<Record<CrossPlatform, CrossPost>>
+}
+
+/** The apps a Short can be posted to by hand, from the file Cutroom made. */
+export type CrossPlatform = 'tiktok' | 'reels'
+
+/** A Short marked as posted on one of those apps. */
+export interface CrossPost {
+  /** When it was marked as posted (ISO). */
+  at: string
+  /** The link to the post, when one was given. */
+  url: string | null
 }
 
 /** One title change on a posted video: enough to say "changed 3 days ago from …" and undo it. */

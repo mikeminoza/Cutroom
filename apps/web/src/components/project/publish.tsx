@@ -1,9 +1,11 @@
 'use client'
 
+import { CROSS_PLATFORMS, crossPostCaption, videoSource } from '@cutroom/shared/cross-post'
 import { buildThumbnailPrompt } from '@cutroom/shared/prompts'
 import { titleProblem } from '@cutroom/shared/second-chance'
 import { formatChapterTime, totalDuration } from '@cutroom/shared/timing'
 import {
+  type CrossPlatform,
   languageName,
   type PostDetails,
   type PostingMode,
@@ -62,14 +64,19 @@ import { type StepProps, stageOf } from './workspace'
 export function PublishStep({ data, goTo }: StepProps) {
   const job = data.jobs.publish
   const showJob = job && !(job.status === 'failed' && job.error === 'Stopped by you.')
+  const short = data.project.format === 'portrait'
+  // Once the Short is made, posting it elsewhere is what's left to do: it goes first.
+  const made = short && videoSource(data.project).kind !== 'none'
   return (
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="flex flex-col gap-5">
         <SecondChancePanel data={data} />
+        {made && <CrossPostPanel data={data} />}
         <PostDetailsPanel data={data} />
         <TranslationsPanel data={data} />
         <ThumbnailPanel data={data} />
         <FinalCheck data={data} goTo={goTo} />
+        {short && !made && <CrossPostPanel data={data} />}
       </div>
       <div className="flex flex-col gap-5 xl:sticky xl:top-4">
         {showJob ? <JobPanel data={data} job={job} /> : <FinishPanel data={data} goTo={goTo} />}
@@ -259,6 +266,183 @@ function SecondChancePanel({ data }: { data: ProjectFull }) {
       </Panel>
       {element}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------- TikTok & Reels
+
+/**
+ * A Short ready to post on TikTok and Instagram Reels by hand: the video file, a caption for each
+ * app built from the post details (no AI), and a mark for where it's been posted. Cutroom never
+ * posts there itself: no accounts or app approvals needed.
+ */
+function CrossPostPanel({ data }: { data: ProjectFull }) {
+  const { project } = data
+  const post = project.post
+  const source = videoSource(project)
+  // Without a title of its own, the video goes out under the project's, as on YouTube.
+  const details = { ...post, title: post.title || project.title }
+  const tips = [
+    project.captionStyle !== 'off' &&
+      'The captions are already in the video: leave the apps’ auto captions off.',
+    post.syntheticMedia &&
+      'Turn on the AI-generated label when you post: both apps ask for it on realistic AI content.',
+  ].filter(Boolean)
+
+  return (
+    <Panel
+      title="TikTok & Reels"
+      description="Post this Short there too: download the video, copy a caption, post it in the app, then mark it as posted here."
+    >
+      <div className="flex flex-col gap-3 px-5 py-5">
+        {source.kind === 'file' ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <ButtonLink
+              href={source.href}
+              download={source.name}
+              variant="dark"
+              icon={<Download className="size-4" />}
+            >
+              Download video
+            </ButtonLink>
+            <span className="tc min-w-0 truncate text-[12.5px] text-ink-3">{source.name}</span>
+          </div>
+        ) : source.kind === 'drive' ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <ButtonLink
+              href={source.href}
+              target="_blank"
+              rel="noreferrer"
+              variant="dark"
+              icon={<ExternalLink className="size-4" />}
+            >
+              Open on Google Drive
+            </ButtonLink>
+            <p className="min-w-48 flex-1 text-[12.5px] leading-snug text-ink-3">
+              It was cleared from Cutroom’s storage after posting, to save space. Download the copy on Drive.
+            </p>
+          </div>
+        ) : (
+          <p className="text-[13.5px] text-ink-2">
+            Finish the video first: its download shows up here once it’s rendered.
+          </p>
+        )}
+        {tips.map((tip) => (
+          <p key={String(tip)} className="text-[12.5px] leading-snug text-ink-3">
+            {tip}
+          </p>
+        ))}
+      </div>
+      <ul className="divide-y divide-line border-t border-line">
+        {CROSS_PLATFORMS.map((platform) => (
+          <CrossPostRow
+            key={platform.id}
+            data={data}
+            platform={platform.id}
+            name={platform.name}
+            caption={crossPostCaption(details, platform.id)}
+          />
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
+function CrossPostRow({
+  data,
+  platform,
+  name,
+  caption,
+}: {
+  data: ProjectFull
+  platform: CrossPlatform
+  name: string
+  caption: string
+}) {
+  const { project } = data
+  const action = useProjectAction(project.id)
+  const [link, setLink] = useState('')
+  const [busy, setBusy] = useState<'mark' | 'undo' | null>(null)
+  const posted = project.post.crossPosts?.[platform] ?? null
+
+  const mark = async (on: boolean, success: string) => {
+    setBusy(on ? 'mark' : 'undo')
+    const body = { platform, posted: on, url: on && link.trim() ? link.trim() : undefined }
+    const full = await action(`/api/projects/${project.id}/cross-posts`, body, success)
+    setBusy(null)
+    if (full) setLink('')
+  }
+
+  return (
+    <li className="flex flex-col gap-3 px-5 py-4">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="text-[14px] font-medium">{name}</span>
+        {posted && (
+          <span
+            className="inline-flex items-center gap-1 text-[12.5px] font-medium text-ok"
+            title={formatWhen(posted.at)}
+          >
+            <Check className="size-3.5" aria-hidden />
+            Posted {timeAgo(posted.at)}
+          </span>
+        )}
+        {posted?.url && (
+          <a
+            href={posted.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-[12.5px] font-medium underline-offset-2 hover:underline"
+          >
+            Open post
+            <ExternalLink className="size-3" aria-hidden />
+          </a>
+        )}
+        {caption && <CopyButton text={caption} label="Copy caption" className="ml-auto" />}
+      </div>
+      {caption ? (
+        <p className="rounded-[var(--radius-control)] border border-line bg-sunk px-3 py-2.5 text-[13.5px] leading-relaxed whitespace-pre-wrap">
+          {caption}
+        </p>
+      ) : (
+        <p className="text-[13px] text-ink-3">Write the post details first: the caption is made from them.</p>
+      )}
+      {!posted?.url && (
+        <div className="flex gap-2">
+          <Input
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            maxLength={500}
+            placeholder={posted ? 'Paste the link to the post' : 'Link to the post (optional)'}
+            aria-label={`Link to the ${name} post`}
+            className="min-w-0"
+          />
+          <Button
+            variant={posted ? 'plain' : 'dark'}
+            busy={busy === 'mark'}
+            disabled={busy !== null || (Boolean(posted) && !link.trim())}
+            onClick={() => mark(true, posted ? 'Link saved' : `Marked as posted on ${name}`)}
+            icon={<Check className="size-4" />}
+            className="shrink-0"
+          >
+            {posted ? 'Save link' : 'Mark as posted'}
+          </Button>
+        </div>
+      )}
+      {posted && (
+        <Button
+          variant="ghost"
+          size="sm"
+          busy={busy === 'undo'}
+          disabled={busy !== null}
+          onClick={() => mark(false, `Marked as not posted on ${name}`)}
+          icon={<Undo2 className="size-3.5" />}
+          aria-label={`Mark as not posted on ${name}`}
+          className="self-start"
+        >
+          Not posted
+        </Button>
+      )}
+    </li>
   )
 }
 
