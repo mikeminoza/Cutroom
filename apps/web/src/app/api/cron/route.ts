@@ -2,7 +2,8 @@
 // tells you about jobs that have been stuck for an hour, refreshes YouTube stats and tells you
 // about your videos now doing far better than usual, once a week searches YouTube for videos
 // breaking out in the niche, once a week per channel has Gemini read what viewers say in the
-// comments, and starts queued AI work again whose run died while no page was open.
+// comments, queues the weekly autopilot's draft, and starts queued AI work (that draft, or work
+// whose run died while no page was open).
 
 import { withAiBudget } from '@cutroom/shared/ai'
 import { inArray } from 'drizzle-orm'
@@ -71,16 +72,17 @@ async function daily(request: Request): Promise<Response> {
   const breakouts = await scanDueBreakouts().catch((error) =>
     error instanceof Error ? error.message : String(error),
   )
-  // A new draft for the week, if one is due. It and the weekly comment summary both use Gemini for
-  // a while, so a day that drafted leaves the comments for tomorrow.
+  // A new draft for the week, if one is due: queued, and written in a request of its own once this
+  // run starts the queue below. It and the weekly comment summary would ask Gemini at the same
+  // time, so a day that drafts leaves the comments for tomorrow.
   const autopilot = await runAutopilot().catch((error) =>
     error instanceof Error ? error.message : String(error),
   )
   const comments = autopilot
     ? null
     : await readDueComments().catch((error) => (error instanceof Error ? error.message : String(error)))
-  // Queued AI work (Ideas → Create drafts) whose next run never started: started again in a
-  // request of its own, after this one, so it gets its full 300 s.
+  // Queued AI work (the autopilot's draft just queued, or Ideas → Create drafts whose next run never
+  // started): started in a request of its own, after this one, so it gets its full 300 s.
   const tasks = await resumeTasks(appUrl(request)).catch((error) =>
     error instanceof Error ? error.message : String(error),
   )

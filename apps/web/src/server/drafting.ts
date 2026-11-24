@@ -545,9 +545,10 @@ function weekStart(now = new Date()): Date {
 /**
  * The weekly autopilot, run by the daily cron: while this week has fewer autopilot drafts than
  * Settings asks for, makes one more. It takes the newest idea in the backlog (requests added from
- * the comments included), or asks Gemini for new ones when the backlog is empty, then writes the
- * script, storyboards it and picks backgrounds and poses from the Library. One a day keeps each
- * run well inside the cron's time. Returns a note, or null when nothing was due.
+ * the comments included), or asks Gemini for new ones when the backlog is empty, and queues the
+ * draft to be written (writeAutopilotDraft). The writing runs in a request of its own, with the
+ * whole of its time for Gemini: inside the cron it shared 300 s with the stats and searches before
+ * it, and often stopped part way. One a day. Returns a note, or null when nothing was due.
  */
 export async function runAutopilot(): Promise<string | null> {
   const settings = await getSettings()
@@ -573,30 +574,39 @@ export async function runAutopilot(): Promise<string | null> {
   }
   if (!idea) return 'Autopilot: Gemini had no new ideas this time.'
 
-  // Counted from here on, even if a step fails below: a failing step must not use up the AI quota
+  // Counted from here on, even if the writing fails: a failing draft must not use up the AI quota
   // every day.
   const id = await draftFromIdea(idea, 'landscape')
   await updateProject(id, { autopilot: true })
-  const done: string[] = []
-  try {
-    await writeProjectScript(id)
-    done.push('script')
-    await storyboardProject(id)
-    done.push('scenes')
-    const placed = await composeProject(id).catch(() => 0)
-    if (placed) done.push('pictures from the Library')
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return `Autopilot: "${idea.title}" stopped after ${done.join(', ') || 'the brief'} (${message}).`
+  // The cron starts the queue once it's done (resumeTasks).
+  await queueBatch([{ kind: 'autopilot', projectId: id }])
+  return `Autopilot: "${idea.title}" is queued to be written.`
+}
+
+/**
+ * The autopilot's draft, run from the queue: the script written live and storyboarded as it goes,
+ * then backgrounds and poses from the Library, then a message that it's ready for its voice-over.
+ * When the storyboard fails, the script is saved, no message is sent, and why comes back (as a
+ * draft's does); the scenes can be split from the project's page.
+ */
+export async function writeAutopilotDraft(id: string): Promise<{ storyboardError: string | null }> {
+  const { storyboardError } = await draftProject(id, '')
+  if (storyboardError) {
+    console.warn(`[autopilot] The script is written, but not its scenes: ${storyboardError}`)
+    return { storyboardError }
   }
+  // Pictures from the Library are a bonus: the draft is ready without them (an empty Library, or
+  // Gemini out of time after a long script).
+  const placed = await composeProject(id).catch(() => 0)
+  const done = ['script', 'scenes', ...(placed ? ['pictures from the Library'] : [])]
   const project = await getProjectRow(id)
   notify({
     kind: 'approval',
-    title: `New draft ready: ${project.title || idea.title}`,
+    title: `New draft ready: ${project.title}`,
     body: `The ${done.join(', ')} are done. Record the voice-over (or have the AI read it), check it, and schedule it.`,
     url: `${appUrl()}/projects/${id}`,
   })
-  return `Autopilot: drafted "${project.title || idea.title}".`
+  return { storyboardError: null }
 }
 
 /** The script as the reviews read it: the script itself, or the scenes' narration without one. */

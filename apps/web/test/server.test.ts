@@ -1460,11 +1460,26 @@ describe('pose shopping list', () => {
 })
 
 describe('weekly drafts', () => {
-  it('turns the newest idea into a full draft once a day, up to the number a week', async () => {
+  const scene = (narration: string, visual: string) => ({
+    narration,
+    visual,
+    imagePrompt: '',
+    characters: [],
+    shot: '',
+    motion: 'zoom-in' as const,
+    onScreenText: '',
+    transition: 'cut' as const,
+    accent: 'none' as const,
+    accentWord: '',
+    notes: '',
+  })
+
+  it('queues the newest idea as a draft once a day, up to the number a week, and writes it in a run of its own', async () => {
     vi.stubEnv('GEMINI_API_KEY', 'key')
+    const database = await db()
+    const before = await settingsModule.getSettings()
     try {
-      const database = await db()
-      const before = await settingsModule.getSettings()
+      await database.delete(schema.tasks)
       // Off: nothing happens.
       expect(await drafting.runAutopilot()).toBeNull()
       await settingsModule.saveSettings({ ...before, autopilot: { perWeek: 1 } })
@@ -1473,55 +1488,73 @@ describe('weekly drafts', () => {
         { id: 'old-idea', title: 'Cappy and the rain', angle: '', createdAt: new Date('2026-01-01') },
         { id: 'new-idea', title: 'Cappy at the beach', angle: 'Sand everywhere.', createdAt: new Date() },
       ])
-      vi.mocked(ai.writeScript).mockResolvedValueOnce({
-        title: 'Cappy at the beach',
-        script: 'Cappy goes to the beach. Sand everywhere!',
-      })
-      vi.mocked(ai.splitScript).mockResolvedValueOnce([
-        {
-          narration: 'Cappy goes to the beach.',
-          visual: 'A beach',
-          imagePrompt: '',
-          characters: [],
-          shot: '',
-          motion: 'zoom-in',
-          onScreenText: '',
-          transition: 'cut',
-          accent: 'none',
-          accentWord: '',
-          notes: '',
-        },
-        {
-          narration: 'Sand everywhere!',
-          visual: 'Sand',
-          imagePrompt: '',
-          characters: [],
-          shot: '',
-          motion: 'pan-left',
-          onScreenText: '',
-          transition: 'cut',
-          accent: 'none',
-          accentWord: '',
-          notes: '',
-        },
-      ])
 
+      // The cron only queues the draft: no Gemini in its own request.
       const note = await drafting.runAutopilot()
-      expect(note).toBe('Autopilot: drafted "Cappy at the beach".')
+      expect(note).toBe('Autopilot: "Cappy at the beach" is queued to be written.')
       const [idea] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, 'new-idea'))
       expect(idea.status).toBe('used')
-      const project = await projects.getProjectRow(idea.projectId as string)
-      expect(project).toMatchObject({ autopilot: true, script: 'Cappy goes to the beach. Sand everywhere!' })
+      const projectId = idea.projectId as string
+      expect(await projects.getProjectRow(projectId)).toMatchObject({ autopilot: true, script: '' })
+      expect(vi.mocked(ai.draftScript)).not.toHaveBeenCalled()
+      expect(await tasks.activeTasks(projectId)).toMatchObject([{ kind: 'autopilot', status: 'queued' }])
+      // While it waits, the script can't be written over from the project's page.
+      await expect(tasks.startTracking(projectId, 'scenes')).rejects.toThrow(
+        'Writing the weekly draft is queued for this video.',
+      )
+
+      // A run of the queue writes it: the script live with its storyboard.
+      vi.mocked(ai.draftScript).mockResolvedValueOnce({
+        title: 'Cappy at the beach',
+        script: 'Cappy goes to the beach. Sand everywhere!',
+        scenes: [scene('Cappy goes to the beach.', 'A beach'), scene('Sand everywhere!', 'Sand')],
+        storyboardError: null,
+      })
+      expect(await taskRunner.runNextTask('http://localhost')).toMatchObject({ kind: 'autopilot' })
+      const project = await projects.getProjectRow(projectId)
+      expect(project).toMatchObject({ script: 'Cappy goes to the beach. Sand everywhere!' })
       expect((await projects.getScenes(project.id)).map((s) => s.narration)).toEqual([
         'Cappy goes to the beach.',
         'Sand everywhere!',
       ])
+      expect(await tasks.activeTasks(projectId)).toEqual([])
+      const [task] = await database.select().from(schema.tasks).where(eq(schema.tasks.projectId, projectId))
+      expect(task).toMatchObject({ status: 'done', result: { storyboardError: null } })
+
       // This week's one is made: the older idea waits.
       expect(await drafting.runAutopilot()).toBeNull()
       const [waiting] = await database.select().from(schema.ideas).where(eq(schema.ideas.id, 'old-idea'))
       expect(waiting.status).toBe('new')
-      await settingsModule.saveSettings(before)
     } finally {
+      await settingsModule.saveSettings(before)
+      vi.mocked(ai.draftScript).mockReset()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('keeps the script when only its storyboard fails, and says why', async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'key')
+    try {
+      const id = await newProject()
+      await projects.updateProject(id, { topic: 'Cappy at the beach', autopilot: true })
+      await tasks.queueBatch([{ kind: 'autopilot', projectId: id }])
+      vi.mocked(ai.draftScript).mockResolvedValueOnce({
+        title: 'Cappy at the beach',
+        script: 'Cappy goes to the beach.',
+        scenes: null,
+        storyboardError: 'Gemini is overloaded right now. Try again in a minute.',
+      })
+      await taskRunner.runNextTask('http://localhost')
+      expect(await projects.getProjectRow(id)).toMatchObject({ script: 'Cappy goes to the beach.' })
+      expect(await projects.getScenes(id)).toEqual([])
+      const database = await db()
+      const [task] = await database.select().from(schema.tasks).where(eq(schema.tasks.projectId, id))
+      expect(task).toMatchObject({
+        status: 'done',
+        result: { storyboardError: 'Gemini is overloaded right now. Try again in a minute.' },
+      })
+    } finally {
+      vi.mocked(ai.draftScript).mockReset()
       vi.unstubAllEnvs()
     }
   })

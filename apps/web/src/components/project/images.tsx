@@ -139,7 +139,7 @@ export function ImagesStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const hasLayers = (backgrounds?.length ?? 0) > 0 || (library ?? []).some((c) => c.poses.length > 0)
   const [composing, setComposing] = useState(false)
   // Picked on the server for a request this page didn't make: the pictures show once saved.
-  const composingElsewhere = composing ? null : runningTask(data, ['compose'])
+  const composingElsewhere = composing ? null : runningTask(data, ['compose', 'autopilot'])
   const flow = useFlowExtension()
   const [sendingToFlow, setSendingToFlow] = useState(false)
 

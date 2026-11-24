@@ -6,7 +6,9 @@ import type { SceneDraft } from '@cutroom/shared/ai'
  * What a task does. 'draft' (the script written live and storyboarded) and 'post' (the title,
  * description and tags) also run from the queue, for Ideas → Create drafts, and so does 'picture'
  * (scene pictures), for Images → Generate missing; every kind is also a button's AI request,
- * recorded while it runs so a reopened page can tell it is still going.
+ * recorded while it runs so a reopened page can tell it is still going. 'autopilot' only runs from
+ * the queue: the weekly autopilot's draft (script, scenes and pictures from the Library), in a
+ * request of its own rather than inside the daily cron.
  */
 export type TaskKind =
   | 'draft'
@@ -18,6 +20,7 @@ export type TaskKind =
   | 'compose'
   | 'thumbnail'
   | 'picture'
+  | 'autopilot'
 
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -56,6 +59,7 @@ export const TASK_LABEL: Record<TaskKind, string> = {
   compose: 'Picking pictures from the Library',
   thumbnail: 'Making the thumbnail',
   picture: "Making this scene's picture",
+  autopilot: 'Writing the weekly draft',
 }
 
 /** What Gemini is doing: "Gemini is still … (started 40 s ago)". */
@@ -69,6 +73,7 @@ export const TASK_DOING: Record<TaskKind, string> = {
   compose: 'picking pictures from the Library',
   thumbnail: 'making the thumbnail',
   picture: 'making this picture',
+  autopilot: 'writing this weekly draft',
 }
 
 /** A draft's parts, as Ideas → Create drafts shows them: "Writing draft 2 of 5: …". */
@@ -83,13 +88,14 @@ export const DRAFT_PART: Partial<Record<TaskKind, string>> = {
  * on the same scene (see server/tasks.ts).
  */
 export const SAME_WORK: Record<TaskKind, TaskKind[]> = {
-  draft: ['draft', 'script', 'scenes'],
-  script: ['draft', 'script', 'scenes'],
-  scenes: ['draft', 'script', 'scenes'],
+  draft: ['draft', 'script', 'scenes', 'autopilot'],
+  script: ['draft', 'script', 'scenes', 'autopilot'],
+  scenes: ['draft', 'script', 'scenes', 'autopilot'],
   post: ['post', 'translate'],
   translate: ['post', 'translate'],
   effects: ['effects'],
-  compose: ['compose'],
+  compose: ['compose', 'autopilot'],
   thumbnail: ['thumbnail'],
   picture: ['picture'],
+  autopilot: ['draft', 'script', 'scenes', 'compose', 'autopilot'],
 }

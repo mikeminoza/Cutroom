@@ -84,7 +84,7 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
   const words = countWords(live ? live.script : project.script)
   // Gemini writing or splitting this script for a request this page didn't make (it was closed
   // and opened again, or Ideas queued it): its buttons wait until the result is saved.
-  const elsewhere = busy === null ? runningTask(data, ['draft', 'script', 'scenes']) : null
+  const elsewhere = busy === null ? runningTask(data, ['draft', 'script', 'scenes', 'autopilot']) : null
   const rewriting = elsewhere !== null && elsewhere.kind !== 'scenes'
   const aiReady = status?.gemini.configured !== false
   const [method, setMethod] = useSplitMethod()

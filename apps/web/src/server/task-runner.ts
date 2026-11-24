@@ -12,7 +12,7 @@ import { after } from 'next/server'
 import type { TaskKind, TaskResult } from '@/lib/tasks'
 import { internalKey, safeEqual } from './auth'
 import type { TaskRow } from './db/schema'
-import { draftProject, writePost } from './drafting'
+import { draftProject, writeAutopilotDraft, writePost } from './drafting'
 import { badRequest, describeError, HttpError } from './http'
 import { makeScenePicture } from './images'
 import { cancelBatch, claimTask, finishTask, holdLease, queueState, recoverStale, skipRest } from './tasks'
@@ -47,6 +47,10 @@ const RUN: Partial<
   post: async (task) => {
     await writePost(projectOf(task))
     return {}
+  },
+  autopilot: async (task) => {
+    if (!hasGeminiKey()) badRequest(NO_KEY)
+    return { result: await writeAutopilotDraft(projectOf(task)) }
   },
   picture: async (task) => {
     if (!hasGeminiKey()) badRequest(NO_KEY)
