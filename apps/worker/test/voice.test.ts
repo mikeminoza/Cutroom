@@ -20,7 +20,13 @@ const { localPath } = await import('@cutroom/shared/storage')
 const { patiently, runVoice } = await import('../src/jobs/voice')
 type Ctx = Parameters<typeof runVoice>[1]
 
-afterAll(() => rmSync(temp, { recursive: true, force: true }))
+afterAll(() => {
+  // On Windows a file still held open (by an ffmpeg a failed test left running) can't be removed:
+  // that must not hide the real failure behind a cleanup error.
+  try {
+    rmSync(temp, { recursive: true, force: true })
+  } catch {}
+})
 beforeEach(() => synthesizeSpeech.mockReset())
 
 /** Half a second of silent 24 kHz PCM, as Gemini sends it. */
@@ -93,7 +99,9 @@ describe('AI voice-over on the free tier', () => {
     // The joined voice-over is saved, so the parts are gone.
     expect(data.voiceParts).toEqual([])
     expect(existsSync(localPath(kept?.key ?? ''))).toBe(false)
-  })
+    // Real ffmpeg runs several times here: about a second alone, but past vitest's 5 s default when
+    // the machine is busy (other suites running at once), like the other ffmpeg tests.
+  }, 120_000)
 
   it('waits out the per-minute limit instead of failing', async () => {
     const run = vi
