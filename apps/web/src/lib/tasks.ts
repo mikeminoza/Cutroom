@@ -6,7 +6,8 @@ import type { SceneDraft } from '@cutroom/shared/ai'
  * What a task does. 'draft' (the script written live and storyboarded) and 'post' (the title,
  * description and tags) also run from the queue, for Ideas → Create drafts, and so does 'picture'
  * (scene pictures), for Images → Generate missing; every kind is also a button's AI request,
- * recorded while it runs so a reopened page can tell it is still going. 'autopilot' only runs from
+ * recorded while it runs so a reopened page can tell it is still going. 'scenes' also runs from
+ * the queue to finish a long script's storyboard that ran out of time. 'autopilot' only runs from
  * the queue: the weekly autopilot's draft (script, scenes and pictures from the Library), in a
  * request of its own rather than inside the daily cron.
  */
@@ -24,8 +25,22 @@ export type TaskKind =
 
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
+/**
+ * A storyboard that stopped before the end: the parts of the script already storyboarded, kept for
+ * the next run of the same script with the same settings (`key`).
+ */
+export interface KeptStoryboard {
+  key: string
+  parts: { text: string; scenes: SceneDraft[] }[]
+}
+
 /** What a queued task needs besides its project. */
 export interface TaskInput {
+  /**
+   * For scenes queued to go on with a long script that ran out of time: the parts done so far,
+   * so only the rest is asked for.
+   */
+  storyboard?: KeptStoryboard
   /** For a draft: anything else Gemini should know. */
   notes?: string
   /** For pictures: the scenes to make them for, side by side. */
@@ -38,11 +53,8 @@ export interface TaskResult {
   storyboardError?: string | null
   /** For pictures: the scenes Gemini didn't make, and why. */
   failed?: { sceneId: string; error: string }[]
-  /**
-   * For scenes that stopped before the end (out of time, say): the parts of the script already
-   * storyboarded, kept for the next try of the same script with the same settings (`key`).
-   */
-  storyboard?: { key: string; parts: { text: string; scenes: SceneDraft[] }[] }
+  /** For scenes that failed part way: the parts done, kept for trying again. */
+  storyboard?: KeptStoryboard
 }
 
 /** Why the rest of a batch was cancelled, when it was you. */

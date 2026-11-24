@@ -12,10 +12,19 @@ import { after } from 'next/server'
 import type { TaskKind, TaskResult } from '@/lib/tasks'
 import { internalKey, safeEqual } from './auth'
 import type { TaskRow } from './db/schema'
-import { draftProject, writeAutopilotDraft, writePost } from './drafting'
+import { draftProject, storyboardProject, writeAutopilotDraft, writePost } from './drafting'
 import { badRequest, describeError, HttpError } from './http'
 import { makeScenePicture } from './images'
-import { cancelBatch, claimTask, finishTask, holdLease, queueState, recoverStale, skipRest } from './tasks'
+import {
+  cancelBatch,
+  claimTask,
+  finishTask,
+  holdLease,
+  keptOn,
+  queueState,
+  recoverStale,
+  skipRest,
+} from './tasks'
 
 function projectOf(task: TaskRow): string {
   if (!task.projectId) badRequest('This task has no video.')
@@ -51,6 +60,13 @@ const RUN: Partial<
   autopilot: async (task) => {
     if (!hasGeminiKey()) badRequest(NO_KEY)
     return { result: await writeAutopilotDraft(projectOf(task)) }
+  },
+  // A long script's scenes going on from the parts done (storyboardProject): out of time again,
+  // it queues the next run itself, which this run then starts.
+  scenes: async (task) => {
+    if (!hasGeminiKey()) badRequest(NO_KEY)
+    await storyboardProject(projectOf(task), undefined, task.input.storyboard)
+    return {}
   },
   picture: async (task) => {
     if (!hasGeminiKey()) badRequest(NO_KEY)
@@ -90,7 +106,7 @@ export async function runNextTask(origin: string): Promise<TaskRow | null> {
   } catch (error) {
     // Logged too: nobody is waiting on this request to see it.
     const { status, body } = describeError(error)
-    await finishTask(task, { status: 'failed', error: body.error })
+    await finishTask(task, { status: 'failed', error: body.error, result: keptOn(error) })
     if (task.batchId && STOPS_BATCH.includes(status)) await cancelBatch(task.batchId, body.error)
     else await skipRest(task)
   } finally {

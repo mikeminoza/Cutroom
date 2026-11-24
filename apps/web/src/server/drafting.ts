@@ -36,7 +36,7 @@ import {
 } from '@cutroom/shared/types'
 import { and, desc, eq, gte, inArray } from 'drizzle-orm'
 import type { DraftBatchDTO, SceneLayerChange } from '@/lib/dto'
-import { STOPPED_BY_YOU } from '@/lib/tasks'
+import { type KeptStoryboard, STOPPED_BY_YOU } from '@/lib/tasks'
 import { retentionLessons, searchTermsFor, topTitles } from './analytics'
 import { db, schema } from './db'
 import type { TaskRow } from './db/schema'
@@ -180,11 +180,20 @@ export async function writePost(id: string, events?: AnswerEvents<PostDetails>):
 /**
  * Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one.
  * With `events`, the scenes are handed over as they're written (splitScript); the old scenes stay
- * until the new ones replace them all at the end. A long script can need more than one request's
- * time: when it stops part way, the parts done are kept on its task (keepOnTask), and the next try
- * of the same script with the same settings goes on from there instead of starting over.
+ * until the new ones replace them all at the end.
+ *
+ * A long script can need more than one request's time. When a run runs out of time having got
+ * parts done, the rest goes on by itself: a 'scenes' task is queued with the parts done so far
+ * (`from` is how a queued run gets them), and runs in a request of its own; once it has, the page
+ * shows the scenes. It keeps going like that while each run gets more done. Returns true when it
+ * went on in the background, after starting nothing (the caller starts the queue: resumeTasks).
+ * Any other stop keeps the parts done on its task (keepOnTask), so trying again goes on from there.
  */
-export async function storyboardProject(id: string, events?: AnswerEvents<SceneDraft[]>): Promise<void> {
+export async function storyboardProject(
+  id: string,
+  events?: AnswerEvents<SceneDraft[]>,
+  from?: KeptStoryboard,
+): Promise<boolean> {
   const project = await getProjectRow(id)
   if (!project.script.trim()) badRequest('Write or paste the script first.')
   const characters = await getCharacters(id)
@@ -195,26 +204,39 @@ export async function storyboardProject(id: string, events?: AnswerEvents<SceneD
     characters: characters.map((c) => ({ name: c.name, description: c.description })),
   }
   const key = createHash('sha256').update(JSON.stringify(board)).digest('hex')
-  const earlier = (await keptByLastFailure(id, 'scenes'))?.storyboard
+  const earlier = from ?? (await keptByLastFailure(id, 'scenes'))?.storyboard
   const kept = new Map(earlier?.key === key ? earlier.parts.map((p) => [p.text, p.scenes]) : [])
   const done: { text: string; scenes: SceneDraft[] }[] = []
+  /** Parts kept from before: what's done beyond them is this run's. */
+  let reused = 0
   let drafts: SceneDraft[]
   try {
     drafts = await splitScript({ ...board, script: project.script }, events, {
-      kept: (part) => kept.get(part),
+      kept: (part) => {
+        const scenes = kept.get(part)
+        if (scenes) reused++
+        return scenes
+      },
       onPart: (text, scenes) => done.push({ text, scenes }),
     })
   } catch (error) {
     if (done.length === 0 || !(error instanceof AiError)) throw error
+    const storyboard = { key, parts: done }
+    // Out of time with more done than before: the rest goes on in a run of its own.
+    if (error.code === 'timeout' && done.length > reused) {
+      await queueBatch([{ kind: 'scenes', projectId: id, input: { storyboard } }])
+      return true
+    }
     const sofar = `${done.length} of ${scriptParts(project.script).length} parts are storyboarded and kept, and trying again goes on from there.`
     throw keepOnTask(
       error.code === 'timeout'
         ? new AiError(`Gemini ran out of time on this long script: ${sofar}`, 'timeout')
         : new AiError(`${error.message} ${sofar}`, error.code),
-      { storyboard: { key, parts: done } },
+      { storyboard },
     )
   }
   await placeScenes(id, drafts)
+  return false
 }
 
 /** A storyboard's scenes, timed by estimate (or to the voice-over if there is one), as the scenes. */

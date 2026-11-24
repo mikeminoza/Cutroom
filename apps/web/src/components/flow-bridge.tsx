@@ -61,11 +61,22 @@ export function FlowBridge() {
         // Only a script with no scenes yet: a split replaces the scenes, with their pictures and timing.
         if (split && data.scenes.length === 0 && data.project.script.trim()) {
           toast.loading('Splitting the script into scenes with AI, for Flow…', { id: 'flow-split' })
+          let continuing: boolean | undefined
           try {
-            data = await api.post<ProjectFull>(`/api/projects/${projectId}/ai/scenes`)
+            ;({ continuing, ...data } = await api.post<ProjectFull & { continuing?: boolean }>(
+              `/api/projects/${projectId}/ai/scenes`,
+            ))
           } catch (error) {
             toast.error(`Splitting the script for Flow: ${errorText(error)}`, { id: 'flow-split' })
             throw error
+          }
+          // A long script that ran out of time goes on splitting in the background: no scenes yet.
+          if (continuing) {
+            const wait =
+              'This long script needs more time: Gemini goes on splitting it in the background. Open it in Flow again once its scenes show in Cutroom.'
+            toast.info(wait, { id: 'flow-split' })
+            client.setQueryData(keys.project(projectId), data)
+            throw new Error(wait)
           }
           toast.success(`Split into ${plural(data.scenes.length, 'scene')}, ready for Flow`, {
             id: 'flow-split',

@@ -122,6 +122,11 @@ export function keepOnTask<E extends object>(error: E, result: TaskResult): E {
   return error
 }
 
+/** What work that stopped with `error` got done (keepOnTask), for its task's record. */
+export function keptOn(error: unknown): TaskResult | undefined {
+  return error && typeof error === 'object' ? keptOnFailure.get(error) : undefined
+}
+
 /**
  * What the newest finished task of `kind` on a project kept, when it failed (keepOnTask); null
  * when it didn't fail, or kept nothing. The run asking is itself running, so it isn't counted.
@@ -182,12 +187,7 @@ export async function startTracking(
   }
   return {
     done: () => end({ status: 'done' }),
-    failed: (error) =>
-      end({
-        status: 'failed',
-        error: messageOf(error),
-        result: error && typeof error === 'object' ? keptOnFailure.get(error) : undefined,
-      }),
+    failed: (error) => end({ status: 'failed', error: messageOf(error), result: keptOn(error) }),
   }
 }
 

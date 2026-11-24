@@ -2505,32 +2505,126 @@ describe('AI answers sent as Gemini writes them', () => {
     expect(await lastTask()).toMatchObject({ kind: 'scenes', status: 'done' })
   })
 
-  it('keeps the parts of a long storyboard that ran out of time, and goes on from there next time', async () => {
+  it('goes on with a long storyboard in the background when it runs out of time, from the parts done', async () => {
     const id = await newProject()
-    // Two storyboard parts of 200 words each.
+    const database = await db()
+    await database.delete(schema.tasks)
+    later.length = 0
+    // The run the queue starts next, as the app's own call: answered, and run below by hand.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 202 })),
+    )
+    // Three storyboard parts of 200 words each.
+    const parts = ['one', 'two', 'three'].map((w) => `${Array.from({ length: 200 }, () => w).join(' ')}.`)
+    await projects.updateProject(id, { script: parts.join('\n\n') })
+    const split = vi.mocked(ai.splitScript)
+    /** Which parts each run was handed from the runs before it. */
+    const handed: boolean[][] = []
+    /** One run of the storyboard: Gemini gets `fits` more parts done before the time runs out. */
+    const runFitting = (fits: number) =>
+      split.mockImplementationOnce(async (_input, _events, progress) => {
+        const kept = parts.map((part) => progress?.kept?.(part))
+        handed.push(kept.map(Boolean))
+        const scenes: Awaited<ReturnType<typeof ai.splitScript>> = []
+        for (const [i, part] of parts.entries()) {
+          let done = kept[i]
+          if (!done) {
+            if (fits-- <= 0) {
+              throw new ai.AiError(
+                'Gemini ran out of time: a request may take 4½ minutes at most.',
+                'timeout',
+              )
+            }
+            done = [scene(`Part ${i + 1}.`)]
+          }
+          progress?.onPart?.(part, done)
+          scenes.push(...done)
+        }
+        return scenes
+      })
+    const scenesTasks = () =>
+      database
+        .select()
+        .from(schema.tasks)
+        .where(eq(schema.tasks.projectId, id))
+        .orderBy(schema.tasks.createdAt)
+    try {
+      // The page's request gets the first part done: the rest goes on in the background.
+      runFitting(1)
+      const first = await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+      expect(first.at(-1)).toMatchObject({ type: 'done', data: { continuing: true } })
+      expect(first.at(-1).data.tasks).toContainEqual(
+        expect.objectContaining({ kind: 'scenes', status: 'queued' }),
+      )
+      expect(await projects.getScenes(id)).toEqual([])
+      expect(later).toHaveLength(1)
+      const [queued] = (await scenesTasks()).filter((t) => t.status === 'queued')
+      expect(queued.input.storyboard?.parts.map((p) => p.text)).toEqual([parts[0]])
+      // While it goes on, the page's button is refused.
+      expect((await scenesRoute.POST(live(), ctx(id))).status).toBe(400)
+
+      // Its run gets one more done and runs out of time again: it queues the next run itself.
+      runFitting(1)
+      await taskRunner.runNextTask('http://localhost')
+      // That run gets nothing more done: it stops, and keeps what's done for trying again.
+      runFitting(0)
+      await taskRunner.runNextTask('http://localhost')
+      const runs = await scenesTasks()
+      expect(runs.map((t) => [t.inline, t.status])).toEqual([
+        [true, 'done'],
+        [false, 'done'],
+        [false, 'failed'],
+      ])
+      expect(runs[2].error).toBe(
+        'Gemini ran out of time on this long script: 2 of 3 parts are storyboarded and kept, and trying again goes on from there.',
+      )
+      expect(await taskRunner.runNextTask('http://localhost')).toBeNull()
+
+      // Trying again from the page asks for the last part only, and saves all the scenes.
+      runFitting(1)
+      const done = await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+      expect(done.at(-1).type).toBe('done')
+      expect(done.at(-1).data.continuing).toBeUndefined()
+      expect((await projects.getScenes(id)).map((s) => s.narration)).toEqual([
+        'Part 1.',
+        'Part 2.',
+        'Part 3.',
+      ])
+      // Done: a later try starts from nothing.
+      runFitting(3)
+      await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+      expect(handed).toEqual([
+        [false, false, false],
+        [true, false, false],
+        [true, true, false],
+        [true, true, false],
+        [false, false, false],
+      ])
+    } finally {
+      later.length = 0
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps the parts of a long storyboard for trying again when other settings or trouble stop it', async () => {
+    const id = await newProject()
     const [first, second] = ['one', 'two'].map((w) => `${Array.from({ length: 200 }, () => w).join(' ')}.`)
     await projects.updateProject(id, { script: `${first}\n\n${second}` })
     const split = vi.mocked(ai.splitScript)
-    /** What each try is handed from the one before: the scenes kept for each part, or undefined. */
     const handed: (Awaited<ReturnType<typeof ai.splitScript>> | undefined)[][] = []
-    const tryOnce = (outcome: 'stops' | 'finishes') =>
-      split.mockImplementationOnce(async (_input, _events, progress) => {
-        handed.push([progress?.kept?.(first), progress?.kept?.(second)])
-        progress?.onPart?.(first, progress.kept?.(first) ?? [scene('One.')])
-        if (outcome === 'stops') {
-          throw new ai.AiError('Gemini ran out of time: a request may take 4½ minutes at most.', 'timeout')
-        }
-        progress?.onPart?.(second, [scene('Two.')])
-        return [scene('One.'), scene('Two.')]
-      })
-
-    tryOnce('stops')
+    // Gemini gets the first part done, then is overloaded: not a matter of time, so no going on.
+    split.mockImplementationOnce(async (_input, _events, progress) => {
+      handed.push([progress?.kept?.(first), progress?.kept?.(second)])
+      progress?.onPart?.(first, [scene('One.')])
+      throw new ai.AiError('Gemini is overloaded right now. Try again in a minute.', 'busy')
+    })
     expect(await eventsOf(await scenesRoute.POST(live(), ctx(id)))).toEqual([
       {
         type: 'error',
-        code: 'timeout',
+        code: 'busy',
         error:
-          'Gemini ran out of time on this long script: 1 of 2 parts are storyboarded and kept, and trying again goes on from there.',
+          'Gemini is overloaded right now. Try again in a minute. 1 of 2 parts are storyboarded and kept, and trying again goes on from there.',
       },
     ])
     expect(await lastTask()).toMatchObject({
@@ -2538,23 +2632,15 @@ describe('AI answers sent as Gemini writes them', () => {
       status: 'failed',
       result: { storyboard: { parts: [{ text: first, scenes: [scene('One.')] }] } },
     })
-
-    // With other settings the kept parts don't fit: Gemini starts over (and stops again).
+    // With other settings the kept parts don't fit, and Gemini starts over.
     await projects.updateProject(id, { pace: 5 })
-    tryOnce('stops')
-    await eventsOf(await scenesRoute.POST(live(), ctx(id)))
-    // Tried again with those settings: the first part is kept, only the second is asked for.
-    tryOnce('finishes')
-    const done = await eventsOf(await scenesRoute.POST(live(), ctx(id)))
-    expect(done.at(-1)).toMatchObject({ type: 'done' })
-    expect((await projects.getScenes(id)).map((s) => s.narration)).toEqual(['One.', 'Two.'])
-    // Done: nothing is kept for a try after that.
-    tryOnce('finishes')
+    split.mockImplementationOnce(async (_input, _events, progress) => {
+      handed.push([progress?.kept?.(first), progress?.kept?.(second)])
+      return [scene('One.'), scene('Two.')]
+    })
     await eventsOf(await scenesRoute.POST(live(), ctx(id)))
     expect(handed).toEqual([
       [undefined, undefined],
-      [undefined, undefined],
-      [[scene('One.')], undefined],
       [undefined, undefined],
     ])
   })

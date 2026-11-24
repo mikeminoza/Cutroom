@@ -122,18 +122,26 @@ export function ScriptStep({ data, selectedSceneId, selectScene, goTo }: StepPro
             undefined,
           )
     setBusy(null)
-    if (full) toast.success(`Split into ${full.scenes.length} scenes`)
+    if (!full) return
+    // A long script that ran out of time goes on in the background: the scenes show once it's done.
+    if ('continuing' in full && full.continuing) {
+      toast.info('This long script needs more time: Gemini goes on splitting it in the background.', {
+        description: 'The scenes show here once they’re done. You can close this page meanwhile.',
+      })
+    } else {
+      toast.success(`Split into ${full.scenes.length} scenes`)
+    }
   }
 
   /**
    * Gemini splits the script into scenes as you watch: each scene shows as soon as it's written, in
    * script order, and they replace the old scenes once all are saved.
    */
-  const splitLive = async (): Promise<ProjectFull | null> => {
+  const splitLive = async (): Promise<(ProjectFull & { continuing?: boolean }) | null> => {
     setSplitting([])
     try {
       await saver.flushAll()
-      const full = await streamAnswer<ProjectFull, ListChange<SceneDraft>>(
+      const full = await streamAnswer<ProjectFull & { continuing?: boolean }, ListChange<SceneDraft>>(
         `/api/projects/${project.id}/ai/scenes`,
         {},
         {
