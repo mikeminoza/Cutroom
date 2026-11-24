@@ -4,8 +4,10 @@ import { listBreakouts, scanBreakouts } from '@/server/breakouts'
 import { readJson, route } from '@/server/http'
 import { getSettings, saveSettings } from '@/server/settings'
 
-// A search is a few YouTube calls, and Gemini writes the searches the first time.
-export const maxDuration = 60
+// A search is a few YouTube calls, and Gemini writes the searches the first time: like every route
+// that may ask Gemini, the Hobby plan's 300 s with Fluid compute, which the AI budget is made for
+// (AI_BUDGET_MS). With 60 s, a slow Gemini ended in a bare 504.
+export const maxDuration = 300
 
 async function breakouts(): Promise<BreakoutsDTO> {
   const settings = await getSettings()

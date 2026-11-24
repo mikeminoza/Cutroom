@@ -110,6 +110,39 @@ function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Something went wrong.'
 }
 
+/** What failed work got done before it stopped, by the error it stopped with (see keepOnTask). */
+const keptOnFailure = new WeakMap<object, TaskResult>()
+
+/**
+ * Marks `error` as work that stopped with `result` done: when the work is a tracked task, the
+ * task keeps it, so trying again can pick up where it stopped. Returns the error, to throw.
+ */
+export function keepOnTask<E extends object>(error: E, result: TaskResult): E {
+  keptOnFailure.set(error, result)
+  return error
+}
+
+/**
+ * What the newest finished task of `kind` on a project kept, when it failed (keepOnTask); null
+ * when it didn't fail, or kept nothing. The run asking is itself running, so it isn't counted.
+ */
+export async function keptByLastFailure(projectId: string, kind: TaskKind): Promise<TaskResult | null> {
+  const database = await db()
+  const [last] = await database
+    .select({ status: schema.tasks.status, result: schema.tasks.result })
+    .from(schema.tasks)
+    .where(
+      and(
+        eq(schema.tasks.projectId, projectId),
+        eq(schema.tasks.kind, kind),
+        inArray(schema.tasks.status, ['done', 'failed', 'cancelled']),
+      ),
+    )
+    .orderBy(desc(schema.tasks.createdAt))
+    .limit(1)
+  return last?.status === 'failed' ? last.result : null
+}
+
 /**
  * Records a button's AI work on a project as running, refusing it while the same work (SAME_WORK)
  * is still running or queued for the project. Says how it ended with done() or failed(). Use
@@ -149,7 +182,12 @@ export async function startTracking(
   }
   return {
     done: () => end({ status: 'done' }),
-    failed: (error) => end({ status: 'failed', error: messageOf(error) }),
+    failed: (error) =>
+      end({
+        status: 'failed',
+        error: messageOf(error),
+        result: error && typeof error === 'object' ? keptOnFailure.get(error) : undefined,
+      }),
   }
 }
 
@@ -237,7 +275,7 @@ export async function claimTask(): Promise<TaskRow | null> {
  */
 export async function finishTask(
   task: TaskRow,
-  outcome: { status: 'done'; result?: TaskResult } | { status: 'failed'; error: string },
+  outcome: { status: 'done'; result?: TaskResult } | { status: 'failed'; error: string; result?: TaskResult },
 ): Promise<boolean> {
   const database = await db()
   const now = new Date()
@@ -245,7 +283,7 @@ export async function finishTask(
     .update(schema.tasks)
     .set({
       status: outcome.status,
-      result: outcome.status === 'done' ? (outcome.result ?? null) : null,
+      result: outcome.result ?? null,
       error: outcome.status === 'failed' ? outcome.error : null,
       leaseUntil: null,
       finishedAt: now,

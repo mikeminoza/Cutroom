@@ -4,6 +4,7 @@
 // breaking out in the niche, once a week per channel has Gemini read what viewers say in the
 // comments, and starts queued AI work again whose run died while no page was open.
 
+import { withAiBudget } from '@cutroom/shared/ai'
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { refreshStats } from '@/server/analytics'
@@ -20,12 +21,18 @@ import { resumeTasks } from '@/server/task-runner'
 import { pruneTasks } from '@/server/tasks'
 
 // Stats take up to 45 s; reading a channel's comments with Gemini can take longer. The Hobby plan
-// allows 300 s with Fluid compute (on by default).
+// allows 300 s with Fluid compute (on by default). Every Gemini call in the run shares one budget
+// (withAiBudget), so a slow one makes the later steps stop with a note instead of the whole run
+// being cut off.
 export const maxDuration = 300
 
 const STUCK_MS = 60 * 60 * 1000
 
-export async function GET(request: Request): Promise<Response> {
+export function GET(request: Request): Promise<Response> {
+  return withAiBudget(() => daily(request))
+}
+
+async function daily(request: Request): Promise<Response> {
   const denied = cronDenied(request)
   if (denied) return denied
   const database = await db()

@@ -1,7 +1,7 @@
 // AI answers that arrive while Gemini writes them (server/stream.ts): one JSON event per line, so
 // the page can show each part as soon as it's written. Write with AI (lib/draft.ts) reads its
 // script the same way.
-import { ApiError } from './api'
+import { ApiError, errorOf, send } from './api'
 
 /** The HTTP status a plain request would have answered with, by the AI's error code. */
 const STATUS_OF: Record<string, number> = {
@@ -35,7 +35,8 @@ type Ending = { type: 'done' } | { type: 'error'; error: string; code?: string }
 /**
  * Posts `body` to a route that answers one event per line, telling `onEvent` each one as it
  * arrives. Resolves with the 'done' event; an 'error' event throws as a failed request would, and
- * so does a connection that breaks first (with `broken` as the message).
+ * so does a connection that breaks first, however it breaks (with `broken` as the message): the
+ * server stopped at its time limit, or the network dropped.
  */
 export async function postForEvents<E extends { type: string }>(
   url: string,
@@ -43,7 +44,7 @@ export async function postForEvents<E extends { type: string }>(
   onEvent: (event: E) => void,
   broken: string,
 ): Promise<Extract<E, { type: 'done' }>> {
-  const res = await fetch(url, {
+  const res = await send(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
     body: JSON.stringify(body),
@@ -51,11 +52,18 @@ export async function postForEvents<E extends { type: string }>(
   })
   if (res.status === 401) window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`
   // Refused before Gemini started (no script, no key, already running): a plain JSON error.
-  if (!res.ok || !res.body) {
-    const data = await res.json().catch(() => null)
-    throw new ApiError(data?.error ?? `Request failed (HTTP ${res.status}).`, res.status)
-  }
-  for await (const event of readEvents<E | Ending>(res.body)) {
+  if (!res.ok || !res.body) throw await errorOf(res)
+  const events = readEvents<E | Ending>(res.body)
+  for (;;) {
+    let next: IteratorResult<E | Ending>
+    try {
+      next = await events.next()
+    } catch {
+      // Cut off mid-line or mid-read: the browser says "network error" or "Failed to fetch".
+      throw new ApiError(broken, 0)
+    }
+    if (next.done) break
+    const event = next.value
     onEvent(event as E)
     if (event.type === 'done') return event as Extract<E, { type: 'done' }>
     if (event.type === 'error') {
@@ -63,7 +71,7 @@ export async function postForEvents<E extends { type: string }>(
       throw new ApiError(error, STATUS_OF[code ?? ''] ?? 502)
     }
   }
-  throw new Error(broken)
+  throw new ApiError(broken, 0)
 }
 
 /** A long list sent as what changed (server/stream.ts): the items from position `from` on. */

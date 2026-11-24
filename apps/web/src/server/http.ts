@@ -1,4 +1,4 @@
-import { AiError } from '@cutroom/shared/ai'
+import { AiError, withAiBudget } from '@cutroom/shared/ai'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { isAuthorized } from './auth'
@@ -58,20 +58,26 @@ export function toErrorResponse(error: unknown): NextResponse {
 
 type Handler<C> = (request: Request, context: C) => Promise<Response | unknown>
 
-/** Wraps a route handler: checks the login session, turns thrown errors into JSON responses. */
+/**
+ * Wraps a route handler: checks the login session, turns thrown errors into JSON responses, and
+ * gives the whole request one AI budget (withAiBudget), from when it came in: Vercel stops a request
+ * 300 s after it starts, however many Gemini calls it makes, and counts what it streams or does
+ * after answering (after()) too.
+ */
 export function route<C>(handler: Handler<C>, options: { public?: boolean } = {}) {
-  return async (request: Request, context: C): Promise<Response> => {
-    try {
-      if (!options.public && !(await isAuthorized(request))) {
-        return NextResponse.json({ error: 'Sign in to continue.' }, { status: 401 })
+  return (request: Request, context: C): Promise<Response> =>
+    withAiBudget(async () => {
+      try {
+        if (!options.public && !(await isAuthorized(request))) {
+          return NextResponse.json({ error: 'Sign in to continue.' }, { status: 401 })
+        }
+        const result = await handler(request, context)
+        if (result instanceof Response) return result
+        return NextResponse.json(result ?? { ok: true })
+      } catch (error) {
+        return toErrorResponse(error)
       }
-      const result = await handler(request, context)
-      if (result instanceof Response) return result
-      return NextResponse.json(result ?? { ok: true })
-    } catch (error) {
-      return toErrorResponse(error)
-    }
-  }
+    })
 }
 
 export async function readJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {

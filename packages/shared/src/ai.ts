@@ -1,5 +1,6 @@
 // Gemini calls (free tier text model). Used by the web app for quick calls
 // and by the worker for the voice-over transcription.
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createPartFromUri, GoogleGenAI, type ThinkingConfig, type ThinkingLevel } from '@google/genai'
 import { z } from 'zod'
 import { narrationHas } from './accents'
@@ -120,17 +121,40 @@ function retryDelayMs(message: string): number | null {
   return seconds ? Number(seconds) * 1000 : null
 }
 
+/** Every try got stuck: no answer within its time (ATTEMPT_MS). */
 const TOO_SLOW = 'Gemini is taking too long to answer right now. Try again in a minute.'
+/** The request's AI budget (AI_BUDGET_MS) ran out before Gemini was done. */
+const OUT_OF_TIME = 'Gemini ran out of time: a request may take 4½ minutes at most. Try again in a minute.'
 
 /**
- * How long an AI request may take on Vercel, retries included. The AI routes run for up to 300 s
- * (maxDuration; the Hobby plan's limit with Fluid compute), so stop in time to answer with a clear
- * message instead of a bare 504. The worker has no such limit.
+ * How long the AI work of one web request may take, from when the request came in, retries and
+ * every call in it included. The AI routes run for up to 300 s (maxDuration; the Hobby plan's limit
+ * with Fluid compute): stopping here leaves time to save what's done and answer with a clear
+ * message, where running on would end in a bare 504. The worker has no such limit.
  */
 export const AI_BUDGET_MS = 270_000
 
+/** When the AI work of the request in progress has to be done by (see withAiBudget). */
+const budget = new AsyncLocalStorage<number>()
+
+/**
+ * Runs `work` with one AI budget for all of it: every Gemini call inside, however many one after
+ * another (a long storyboard's parts, a script and then its scenes), has to be done `ms` from now.
+ * The web app runs each request in one (server/http.ts), work it does after answering included,
+ * since Vercel counts both against the request's 300 s. Inside another budget, the earlier
+ * deadline counts.
+ */
+export function withAiBudget<T>(work: () => T, ms: number = AI_BUDGET_MS): T {
+  const outer = budget.getStore()
+  return budget.run(Math.min(outer ?? Number.POSITIVE_INFINITY, Date.now() + ms), work)
+}
+
+/**
+ * The deadline for a Gemini call: its request's budget (withAiBudget). Outside one, a call of its
+ * own on Vercel, and none on the worker.
+ */
 function requestDeadline(): number | undefined {
-  return process.env.VERCEL ? Date.now() + AI_BUDGET_MS : undefined
+  return budget.getStore() ?? (process.env.VERCEL ? Date.now() + AI_BUDGET_MS : undefined)
 }
 
 /**
@@ -247,7 +271,7 @@ async function withRetry<T>(
   for (let attempt = 0; attempt < 4; attempt++) {
     signal?.throwIfAborted()
     stats.tries = attempt + 1
-    if (deadline && Date.now() >= deadline) throw new AiError(TOO_SLOW, 'timeout')
+    if (deadline && Date.now() >= deadline) throw new AiError(OUT_OF_TIME, 'timeout')
     const atDeadline = deadline ? AbortSignal.timeout(Math.max(1000, deadline - Date.now())) : undefined
     // A timer rather than AbortSignal.timeout, so tests can fake the clock.
     const tooLong = new AbortController()
@@ -259,7 +283,9 @@ async function withRetry<T>(
       // Stopped by the caller: not a failure to retry or explain.
       if (signal?.aborted) throw error
       // The deadline ran out in the middle of the request.
-      if (deadline && (atDeadline?.aborted || Date.now() >= deadline)) throw new AiError(TOO_SLOW, 'timeout')
+      if (deadline && (atDeadline?.aborted || Date.now() >= deadline)) {
+        throw new AiError(OUT_OF_TIME, 'timeout')
+      }
       let asked: number | null = null
       if (tooLong.signal.aborted) {
         // No answer in time: this request is most likely stuck, and a new one usually isn't.
@@ -316,7 +342,14 @@ async function withRetry<T>(
     throw new AiError('Gemini free-tier limit reached. Wait a minute and try again.', 'rate_limited')
   }
   if (status !== null && status >= 500) {
-    throw new AiError('Gemini is busy right now. Try again in a minute.', 'busy')
+    // Google's own trouble, said as Google said it: overloaded (503), or out of its own time (504).
+    const why =
+      status === 503
+        ? 'Gemini is overloaded right now.'
+        : status === 504
+          ? 'Gemini timed out on its side.'
+          : 'Gemini is busy right now.'
+    throw new AiError(`${why} Try again in a minute.`, 'busy')
   }
   if (lastError instanceof AiError) throw lastError
   throw new AiError(`Gemini request failed: ${message.slice(0, 300)}`, 'failed')
@@ -884,32 +917,76 @@ function scenesInOrder(onScenes: ((scenes: SceneDraft[]) => void) | undefined) {
 }
 
 /**
+ * Runs `run` for each of `count` parts, `atOnce` at a time, in order. Once one fails, no other part
+ * starts and the ones running are stopped (their signal aborts), so the request answers with that
+ * failure at once instead of spending the free quota on parts it would throw away.
+ */
+async function inParts(
+  count: number,
+  atOnce: number,
+  run: (index: number, signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  const stop = new AbortController()
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(atOnce, count) }, async () => {
+      while (next < count && !stop.signal.aborted) {
+        const index = next++
+        try {
+          await run(index, stop.signal)
+        } catch (error) {
+          if (!stop.signal.aborted) stop.abort(error)
+          throw error
+        }
+      }
+    }),
+  )
+}
+
+/** A storyboard that stopped before the end: the parts it got done, to keep when it's tried again. */
+export interface StoryboardProgress {
+  /** A part's scenes from an earlier try, kept instead of asking Gemini again; undefined if none. */
+  kept?: (part: string) => SceneDraft[] | undefined
+  /** Each part once its scenes are written (or kept), with its text, in the order they're done. */
+  onPart?: (part: string, scenes: SceneDraft[]) => void
+}
+
+/**
  * The script as storyboard scenes, in parts of about STORYBOARD_PART_WORDS words, a few at a time.
  * With `events`, the scenes are handed over as Gemini writes them, in script order (see
- * scenesInOrder).
+ * scenesInOrder). With `progress`, parts done by an earlier try are kept, and each part done is
+ * told, so a long script that runs out of time is finished by trying again.
  */
 export async function splitScript(
   input: StoryboardInput & { script: string },
   events?: AnswerEvents<SceneDraft[]>,
+  progress: StoryboardProgress = {},
 ): Promise<SceneDraft[]> {
   const parts = scriptParts(input.script)
   const results: SceneDraft[][] = new Array(parts.length)
   const order = scenesInOrder(events?.onPartial)
-  let next = 0
-  await Promise.all(
-    Array.from({ length: Math.min(STORYBOARD_AT_ONCE, parts.length) }, async () => {
-      while (next < parts.length) {
-        const i = next++
-        results[i] = await storyboardPart(
-          input,
-          parts[i],
-          { number: i + 1, total: parts.length, last: i === parts.length - 1 },
-          { events: order.events(i) },
-        )
-        order.done(i, results[i])
-      }
-    }),
-  )
+  const todo: number[] = []
+  for (const [i, part] of parts.entries()) {
+    const kept = progress.kept?.(part)
+    if (!kept) {
+      todo.push(i)
+      continue
+    }
+    results[i] = kept
+    order.done(i, kept)
+    progress.onPart?.(part, kept)
+  }
+  await inParts(todo.length, STORYBOARD_AT_ONCE, async (n, signal) => {
+    const i = todo[n]
+    results[i] = await storyboardPart(
+      input,
+      parts[i],
+      { number: i + 1, total: parts.length, last: i === parts.length - 1 },
+      { signal, events: order.events(i) },
+    )
+    order.done(i, results[i])
+    progress.onPart?.(parts[i], results[i])
+  })
   return results.flat()
 }
 
@@ -1127,28 +1204,27 @@ export async function suggestEffects(
     words += n
   })
   const results: SceneEffects[] = scenes.map(() => ({ transition: 'cut', accent: 'none', accentWord: '' }))
-  let next = 0
-  await Promise.all(
-    Array.from({ length: Math.min(3, parts.length) }, async () => {
-      while (next < parts.length) {
-        const part = parts[next++]
-        const picks = await effectsPart(part.map((i) => ({ number: i + 1, ...scenes[i] })))
-        for (const pick of picks) {
-          const i = pick.scene - 1
-          if (!part.includes(i)) continue
-          results[i] = {
-            transition: pick.transition === 'whip' && i > 0 ? 'whip' : 'cut',
-            ...checkedAccent(pick.accent, pick.accentWord, scenes[i].narration),
-          }
-        }
+  await inParts(parts.length, 3, async (n, signal) => {
+    const part = parts[n]
+    const picks = await effectsPart(
+      part.map((i) => ({ number: i + 1, ...scenes[i] })),
+      signal,
+    )
+    for (const pick of picks) {
+      const i = pick.scene - 1
+      if (!part.includes(i)) continue
+      results[i] = {
+        transition: pick.transition === 'whip' && i > 0 ? 'whip' : 'cut',
+        ...checkedAccent(pick.accent, pick.accentWord, scenes[i].narration),
       }
-    }),
-  )
+    }
+  })
   return results
 }
 
 async function effectsPart(
   scenes: { number: number; narration: string; seconds: number }[],
+  signal?: AbortSignal,
 ): Promise<{ scene: number; transition: string; accent: string; accentWord: string }[]> {
   const list = scenes
     .map((s) => `${s.number}. (${s.seconds.toFixed(1)} s) ${s.narration.trim() || '(no narration)'}`)
@@ -1195,7 +1271,7 @@ ${list}`
       ),
     }),
     'You are a video editor for faceless YouTube explainer channels. You keep effects rare, so each one lands.',
-    { task: 'effects', maxTokens: scenes.length * 60 + 1000, lite: true },
+    { task: 'effects', maxTokens: scenes.length * 60 + 1000, lite: true, signal },
   )
   return result.scenes
 }
@@ -1868,13 +1944,9 @@ export async function translatePost(
     sofar[group] = list
     events?.onPartial?.(once(sofar.flat()))
   }
-  let next = 0
-  await Promise.all(
-    Array.from({ length: Math.min(3, groups.length) }, async () => {
-      while (next < groups.length) {
-        const i = next++
-        const codes = groups[i]
-        const prompt = `Translate this YouTube title and description from ${languageName(input.from)} into each of these languages: ${codes.map((c) => `${c} (${languageName(c)})`).join(', ')}.
+  await inParts(groups.length, 3, async (i, signal) => {
+    const codes = groups[i]
+    const prompt = `Translate this YouTube title and description from ${languageName(input.from)} into each of these languages: ${codes.map((c) => `${c} (${languageName(c)})`).join(', ')}.
 
 Write like a native YouTuber in each language, not word for word: keep the meaning and the hook. Each title max 100 characters, ideally under 60 with the hook first. In the description keep every timestamp (like 0:00), link, @handle and #hashtag exactly as written, and the line breaks; translate the words around them.
 
@@ -1885,43 +1957,41 @@ Description:
 """
 ${input.description}
 """`
-        const result = await generateJson(
-          prompt,
-          {
-            type: 'object',
-            properties: {
-              translations: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: { language: { type: 'string', enum: codes }, title: str, description: str },
-                  required: ['language', 'title', 'description'],
-                },
-              },
+    const result = await generateJson(
+      prompt,
+      {
+        type: 'object',
+        properties: {
+          translations: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { language: { type: 'string', enum: codes }, title: str, description: str },
+              required: ['language', 'title', 'description'],
             },
-            required: ['translations'],
           },
-          z.object({ translations: z.array(translationAnswer) }),
-          'You translate YouTube titles and descriptions for creators, so they read as if written in each language.',
-          // At most a token a character (languages written in other scripts), and some to spare.
-          {
-            task: `translation (${codes.join(', ')})`,
-            maxTokens:
-              Math.ceil(codes.length * (input.title.length + input.description.length) * 1.25) + 2000,
-            events: shaped(
-              events && {
-                onPartial: (list: PostTranslation[]) => show(i, list),
-                onRestart: () => show(i, []),
-              },
-              (answer) => translationsOf(answer.items('translations', translationAnswer) ?? [], codes),
-            ),
+        },
+        required: ['translations'],
+      },
+      z.object({ translations: z.array(translationAnswer) }),
+      'You translate YouTube titles and descriptions for creators, so they read as if written in each language.',
+      // At most a token a character (languages written in other scripts), and some to spare.
+      {
+        task: `translation (${codes.join(', ')})`,
+        maxTokens: Math.ceil(codes.length * (input.title.length + input.description.length) * 1.25) + 2000,
+        signal,
+        events: shaped(
+          events && {
+            onPartial: (list: PostTranslation[]) => show(i, list),
+            onRestart: () => show(i, []),
           },
-        )
-        results[i] = translationsOf(result.translations, codes)
-        if (events) show(i, results[i])
-      }
-    }),
-  )
+          (answer) => translationsOf(answer.items('translations', translationAnswer) ?? [], codes),
+        ),
+      },
+    )
+    results[i] = translationsOf(result.translations, codes)
+    if (events) show(i, results[i])
+  })
   return once(results.flat())
 }
 
@@ -3342,32 +3412,27 @@ export async function pickSceneLayers(
   const size = Math.ceil(total / parts)
   const picks: (LayerPick | null)[] = new Array(total).fill(null)
   const show = () => events?.onPartial?.([...picks])
-  let next = 0
-  await Promise.all(
-    Array.from({ length: Math.min(LAYER_PARTS_AT_ONCE, parts) }, async () => {
-      while (next < parts) {
-        const part = next++
-        const from = part * size
-        const scenes = input.scenes.slice(from, from + size)
-        const place = (local: (LayerPick | null)[]) => {
-          local.forEach((pick, i) => {
-            picks[from + i] = pick
-          })
-          show()
-        }
-        const answers = await layersPart(
-          input,
-          scenes,
-          input.scenes.slice(Math.max(0, from - LAYER_CONTEXT), from),
-          parts > 1 ? `scene layers (part ${part + 1} of ${parts})` : 'scene layers',
-          shaped(events && { onPartial: place, onRestart: () => place(scenes.map(() => null)) }, (answer) =>
-            picksOf(answer.items('scenes', layerAnswer) ?? [], scenes.length),
-          ),
-        )
-        place(picksOf(answers, scenes.length))
-      }
-    }),
-  )
+  await inParts(parts, LAYER_PARTS_AT_ONCE, async (part, signal) => {
+    const from = part * size
+    const scenes = input.scenes.slice(from, from + size)
+    const place = (local: (LayerPick | null)[]) => {
+      local.forEach((pick, i) => {
+        picks[from + i] = pick
+      })
+      show()
+    }
+    const answers = await layersPart(
+      input,
+      scenes,
+      input.scenes.slice(Math.max(0, from - LAYER_CONTEXT), from),
+      parts > 1 ? `scene layers (part ${part + 1} of ${parts})` : 'scene layers',
+      shaped(events && { onPartial: place, onRestart: () => place(scenes.map(() => null)) }, (answer) =>
+        picksOf(answer.items('scenes', layerAnswer) ?? [], scenes.length),
+      ),
+      signal,
+    )
+    place(picksOf(answers, scenes.length))
+  })
   return picks.map((pick) => pick ?? NO_LAYER)
 }
 
@@ -3378,6 +3443,7 @@ async function layersPart(
   before: { narration: string }[],
   task: string,
   events: AnswerEvents<unknown> | undefined,
+  signal?: AbortSignal,
 ): Promise<z.infer<typeof layerAnswer>[]> {
   const list = scenes
     .map(
@@ -3423,7 +3489,7 @@ For each scene, in order, pick the background that fits where it happens, and th
     },
     z.object({ scenes: z.array(layerAnswer) }),
     'You are a storyboard artist for a 2D cartoon channel.',
-    { task, maxTokens: scenes.length * 60 + 1000, lite: true, events },
+    { task, maxTokens: scenes.length * 60 + 1000, lite: true, events, signal },
   )
   return result.scenes
 }

@@ -1,8 +1,10 @@
 // Drafting with AI as server functions: the buttons' routes call them, and so does the weekly
 // autopilot, which turns ideas into ready drafts on its own (script, scenes, and pictures from
 // the Library), so all that is left is recording the voice-over and checking.
+import { createHash } from 'node:crypto'
 import { spaceEffects } from '@cutroom/shared/accents'
 import {
+  AiError,
   type AnswerEvents,
   type DraftEvents,
   draftScript,
@@ -15,6 +17,8 @@ import {
   pickSceneLayers,
   type SceneDraft,
   type ScriptBrief,
+  type StoryboardInput,
+  scriptParts,
   splitScript,
   suggestEffects,
   writePostDetails,
@@ -50,7 +54,7 @@ import {
 } from './projects'
 import { getSeries } from './series'
 import { appUrl, getSettings } from './settings'
-import { batchTasks, cancelBatch, latestBatchId, queueBatch } from './tasks'
+import { batchTasks, cancelBatch, keepOnTask, keptByLastFailure, latestBatchId, queueBatch } from './tasks'
 
 type ProjectRow = Awaited<ReturnType<typeof getProjectRow>>
 
@@ -176,22 +180,40 @@ export async function writePost(id: string, events?: AnswerEvents<PostDetails>):
 /**
  * Gemini storyboards the script into timed scenes, lined up with the voice-over if there is one.
  * With `events`, the scenes are handed over as they're written (splitScript); the old scenes stay
- * until the new ones replace them all at the end.
+ * until the new ones replace them all at the end. A long script can need more than one request's
+ * time: when it stops part way, the parts done are kept on its task (keepOnTask), and the next try
+ * of the same script with the same settings goes on from there instead of starting over.
  */
 export async function storyboardProject(id: string, events?: AnswerEvents<SceneDraft[]>): Promise<void> {
   const project = await getProjectRow(id)
   if (!project.script.trim()) badRequest('Write or paste the script first.')
   const characters = await getCharacters(id)
-  const drafts = await splitScript(
-    {
-      script: project.script,
-      pace: project.pace,
-      artStyle: project.artStyle,
-      format: project.format,
-      characters: characters.map((c) => ({ name: c.name, description: c.description })),
-    },
-    events,
-  )
+  const board: StoryboardInput = {
+    pace: project.pace,
+    artStyle: project.artStyle,
+    format: project.format,
+    characters: characters.map((c) => ({ name: c.name, description: c.description })),
+  }
+  const key = createHash('sha256').update(JSON.stringify(board)).digest('hex')
+  const earlier = (await keptByLastFailure(id, 'scenes'))?.storyboard
+  const kept = new Map(earlier?.key === key ? earlier.parts.map((p) => [p.text, p.scenes]) : [])
+  const done: { text: string; scenes: SceneDraft[] }[] = []
+  let drafts: SceneDraft[]
+  try {
+    drafts = await splitScript({ ...board, script: project.script }, events, {
+      kept: (part) => kept.get(part),
+      onPart: (text, scenes) => done.push({ text, scenes }),
+    })
+  } catch (error) {
+    if (done.length === 0 || !(error instanceof AiError)) throw error
+    const sofar = `${done.length} of ${scriptParts(project.script).length} parts are storyboarded and kept, and trying again goes on from there.`
+    throw keepOnTask(
+      error.code === 'timeout'
+        ? new AiError(`Gemini ran out of time on this long script: ${sofar}`, 'timeout')
+        : new AiError(`${error.message} ${sofar}`, error.code),
+      { storyboard: { key, parts: done } },
+    )
+  }
   await placeScenes(id, drafts)
 }
 

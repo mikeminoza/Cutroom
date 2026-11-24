@@ -1,5 +1,6 @@
 // AI work that runs on the server whether or not a page is open (server/tasks.ts): what it can be,
 // and how pages talk about it. Shared by the server and the pages.
+import type { SceneDraft } from '@cutroom/shared/ai'
 
 /**
  * What a task does. 'draft' (the script written live and storyboarded) and 'post' (the title,
@@ -34,6 +35,11 @@ export interface TaskResult {
   storyboardError?: string | null
   /** For pictures: the scenes Gemini didn't make, and why. */
   failed?: { sceneId: string; error: string }[]
+  /**
+   * For scenes that stopped before the end (out of time, say): the parts of the script already
+   * storyboarded, kept for the next try of the same script with the same settings (`key`).
+   */
+  storyboard?: { key: string; parts: { text: string; scenes: SceneDraft[] }[] }
 }
 
 /** Why the rest of a batch was cancelled, when it was you. */

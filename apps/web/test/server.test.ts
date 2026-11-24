@@ -2472,6 +2472,60 @@ describe('AI answers sent as Gemini writes them', () => {
     expect(await lastTask()).toMatchObject({ kind: 'scenes', status: 'done' })
   })
 
+  it('keeps the parts of a long storyboard that ran out of time, and goes on from there next time', async () => {
+    const id = await newProject()
+    // Two storyboard parts of 200 words each.
+    const [first, second] = ['one', 'two'].map((w) => `${Array.from({ length: 200 }, () => w).join(' ')}.`)
+    await projects.updateProject(id, { script: `${first}\n\n${second}` })
+    const split = vi.mocked(ai.splitScript)
+    /** What each try is handed from the one before: the scenes kept for each part, or undefined. */
+    const handed: (Awaited<ReturnType<typeof ai.splitScript>> | undefined)[][] = []
+    const tryOnce = (outcome: 'stops' | 'finishes') =>
+      split.mockImplementationOnce(async (_input, _events, progress) => {
+        handed.push([progress?.kept?.(first), progress?.kept?.(second)])
+        progress?.onPart?.(first, progress.kept?.(first) ?? [scene('One.')])
+        if (outcome === 'stops') {
+          throw new ai.AiError('Gemini ran out of time: a request may take 4½ minutes at most.', 'timeout')
+        }
+        progress?.onPart?.(second, [scene('Two.')])
+        return [scene('One.'), scene('Two.')]
+      })
+
+    tryOnce('stops')
+    expect(await eventsOf(await scenesRoute.POST(live(), ctx(id)))).toEqual([
+      {
+        type: 'error',
+        code: 'timeout',
+        error:
+          'Gemini ran out of time on this long script: 1 of 2 parts are storyboarded and kept, and trying again goes on from there.',
+      },
+    ])
+    expect(await lastTask()).toMatchObject({
+      kind: 'scenes',
+      status: 'failed',
+      result: { storyboard: { parts: [{ text: first, scenes: [scene('One.')] }] } },
+    })
+
+    // With other settings the kept parts don't fit: Gemini starts over (and stops again).
+    await projects.updateProject(id, { pace: 5 })
+    tryOnce('stops')
+    await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+    // Tried again with those settings: the first part is kept, only the second is asked for.
+    tryOnce('finishes')
+    const done = await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+    expect(done.at(-1)).toMatchObject({ type: 'done' })
+    expect((await projects.getScenes(id)).map((s) => s.narration)).toEqual(['One.', 'Two.'])
+    // Done: nothing is kept for a try after that.
+    tryOnce('finishes')
+    await eventsOf(await scenesRoute.POST(live(), ctx(id)))
+    expect(handed).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+      [[scene('One.')], undefined],
+      [undefined, undefined],
+    ])
+  })
+
   it('sends the scenes of Write with AI as they are storyboarded, from nothing after a restart', async () => {
     const id = await newProject()
     vi.mocked(ai.draftScript).mockImplementationOnce(async (_brief, _board, events) => {

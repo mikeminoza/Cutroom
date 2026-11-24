@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError } from '../src/lib/api'
+import { ApiError, api, UNREACHABLE } from '../src/lib/api'
 import { readEvents, streamAnswer } from '../src/lib/stream'
 
 /** A response body that arrives in these pieces. */
@@ -91,5 +91,52 @@ describe('an AI answer as Gemini writes it', () => {
 
     answering([{ type: 'partial', data: {} }])
     await expect(streamAnswer('/api/x')).rejects.toThrow('The connection broke before Gemini finished.')
+  })
+
+  it('says the connection broke however it breaks: cut off mid-answer, or mid-line', async () => {
+    // The browser's own words for a dropped stream ("network error") never reach the page.
+    vi.stubGlobal('fetch', async () => {
+      let sent = false
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) return controller.error(new TypeError('network error'))
+          sent = true
+          controller.enqueue(new TextEncoder().encode('{"type":"partial","data":{}}\n'))
+        },
+      })
+      return new Response(body)
+    })
+    await expect(streamAnswer('/api/x')).rejects.toMatchObject({
+      message: 'The connection broke before Gemini finished. Try again.',
+      status: 0,
+    })
+    vi.stubGlobal('fetch', async () => new Response(bodyOf(['{"type":"partial","data":{}}\n{"type":"do'])))
+    await expect(streamAnswer('/api/x')).rejects.toMatchObject({
+      message: 'The connection broke before Gemini finished. Try again.',
+    })
+  })
+})
+
+describe('requests that fail without an answer from Cutroom', () => {
+  it('says what a bare 504 from the host means, and a request that never got through', async () => {
+    // Vercel stopping a request at its time limit answers with its own page, not JSON.
+    vi.stubGlobal('fetch', async () => new Response('FUNCTION_INVOCATION_TIMEOUT', { status: 504 }))
+    await expect(api.post('/api/projects/p/ai/effects')).rejects.toMatchObject({
+      message:
+        'The server stopped this because it ran past its time limit (5 minutes). Try again in a minute.',
+      status: 504,
+    })
+    await expect(streamAnswer('/api/x')).rejects.toMatchObject({ status: 504 })
+    // Cutroom's own answer still wins.
+    vi.stubGlobal('fetch', async () =>
+      Response.json({ error: 'Gemini ran out of time.', code: 'timeout' }, { status: 504 }),
+    )
+    await expect(api.post('/api/x')).rejects.toMatchObject({ message: 'Gemini ran out of time.' })
+
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(api.get('/api/x')).rejects.toMatchObject({ message: UNREACHABLE, status: 0 })
+    await expect(streamAnswer('/api/x')).rejects.toMatchObject({ message: UNREACHABLE })
   })
 })

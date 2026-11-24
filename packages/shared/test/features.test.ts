@@ -667,6 +667,112 @@ describe('Gemini calls', () => {
     }
   })
 
+  it('gives all the calls of a request one budget, so the request ends in time however many it makes', async () => {
+    const { withAiBudget } = await import('../src/ai')
+    const start = Date.now()
+    let clock = start
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    try {
+      // Each answer takes 140 s: the second ends past the 270 s budget, and the third isn't asked.
+      generateContent.mockImplementation(async () => {
+        clock += 140_000
+        return oneIdea
+      })
+      // Off Vercel too, and an inner budget can't outlast the request's.
+      const outcome = withAiBudget(() =>
+        withAiBudget(async () => {
+          await askForIdeas()
+          await askForIdeas()
+          return askForIdeas()
+        }, 600_000),
+      )
+      await expect(outcome).rejects.toMatchObject({
+        code: 'timeout',
+        message: 'Gemini ran out of time: a request may take 4½ minutes at most. Try again in a minute.',
+      })
+      expect(generateContent).toHaveBeenCalledTimes(2)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  /** A script of `count` paragraphs, each a storyboard part of its own (200 words). */
+  const longScript = (count: number) =>
+    Array.from({ length: count }, (_, i) => `${Array.from({ length: 200 }, () => `w${i}`).join(' ')}.`)
+
+  it("stops a storyboard's other parts as soon as one fails, instead of going on", async () => {
+    const { splitScript } = await import('../src/ai')
+    generateContent.mockImplementation(stuck)
+    generateContent.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      throw Object.assign(new Error('{"error":{"code":400}}'), { status: 400 })
+    })
+    const parts = longScript(7)
+    await expect(
+      splitScript({ script: parts.join('\n\n'), pace: 3, artStyle: '', format: 'landscape', characters: [] }),
+    ).rejects.toMatchObject({ code: 'failed' })
+    // Three at once, and none started after the failure; the two still running were stopped.
+    expect(generateContent).toHaveBeenCalledTimes(3)
+    for (const [request] of generateContent.mock.calls.slice(1)) {
+      expect(request.config.abortSignal.aborted).toBe(true)
+    }
+  })
+
+  it('keeps the storyboard parts done by an earlier try, and tells each part as it is done', async () => {
+    const { splitScript } = await import('../src/ai')
+    const [first, second] = longScript(2)
+    const scene = (narration: string) => ({
+      narration,
+      visual: '',
+      imagePrompt: '',
+      characters: [],
+      shot: '',
+      motion: 'zoom-in' as const,
+      onScreenText: '',
+      transition: 'cut' as const,
+      accent: 'none' as const,
+      accentWord: '',
+      notes: '',
+    })
+    generateContent.mockResolvedValueOnce({ text: JSON.stringify({ scenes: [scene(second)] }) })
+    const done: string[] = []
+    const scenes = await splitScript(
+      { script: `${first}\n\n${second}`, pace: 3, artStyle: '', format: 'landscape', characters: [] },
+      undefined,
+      {
+        kept: (part) => (part === first ? [scene(first)] : undefined),
+        onPart: (part) => done.push(part),
+      },
+    )
+    // Only the second part was asked for.
+    expect(generateContent).toHaveBeenCalledTimes(1)
+    expect(generateContent.mock.calls[0][0].contents).toContain(second)
+    expect(generateContent.mock.calls[0][0].contents).not.toContain(first)
+    expect(scenes.map((s) => s.narration)).toEqual([first, second])
+    expect(done).toEqual([first, second])
+  })
+
+  it("says which of Google's troubles it was once the tries run out: overloaded, or out of its own time", async () => {
+    vi.useFakeTimers()
+    try {
+      for (const [status, message] of [
+        [503, 'Gemini is overloaded right now. Try again in a minute.'],
+        [504, 'Gemini timed out on its side. Try again in a minute.'],
+      ] as const) {
+        generateContent.mockReset()
+        generateContent.mockRejectedValue(
+          Object.assign(new Error(`{"error":{"code":${status}}}`), { status }),
+        )
+        const outcome = expect(askForIdeas()).rejects.toMatchObject({ code: 'busy', message })
+        await vi.advanceTimersByTimeAsync(20_000)
+        await outcome
+        expect(generateContent).toHaveBeenCalledTimes(4)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   type Request = { config: { abortSignal: AbortSignal } }
   /** A request that answers `reply` after `ms`, or fails as soon as it is aborted. */
   const answersAfter =
