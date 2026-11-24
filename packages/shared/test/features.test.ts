@@ -696,6 +696,44 @@ describe('Gemini calls', () => {
     }
   })
 
+  it('tells listeners each call once it is done, answered or failed, with where the time went', async () => {
+    const { onAiCall } = await import('../src/ai')
+    const heard: unknown[] = []
+    const stop = onAiCall((call) => heard.push(call))
+    try {
+      generateContent.mockResolvedValueOnce({
+        ...oneIdea,
+        usageMetadata: { thoughtsTokenCount: 12, candidatesTokenCount: 340 },
+      })
+      await askForIdeas()
+      generateContent.mockRejectedValueOnce(
+        Object.assign(new Error('{"error":{"code":400}}'), { status: 400 }),
+      )
+      await askForIdeas().catch(() => {})
+      expect(heard).toEqual([
+        {
+          task: 'ideas',
+          model: 'gemini-3.8-flash',
+          ms: expect.any(Number),
+          tries: 1,
+          waitedMs: 0,
+          firstWordsMs: null,
+          thinkingTokens: 12,
+          writtenTokens: 340,
+          error: null,
+        },
+        expect.objectContaining({ task: 'ideas', tries: 1, writtenTokens: null, error: 'failed' }),
+      ])
+      // Stopped listening: nothing more is heard.
+      stop()
+      generateContent.mockResolvedValueOnce(oneIdea)
+      await askForIdeas()
+      expect(heard).toHaveLength(2)
+    } finally {
+      stop()
+    }
+  })
+
   /** A script of `count` paragraphs, each a storyboard part of its own (200 words). */
   const longScript = (count: number) =>
     Array.from({ length: count }, (_, i) => `${Array.from({ length: 200 }, () => `w${i}`).join(' ')}.`)

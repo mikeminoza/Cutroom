@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { toast } from 'sonner'
 import { api, errorText } from './api'
 import type {
+  AiSpeedDTO,
   CommentInsightsDTO,
   DraftBatchDTO,
   IdeaDTO,
@@ -42,6 +43,7 @@ export const keys = {
   playlists: (channelId: string | null) => ['playlists', channelId ?? 'default'] as const,
   channel: (channelId: string | null) => ['channel', channelId ?? 'default'] as const,
   workerCheck: ['worker-check'] as const,
+  aiSpeed: ['ai-speed'] as const,
 }
 
 export function useSeriesList() {
@@ -115,6 +117,11 @@ export function usePlaylists(channelId: string | null, enabled: boolean) {
     enabled,
     staleTime: 5 * 60_000,
   })
+}
+
+/** How long Gemini took this past week (Settings → AI speed). */
+export function useAiSpeed() {
+  return useQuery({ queryKey: keys.aiSpeed, queryFn: () => api.get<AiSpeedDTO>('/api/ai-speed') })
 }
 
 export function useStatus() {

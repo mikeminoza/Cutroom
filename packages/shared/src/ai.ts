@@ -221,12 +221,41 @@ interface Usage {
   candidatesTokenCount?: number
 }
 
+/** One Gemini call once it's done, as the timing log tells it (logCall). */
+export interface AiCallRecord {
+  /** What it was for: "script (live)", "storyboard part 3", "effects". */
+  task: string
+  model: string
+  /** How long it took, tries and waits included. */
+  ms: number
+  tries: number
+  /** Of that, the time spent waiting to ask again. */
+  waitedMs: number
+  /** For a streamed answer: when the answer kept began to arrive. */
+  firstWordsMs: number | null
+  thinkingTokens: number | null
+  writtenTokens: number | null
+  /** Why it failed (the AiError's code, or 'failed'), or null when it answered. */
+  error: string | null
+}
+
+const callListeners = new Set<(call: AiCallRecord) => void>()
+
+/**
+ * Hears every Gemini call once it's done, answered or failed (not one stopped on purpose). The
+ * web app keeps them, for Settings → AI speed. Returns the function that stops listening.
+ */
+export function onAiCall(listener: (call: AiCallRecord) => void): () => void {
+  callListeners.add(listener)
+  return () => callListeners.delete(listener)
+}
+
 /**
  * One line in the server's log per Gemini call (Vercel's logs, or the worker run's): how long it
  * took and where the time went, e.g. "AI script (gemini-3.8-flash): 18.2 s, 1 try, 310 thinking
  * + 2,040 written tokens". Writing is most of the wait, so the written tokens say the most. A
  * streamed answer also says when its first words came ("first words after 2.1 s"): from then on
- * the page shows it being written.
+ * the page shows it being written. Listeners (onAiCall) hear the same.
  */
 function logCall(
   task: string,
@@ -236,8 +265,26 @@ function logCall(
   usage: Usage | undefined,
   error?: unknown,
 ) {
+  const record: AiCallRecord = {
+    task,
+    model,
+    ms: Date.now() - started,
+    tries: stats.tries,
+    waitedMs: Math.round(stats.waitedMs),
+    firstWordsMs: stats.firstWordsMs ?? null,
+    thinkingTokens: error === undefined ? (usage?.thoughtsTokenCount ?? null) : null,
+    writtenTokens: error === undefined ? (usage?.candidatesTokenCount ?? null) : null,
+    error: error === undefined ? null : error instanceof AiError ? error.code : 'failed',
+  }
+  for (const listener of callListeners) {
+    try {
+      listener(record)
+    } catch (problem) {
+      console.warn('An AI call listener failed:', problem)
+    }
+  }
   if (process.env.VITEST) return
-  const seconds = ((Date.now() - started) / 1000).toFixed(1)
+  const seconds = (record.ms / 1000).toFixed(1)
   const tries = `${stats.tries} ${stats.tries === 1 ? 'try' : 'tries'}`
   const waited =
     stats.waitedMs >= 1000 ? `, ${Math.round(stats.waitedMs / 1000)} s of it waiting to ask again` : ''
@@ -2279,21 +2326,32 @@ export async function generateImage(input: {
       inlineData: { mimeType: r.mimeType, data: r.data.toString('base64') },
     })),
   ]
-  const response = await withRetry(
-    (signal) =>
-      ai.models.generateContent({
-        model: geminiImageModel(),
-        contents: [{ role: 'user', parts }],
-        config: {
-          responseModalities: ['TEXT', 'IMAGE'],
-          imageConfig: { aspectRatio: input.aspectRatio, ...(imageSize ? { imageSize } : {}) },
-          abortSignal: signal,
-        },
-      }),
-    undefined,
-    requestDeadline(),
-    ATTEMPT_MS.media,
-  )
+  const model = geminiImageModel()
+  const started = Date.now()
+  const stats: CallStats = { tries: 0, waitedMs: 0 }
+  let response: Awaited<ReturnType<typeof ai.models.generateContent>>
+  try {
+    response = await withRetry(
+      (signal) =>
+        ai.models.generateContent({
+          model,
+          contents: [{ role: 'user', parts }],
+          config: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            imageConfig: { aspectRatio: input.aspectRatio, ...(imageSize ? { imageSize } : {}) },
+            abortSignal: signal,
+          },
+        }),
+      undefined,
+      requestDeadline(),
+      ATTEMPT_MS.media,
+      stats,
+    )
+  } catch (error) {
+    logCall('picture', model, started, stats, undefined, error)
+    throw error
+  }
+  logCall('picture', model, started, stats, response.usageMetadata)
   const candidate = response.candidates?.[0]
   const image = candidate?.content?.parts?.find(
     (p) => p.inlineData?.data && (p.inlineData.mimeType ?? '').startsWith('image/'),

@@ -379,6 +379,30 @@ export const tasks = pgTable(
   ],
 )
 
+/**
+ * Each Gemini call the web app made (server/ai-calls.ts), for Settings → AI speed: how long it took
+ * and why it failed, without needing Vercel's logs. Kept 30 days.
+ */
+export const aiCalls = pgTable(
+  'ai_calls',
+  {
+    id: text('id').primaryKey(),
+    /** What it was for: "script (live)", "storyboard part 3", "effects". */
+    task: text('task').notNull(),
+    model: text('model').notNull(),
+    ms: integer('ms').notNull(),
+    tries: integer('tries').notNull(),
+    waitedMs: integer('waited_ms').notNull().default(0),
+    firstWordsMs: integer('first_words_ms'),
+    thinkingTokens: integer('thinking_tokens'),
+    writtenTokens: integer('written_tokens'),
+    /** Why it failed (an AI error code), or null when it answered. */
+    error: text('error'),
+    createdAt: created(),
+  },
+  (t) => [index('ai_calls_created').on(t.createdAt)],
+)
+
 export type ProjectRow = typeof projects.$inferSelect
 export type SceneRow = typeof scenes.$inferSelect
 export type CharacterRow = typeof characters.$inferSelect

@@ -1,7 +1,12 @@
 import { AiError, withAiBudget } from '@cutroom/shared/ai'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { keepAiCalls } from './ai-calls'
 import { isAuthorized } from './auth'
+
+// Every route comes through here: from the first request on, each Gemini call is kept for
+// Settings → AI speed.
+keepAiCalls()
 
 export class HttpError extends Error {
   constructor(

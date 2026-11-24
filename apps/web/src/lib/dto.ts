@@ -106,6 +106,35 @@ export interface JobDTO {
   finishedAt: string | null
 }
 
+/**
+ * How long Gemini took lately (server/ai-calls.ts), for Settings → AI speed: by kind of work, and
+ * the slowest calls themselves.
+ */
+export interface AiSpeedDTO {
+  days: number
+  kinds: {
+    /** The kind of work, as the timing log names it ("storyboard", "script (live)"). */
+    task: string
+    calls: number
+    /** Failed calls, and of those, how many ran out of time. */
+    failed: number
+    outOfTime: number
+    /** Half the calls took at most this long. */
+    typicalSeconds: number
+    slowestSeconds: number
+  }[]
+  slowest: {
+    task: string
+    model: string
+    seconds: number
+    tries: number
+    waitedSeconds: number
+    writtenTokens: number | null
+    error: string | null
+    at: string
+  }[]
+}
+
 /** AI work on the server (server/tasks.ts). */
 export interface TaskDTO {
   id: string

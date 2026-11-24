@@ -120,4 +120,11 @@ export const migrations: { tag: string; statements: string[] }[] = [
       'CREATE INDEX "tasks_batch" ON "tasks" USING btree ("batch_id");',
     ],
   },
+  {
+    tag: '0014_ai_calls',
+    statements: [
+      'CREATE TABLE "ai_calls" (\n\t"id" text PRIMARY KEY NOT NULL,\n\t"task" text NOT NULL,\n\t"model" text NOT NULL,\n\t"ms" integer NOT NULL,\n\t"tries" integer NOT NULL,\n\t"waited_ms" integer DEFAULT 0 NOT NULL,\n\t"first_words_ms" integer,\n\t"thinking_tokens" integer,\n\t"written_tokens" integer,\n\t"error" text,\n\t"created_at" timestamp with time zone DEFAULT now() NOT NULL\n);',
+      'CREATE INDEX "ai_calls_created" ON "ai_calls" USING btree ("created_at");',
+    ],
+  },
 ]

@@ -167,6 +167,8 @@ const postRoute = await import('../src/app/api/projects/[id]/ai/post/route')
 const picturesRoute = await import('../src/app/api/projects/[id]/ai/pictures/route')
 const stopPicturesRoute = await import('../src/app/api/projects/[id]/ai/pictures/stop/route')
 const sceneImageRoute = await import('../src/app/api/scenes/[id]/image/route')
+const aiCalls = await import('../src/server/ai-calls')
+const aiSpeedRoute = await import('../src/app/api/ai-speed/route')
 
 // Work the task runner starts after a response waits here until a test runs it, so nothing runs
 // in the background (Vercel's after() needs a real request).
@@ -4741,5 +4743,61 @@ describe('AI work that keeps going when the page is closed', () => {
       expect(all.status).toBe(400)
       expect(all.body.error).toBe('Every scene has a picture.')
     })
+  })
+})
+
+describe('AI speed in Settings', () => {
+  /** A Gemini call, kept as the client tells it, `daysAgo` days ago. */
+  const call = (task: string, seconds: number, extra: { error?: string; daysAgo?: number } = {}) => ({
+    id: crypto.randomUUID(),
+    task,
+    model: 'gemini-3.8-flash',
+    ms: seconds * 1000,
+    tries: 1,
+    waitedMs: 0,
+    firstWordsMs: null,
+    thinkingTokens: null,
+    writtenTokens: 1200,
+    error: extra.error ?? null,
+    createdAt: new Date(Date.now() - (extra.daysAgo ?? 0) * 24 * 60 * 60_000),
+  })
+
+  it('names each kind of work without what tells its parts apart', () => {
+    expect(aiCalls.kindOf('storyboard part 12')).toBe('storyboard')
+    expect(aiCalls.kindOf('scene layers (part 2 of 4)')).toBe('scene layers')
+    expect(aiCalls.kindOf('translation (es, fr, de)')).toBe('translation')
+    expect(aiCalls.kindOf('title translation (es)')).toBe('title translation')
+    expect(aiCalls.kindOf('script (live)')).toBe('script (live)')
+  })
+
+  it('sums up the last week by kind of work, slowest first, with the slowest calls and why they failed', async () => {
+    const database = await db()
+    await database.delete(schema.aiCalls)
+    await database.insert(schema.aiCalls).values([
+      call('storyboard part 1', 40),
+      call('storyboard part 2', 60),
+      call('storyboard part 3', 270, { error: 'timeout' }),
+      call('effects', 8),
+      call('effects', 12, { error: 'busy' }),
+      // Older than a week: left out of the sum, and kept until the month is over.
+      call('ideas', 500, { daysAgo: 9 }),
+      // Older than a month: dropped by the daily cron.
+      call('ideas', 500, { daysAgo: 31 }),
+    ])
+    const response = await aiSpeedRoute.GET(new Request('http://localhost/api/ai-speed'), undefined)
+    const speed = (await response.json()) as Awaited<ReturnType<typeof aiCalls.aiSpeed>>
+    expect(speed.kinds).toEqual([
+      { task: 'storyboard', calls: 3, failed: 1, outOfTime: 1, typicalSeconds: 60, slowestSeconds: 270 },
+      { task: 'effects', calls: 2, failed: 1, outOfTime: 0, typicalSeconds: 12, slowestSeconds: 12 },
+    ])
+    expect(speed.slowest.map((c) => [c.task, c.seconds, c.error])).toEqual([
+      ['storyboard part 3', 270, 'timeout'],
+      ['storyboard part 2', 60, null],
+      ['storyboard part 1', 40, null],
+      ['effects', 12, 'busy'],
+      ['effects', 8, null],
+    ])
+    expect(await aiCalls.pruneAiCalls()).toBe(1)
+    expect(await database.select().from(schema.aiCalls)).toHaveLength(6)
   })
 })

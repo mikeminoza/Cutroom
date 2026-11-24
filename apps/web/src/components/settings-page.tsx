@@ -24,6 +24,7 @@ import { formatBytes } from '@/lib/format'
 import { keys, useLibrary, usePlaylists, useSettings, useStatus, useVoices } from '@/lib/hooks'
 import type { Tone } from '@/lib/stage'
 import { streamAnswer } from '@/lib/stream'
+import { AiSpeed } from './ai-speed'
 import {
   Button,
   ButtonLink,
@@ -77,6 +78,7 @@ export function SettingsPage() {
       </header>
       <div className="flex flex-col gap-6">
         <Connections />
+        <AiSpeed />
         <PreferencesForm />
       </div>
     </div>

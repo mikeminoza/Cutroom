@@ -8,6 +8,7 @@
 import { withAiBudget } from '@cutroom/shared/ai'
 import { inArray } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
+import { pruneAiCalls } from '@/server/ai-calls'
 import { refreshStats } from '@/server/analytics'
 import { scanDueBreakouts } from '@/server/breakouts'
 import { postDueComments, readDueComments } from '@/server/comments'
@@ -87,6 +88,7 @@ async function daily(request: Request): Promise<Response> {
     error instanceof Error ? error.message : String(error),
   )
   await pruneTasks().catch(() => 0)
+  await pruneAiCalls().catch(() => 0)
   return NextResponse.json({
     worker,
     nudged: active.length,
